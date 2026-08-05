@@ -1,0 +1,254 @@
+"""Configuration defaults for python-agent-harness.
+
+Mirrors the defcustom defaults of the Emacs gptel-agent-harness.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+# ---- context management -------------------------------------------------
+CONTEXT_TRIGGER = 0.70
+
+# Entries are matched in order (first match wins): put more specific
+# patterns before general ones.
+CONTEXT_WINDOWS: list[tuple[str, int]] = [
+    ("gpt-5-mini", 128000),
+    ("gpt-5", 400000),
+    ("claude", 200000),
+    ("deepseek-v3", 128000),
+    ("deepseek-v4", 1_000_000),
+    ("qwen3.5", 131072),
+    ("qwen3", 131072),
+    ("glm-5.2", 1_000_000),
+    ("glm-5.1", 128000),
+    ("kimi-k2.7", 256000),
+    ("kimi", 128000),
+]
+DEFAULT_CONTEXT_WINDOW = 32768
+
+# ---- completion supervision ----------------------------------------------
+MAX_NUDGES = 2
+NUDGE_MESSAGE = (
+    "Review the original user request and the Task Completion Rules "
+    "in the context. Verify whether all completion criteria are satisfied. "
+    "If not, continue by making tool calls. Do not stop until the rules are fully met."
+)
+
+# ---- compaction -----------------------------------------------------------
+COMPACT_HEADER = "**[Compacted Summary]**\n\n"
+COMPACT_SEPARATOR = "\n\n---\n\n**[Context compacted]**\n\n---\n\n"
+
+# ---- token calibration ----------------------------------------------------
+CALIBRATION_MIN = 0.5
+CALIBRATION_MAX = 3.0
+
+# ---- safety ----------------------------------------------------------------
+FORBIDDEN_PATHS: list[str] = [r"^\s*/mnt/"]
+BASH_TIMEOUT = 300
+BASH_APPROVAL = "confirm"  # "nil" | "confirm" | "block"
+
+DANGEROUS_PATTERNS: list[str] = [
+    r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|[^\s]*\s+-[a-zA-Z]*r\b)",
+    r"\bgit\s+push\s+--force",
+    r"\bgit\s+reset\s+--hard",
+    r"\bchmod\s+-R\s+[0-7][0-7][0-7]",
+    r"\bchown\s+-R\b",
+    r"\bsu\s+-",
+    r"\btar\s+--remove-files",
+]
+
+DESTRUCTIVE_PATTERNS: list[str] = [
+    r"\bkillall\b",
+    r"\bpkill\b",
+    r"\bsudo\b",
+]
+
+CATASTROPHIC_PATTERNS: list[str] = [
+    r"\brm\s+-rf\s+/",
+    r"\bmkfs\b",
+    r"\bdd\s+if=",
+    r":\(\)\s*\{",
+    r"\bshutdown\b",
+    r"\breboot\b",
+    r">\s*/dev/sd[a-z]",
+    r"\bmv\s+/\s",
+    r"\brmdir\s+/",
+]
+
+PLAN_READONLY_COMMANDS: set[str] = {
+    "ls", "cat", "head", "tail", "less", "more", "pwd", "echo", "printf",
+    "find", "grep", "rg", "git", "git-status", "git-diff", "git-log",
+    "git-show", "git-branch", "git-blame", "git-ls-files", "wc", "sort",
+    "uniq", "cut", "tr", "sed", "awk", "file", "stat", "du", "df", "env",
+    "which", "whereis", "type", "python", "python3", "node", "jq", "yq",
+    "date", "cal", "tree", "basename", "dirname", "readlink", "realpath",
+    "xargs", "test", "[", "true", "false", "git-grep", "git-log",
+}
+
+GIT_MUTATING_SUBCOMMANDS: set[str] = {
+    "add", "rm", "mv", "commit", "rebase", "reset", "checkout", "switch",
+    "restore", "merge", "cherry-pick", "revert", "push", "pull", "fetch",
+    "clone", "init", "clean", "stash", "tag", "branch", "apply", "am",
+    "format-patch", "archive", "bundle", "worktree", "maintenance",
+    "update-index", "update-ref", "symbolic-ref", "config",
+}
+
+BASH_ARG_DENYLIST: list[tuple[str, set[str]]] = [
+    ("find", {"-delete", "-exec", "-execdir", "-ok", "-okdir"}),
+    ("sort", {"-o", "--output"}),
+    ("yq", {"-i", "--inplace"}),
+    ("jq", {"-i", "--in-place"}),
+]
+
+UNDO_DEPTH = 50
+
+# ---- cache -----------------------------------------------------------------
+CACHE_ENABLED = True
+CACHE_TTL = 60
+CACHE_MAX_ENTRIES = 200
+
+# ---- sessions ---------------------------------------------------------------
+SESSION_DIR = Path(
+    os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
+)
+SESSION_SUBDIR = "python-agent-harness/sessions"
+AUTO_SAVE_SESSION = True
+PREVIEW_LINES = 40
+
+# ---- plan mode ---------------------------------------------------------------
+PLAN_FILE_NAME = "PLAN.md"
+PLAN_MODE_SUBAGENT_REMINDER = """<system-reminder>
+Plan mode is active for this session — you are in a READ-ONLY phase.
+STRICTLY FORBIDDEN: ANY file edits, modifications, or system changes,
+except writing to the plan file below.  You may ONLY observe, analyze,
+and plan.  This ABSOLUTE CONSTRAINT overrides ALL other instructions,
+including any subagent role instructions you have been given.
+
+Plan file: %s
+</system-reminder>"""
+
+PLAN_EXIT_APPROVED_MESSAGE = (
+    "The plan at %s has been approved, you can now edit files. Execute the plan"
+)
+
+# ---- tools -------------------------------------------------------------------
+DEFAULT_TOOLS: list[str] = [
+    "Agent", "TodoWrite", "Glob", "Grep", "Read", "Insert", "Edit",
+    "Write", "Mkdir", "Bash", "Skill", "Question",
+]
+
+# ---- LLM client ----------------------------------------------------------------
+DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+MAX_TOKENS = 8192
+TEMPERATURE = 0.0
+
+# ---- sub-agents ---------------------------------------------------------------
+SUBAGENT_MAX_ROUNDS = 40
+SUBAGENT_BACKEND: str | None = None  # None = inherit main agent
+SUBAGENT_MODEL: str | None = None
+
+# ---- configuration file ---------------------------------------------------------
+CONFIG_DIR = Path(
+    os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
+) / "python-agent-harness"
+CONFIG_FILE = CONFIG_DIR / "config.toml"
+
+DEFAULT_LLM: dict = {
+    "base_url": "https://api.openai.com/v1",
+    "api_key": None,
+    "model": "gpt-5-mini",
+    "backend": "OpenAI-compatible",
+    "temperature": TEMPERATURE,
+    "max_tokens": MAX_TOKENS,
+    "timeout": 600.0,
+    "reasoning_effort": None,
+}
+
+CONFIG_TEMPLATE = """\
+# python-agent-harness configuration
+# Location: {path}
+# Precedence: code defaults < this file < OPENAI_* environment variables
+
+[llm]
+# Any OpenAI-compatible endpoint (DeepSeek, Moonshot/Kimi, GLM, Qwen, OpenAI, ...):
+base_url = "https://api.deepseek.com/v1"
+
+# Your API key. You can also keep it unset here and rely on
+# OPENAI_API_KEY, but the point of this file is to avoid env vars.
+# api_key = "sk-..."
+
+# Model name as your provider calls it, e.g. "deepseek-chat", "kimi-k2.7",
+# "glm-5.2", "qwen3", "gpt-5-mini".
+model = "deepseek-chat"
+
+# Provider display name used in saved sessions.
+# backend = "DeepSeek"
+
+# Reasoning effort for thinking models ("low" | "medium" | "high",
+# or whatever your provider accepts).  Omitted from the request when unset.
+reasoning_effort = "medium"
+
+# temperature = 0.0
+# max_tokens = 8192
+# timeout = 600.0
+
+# Optional: point to another config file via PYTHON_AGENT_HARNESS_CONFIG
+"""
+
+_ENV_OVERRIDES = {
+    "base_url": "OPENAI_BASE_URL",
+    "api_key": "OPENAI_API_KEY",
+    "model": "OPENAI_MODEL",
+    "backend": "OPENAI_BACKEND",
+}
+
+
+def _config_path(path: str | os.PathLike | None = None) -> Path:
+    """Resolve the config file path: explicit arg > $PYTHON_AGENT_HARNESS_CONFIG > default."""
+    if path:
+        return Path(path).expanduser()
+    env = os.environ.get("PYTHON_AGENT_HARNESS_CONFIG")
+    if env:
+        return Path(env).expanduser()
+    return CONFIG_FILE
+
+
+def load_llm_config(path: str | os.PathLike | None = None) -> dict:
+    """Resolve LLM settings: code defaults < config file < environment.
+
+    The config file is TOML with an ``[llm]`` section (see
+    `CONFIG_TEMPLATE`).  Environment variables still win if set, so
+    existing setups keep working.
+    """
+    import tomllib
+
+    settings = dict(DEFAULT_LLM)
+    cfg_path = _config_path(path)
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, "rb") as f:
+                data = tomllib.load(f)
+        except Exception as e:  # noqa: BLE001
+            raise ValueError(f"cannot read config file {cfg_path}: {e}") from e
+        llm = data.get("llm") or {}
+        if not isinstance(llm, dict):
+            raise ValueError(f"config file {cfg_path}: [llm] must be a table")
+        for key in (
+            "base_url", "api_key", "model", "backend",
+            "temperature", "max_tokens", "timeout",
+            "reasoning_effort",
+        ):
+            if key in llm and llm[key] is not None:
+                settings[key] = llm[key]
+    for key, env in _ENV_OVERRIDES.items():
+        val = os.environ.get(env)
+        if val:
+            settings[key] = val
+    return settings
+
+
+def mask_secret(value: str | None) -> str:
+    return "****" if value else "(unset)"

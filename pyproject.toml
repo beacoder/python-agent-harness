@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "python-agent-harness"
+version = "0.1.0"
+description = "Python agent execution harness: agent loop, tools, safety, cache, plan/build modes, sessions"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "rich>=13.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+python-agent-harness = "python_agent_harness.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["python_agent_harness*"]
+
+[tool.setuptools.package-data]
+python_agent_harness = ["prompts/*.txt", "prompts/commands/*.txt"]

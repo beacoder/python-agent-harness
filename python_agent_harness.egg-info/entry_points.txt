@@ -1,0 +1,2 @@
+[console_scripts]
+python-agent-harness = python_agent_harness.cli:main
