@@ -158,6 +158,7 @@ class AgentLoop:
         self.messages.append(
             Message(role="assistant", content="", tool_calls=[p.call for p in pending])
         )
+        self.session.last_messages = list(self.messages)
         for p in pending:
             result = sanitize_tool_result(self._execute_tool_call(p.call))
             p.call.result = result
@@ -171,6 +172,7 @@ class AgentLoop:
                     name=p.call.name,
                 )
             )
+            self.session.last_messages = list(self.messages)
         self.info.pending = []
         self.session.notify("tools")
 
