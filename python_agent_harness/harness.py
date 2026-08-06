@@ -351,9 +351,12 @@ class AgentSession:
     # ------------------------------------------------------------------
     def switch_to_build(self) -> None:
         self.plan_mode.set_mode(AgentMode.BUILD, self._mode_prompts())
+        self.registry.unregister("PlanExit")
 
     def switch_to_plan(self) -> None:
+        from .tools import PlanExit
         self.plan_mode.set_mode(AgentMode.PLAN, self._mode_prompts())
+        self.registry.register(PlanExit())
 
     def _mode_prompts(self) -> dict[str, str]:
         from .compaction import read_prompt_file
