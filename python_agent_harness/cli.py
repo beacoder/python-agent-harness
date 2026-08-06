@@ -35,16 +35,15 @@ from .tools import default_registry
 
 def make_session(
     project_dir: str,
-    system_prompt: str | None = None,
     config_path: str | None = None,
     model: str | None = None,
 ) -> AgentSession:
     """Create an AgentSession from config file + env (no env required).
 
-    When SYSTEM_PROMPT is not given, defaults to the ported main-agent
-    prompt (config.DEFAULT_AGENT_PROMPT_FILE); the sub-agent prompt
-    always defaults to config.DEFAULT_SUBAGENT_PROMPT_FILE.  Either
-    default falls back to no system prompt if its file is unavailable.
+    The system prompt defaults to the ported main-agent prompt
+    (config.DEFAULT_AGENT_PROMPT_FILE); the sub-agent prompt always
+    defaults to config.DEFAULT_SUBAGENT_PROMPT_FILE.  Either default
+    falls back to no system prompt if its file is unavailable.
     """
     settings = config.load_llm_config(config_path)
     model = model or settings["model"]
@@ -55,10 +54,11 @@ def make_session(
         timeout=settings["timeout"],
     )
     from .compaction import load_agent_prompt
+    from .harness import find_skill_dir
 
-    if system_prompt is None:
-        system_prompt = load_agent_prompt(config.DEFAULT_AGENT_PROMPT_FILE)
-    subagent_system_prompt = load_agent_prompt(config.DEFAULT_SUBAGENT_PROMPT_FILE)
+    skill_dir = find_skill_dir(os.path.abspath(project_dir))
+    system_prompt = load_agent_prompt(config.DEFAULT_AGENT_PROMPT_FILE, skill_dir=skill_dir)
+    subagent_system_prompt = load_agent_prompt(config.DEFAULT_SUBAGENT_PROMPT_FILE, skill_dir=skill_dir)
     return AgentSession(
         project_dir=os.path.abspath(project_dir),
         client=client,
@@ -77,9 +77,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     from .tui import Tui
 
     project_dir = args.project or os.getcwd()
-    session = make_session(
-        project_dir, system_prompt=args.system, config_path=args.config
-    )
+    session = make_session(project_dir, config_path=args.config)
     Tui(session).run()
     session.close()
     return 0
@@ -186,7 +184,6 @@ def cmd_restore(args: argparse.Namespace) -> int:
     model = meta.get("gptel-model") or config.DEFAULT_MODEL
     session = make_session(
         project,
-        system_prompt=meta.get("gptel-system-prompt"),
         config_path=args.config,
         model=model,
     )
@@ -222,7 +219,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="interactive TUI agent session")
     _add_config_arg(p_run, suppress=True)
     p_run.add_argument("project", nargs="?", help="project directory (default: cwd)")
-    p_run.add_argument("--system", help="system prompt file or text")
 
     p_config = sub.add_parser(
         "config", help="show effective LLM config or write a template file"
