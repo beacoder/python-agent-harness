@@ -23,16 +23,23 @@ class ApiError(Exception):
 
 
 def _llm_log_path() -> Path:
-    """Return the LLM log file path."""
-    return Path(f"/tmp/python-agent-harness-{os.getuid()}-{time.strftime('%Y-%m-%d')}.jsonl")
+    """Return the LLM log file path for a new session."""
+    import uuid
+    date_str = time.strftime("%Y%m%d")
+    session_id = uuid.uuid4().hex[:8]
+    log_dir = os.environ.get("LLM_LOG_DIR")
+    if log_dir:
+        d = Path(log_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"python-agent-harness-{date_str}-{session_id}.json"
+    return Path(f"/tmp/python-agent-harness-{date_str}-{session_id}.json")
 
 
-def _log_llm_interaction(payload: dict[str, Any], response_msg: "Message", usage: "Usage") -> None:
+def _log_llm_interaction(log_file: "Path | None", payload: dict[str, Any], response_msg: "Message", usage: "Usage") -> None:
     """Append an LLM interaction to the log file as pretty-printed JSON."""
-    if not config.LLM_LOG_ENABLED:
+    if not log_file:
         return
     try:
-        log_file = _llm_log_path()
 
         # Build the entry in the same format as the conversation:
         # { "model": ..., "messages": [...all messages including response...] }
@@ -57,13 +64,21 @@ def _log_llm_interaction(payload: dict[str, Any], response_msg: "Message", usage
             ]
         messages.append(resp)
 
-        entry: dict[str, Any] = {
+        body: dict[str, Any] = {
             "model": payload.get("model", ""),
             "messages": messages,
         }
+        if payload.get("tools"):
+            body["tools"] = payload["tools"]
+
+        marker: dict[str, Any] = {
+            "python-agent-harness": "request body",
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
         with open(log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, indent=2, ensure_ascii=False) + "\n")
+            f.write(json.dumps(marker, indent=2, ensure_ascii=False) + "\n")
+            f.write(json.dumps(body, indent=2, ensure_ascii=False) + "\n")
     except Exception:  # noqa: BLE001 - logging must never break the agent
         pass
 
@@ -105,6 +120,7 @@ class Client:
         self.verify = verify if verify is not None else _resolve_ca_bundle()
         self._http = httpx.Client(timeout=timeout, verify=self.verify)
         self._active_response = None  # set while a stream is being read
+        self.log_path: Path | None = _llm_log_path() if config.LLM_LOG_ENABLED else None
 
     def close(self) -> None:
         self._http.close()
@@ -257,10 +273,10 @@ class Client:
             ]
         if content or tool_calls:
             msg = Message(role="assistant", content=content, tool_calls=tool_calls)
-            _log_llm_interaction(payload, msg, usage)
+            _log_llm_interaction(self.log_path, payload, msg, usage)
             return msg, usage
         msg = Message(role="assistant", content="")
-        _log_llm_interaction(payload, msg, usage)
+        _log_llm_interaction(self.log_path, payload, msg, usage)
         return msg, usage
 
     # -- non-streaming chat -------------------------------------------------
@@ -298,7 +314,7 @@ class Client:
         msg = choice.get("message") or {}
         content = msg.get("content") or ""
         result = Message(role="assistant", content=content)
-        _log_llm_interaction(payload, result, usage)
+        _log_llm_interaction(self.log_path, payload, result, usage)
         return result, usage
 
 
