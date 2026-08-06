@@ -151,14 +151,14 @@ class AgentLoop:
         return self.session.execute_tool(call.name, args, call_id=call.id)
 
     def _run_tool_round(self) -> None:
-        """Execute all pending tool calls; deliver results as messages."""
+        """Execute all pending tool calls; deliver results as messages.
+
+        The assistant message carrying the tool calls was already
+        appended by the main loop; here we add the per-call results.
+        """
         pending = list(self.info.pending)
         if not pending:
             return
-        self.messages.append(
-            Message(role="assistant", content="", tool_calls=[p.call for p in pending])
-        )
-        self.session.last_messages = list(self.messages)
         for p in pending:
             result = sanitize_tool_result(self._execute_tool_call(p.call))
             p.call.result = result
@@ -229,6 +229,13 @@ class AgentLoop:
 
             if session.cancel_event.is_set():
                 return None  # response arrived after cancel: drop it
+
+            # persist the assistant response in the conversation history
+            # (text and/or tool calls) so later turns and the UI see it
+            if assistant.text().strip() or assistant.tool_calls:
+                self.messages.append(assistant)
+                if not assistant.tool_calls:
+                    session.last_messages = list(self.messages)
 
             session.calibrator.update(usage.input_tokens)
             session.remember_user_text(self.messages)

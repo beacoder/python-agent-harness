@@ -50,6 +50,34 @@ def _tail_chars(text: str, n: int) -> str:
     return "…" + text[-n:]
 
 
+def _head_lines(text: str, n: int) -> str:
+    """Keep the first N lines of TEXT, marking the cut with a count."""
+    lines = text.splitlines()
+    if len(lines) <= n:
+        return text
+    return "\n".join(lines[:n]) + f"\n… [{len(lines) - n} more lines]"
+
+
+def _head_chars(text: str, n: int) -> str:
+    """Keep the first N chars of TEXT, marking the cut with an ellipsis."""
+    if len(text) <= n:
+        return text
+    return text[:n] + "…"
+
+
+def _tool_result_preview(content: str) -> str:
+    """Preview of a tool result: first N lines, capped at N chars.
+
+    Tool results (file reads, command output) can be huge — showing only
+    a few lines keeps the TUI fast and readable.  The beginning is kept
+    (it carries the result/error); the cut is marked explicitly.
+    """
+    from . import config
+
+    preview = _head_lines(content, config.TOOL_RESULT_PREVIEW_LINES)
+    return _head_chars(preview, config.TOOL_RESULT_PREVIEW_CHARS)
+
+
 def _history_path() -> str:
     d = config.SESSION_DIR / "python-agent-harness"
     d.mkdir(parents=True, exist_ok=True)
@@ -121,8 +149,16 @@ class Tui:
     def _on_notify(self, kind: str) -> None:
         if kind == "tools":
             self.status = " running tools"
+            # tool round finished: session.last_messages now contains the
+            # tool-call + result rows — rebuild the cached history so
+            # they show up live instead of after the run ends
+            self._history_dirty = True
         elif kind == "compact":
             self.status = " compacted"
+            self._history_dirty = True
+        elif kind == "todos":
+            # TodoWrite updated the task list: the cached history rows
+            # (which include the Todos panel) must be rebuilt
             self._history_dirty = True
         elif kind == "error":
             self.status = " error"
@@ -211,21 +247,32 @@ class Tui:
                 if body.strip():
                     rows.append(Markdown(f"**assistant:** {body}"))
             elif m.role == "tool":
-                content = m.text()
-                preview = content[:400] + ("…" if len(content) > 400 else "")
+                preview = _tool_result_preview(m.text())
                 rows.append(Text(f"tool: {m.name or 'tool'}: {preview}", style="dim"))
                 call = calls_by_id.get(m.tool_call_id)
                 if call is not None and call.diff:
                     rows.append(render_diff(call.diff))
-
-        if self.session.todos:
-            t = Table.grid(padding=(0, 1))
-            for todo in self.session.todos[-8:]:
-                status = todo.get("status", "")
-                mark = {"completed": "✅", "in_progress": "⏳", "pending": "⬜"}.get(status, "•")
-                t.add_row(mark, todo.get("content", ""))
-            rows.append(Panel(t, title="Todos", border_style="blue", expand=False))
         return rows
+
+    def _todos_panel(self) -> Panel | None:
+        """Todos panel — rebuilt every frame (not cached), so a
+        TodoWrite call shows up immediately even mid-run.  When a
+        sub-agent is running, its scoped list is shown with a `sub:`
+        label so the parent's list isn't mistaken for the sub's."""
+        if not self.session.todos:
+            return None
+        title = "Todos"
+        label = self.session.todo_scope_label
+        if label:
+            # parentheses, not markup brackets: rich parses panel titles
+            # as markup and `[sub: ...]` would be eaten as a style tag
+            title = f"Todos (sub: {_tail_chars(label, 40)})"
+        t = Table.grid(padding=(0, 1))
+        for todo in self.session.todos[-8:]:
+            status = todo.get("status", "")
+            mark = {"completed": "✅", "in_progress": "⏳", "pending": "⬜"}.get(status, "•")
+            t.add_row(mark, todo.get("content", ""))
+        return Panel(t, title=title, border_style="blue", expand=False)
 
     def _history_rows(self) -> list[Any]:
         """Cached history rows; rebuilt only when the conversation changes.
@@ -291,7 +338,12 @@ class Tui:
         height = getattr(self.console, "height", None)
         if not height or height <= 0:
             return 60
-        return max(5, height - 6)
+        # reserve: status bar (1) + panel borders (2) + input prompt (1)
+        # + the pinned Todos panel when visible (its rows + 2 borders)
+        reserved = 4
+        if self.session.todos:
+            reserved += min(len(self.session.todos), 8) + 2
+        return max(5, height - reserved)
 
     @staticmethod
     def _est_lines(row: Any, width: int) -> int:
@@ -306,14 +358,21 @@ class Tui:
         return 1
 
     def _render_frame(self) -> Group:
-        """Full frame: status bar pinned on top, conversation below.
+        """Full frame: status bar + Todos pinned on top, conversation below.
 
-        The status bar is placed FIRST so a tall conversation panel can
-        never push it off the bottom of the terminal.
+        The status bar and the Todos panel are placed FIRST so they stay
+        visible no matter how tall the conversation gets — the Todos list
+        is pinned like a second mode line instead of competing with the
+        conversation rows for the visible budget.
         """
         from rich.console import Group
 
-        return Group(self._status_bar(), self._render_conversation())
+        parts: list[Any] = [self._status_bar()]
+        todos = self._todos_panel()
+        if todos is not None:
+            parts.append(todos)
+        parts.append(self._render_conversation())
+        return Group(*parts)
 
     def _status_bar(self) -> Text:
         mode = self.session.plan_mode.mode.value
@@ -522,7 +581,12 @@ class Tui:
             if seq == self.run_seq:
                 self._on_log(f"agent error: {e}")
         finally:
-            # the run is done: history changed, refresh the display
+            # the run is done: the final assistant message is now part of
+            # the conversation history, so drop the live stream buffer —
+            # otherwise the same text renders twice (stream row + history
+            # row) and eats the visible-row budget
+            with self.lock:
+                self.stream_text = ""
             self._history_dirty = True
             self._data_event.set()
 

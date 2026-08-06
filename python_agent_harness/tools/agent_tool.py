@@ -17,7 +17,12 @@ DESCRIPTION = (
     "Launch a specialized sub-agent to handle complex, multi-step tasks "
     "autonomously. Sub-agents run independently and return results in one "
     "message. Use for open-ended searches, complex research, or when "
-    "uncertain about finding results in the first few tries."
+    "uncertain about finding results in the first few tries.\n\n"
+    "For multi-step sub-agent tasks (3+ steps), instruct the sub-agent in "
+    "the prompt to use TodoWrite to report progress: keep the list to at "
+    "most 5 items and update statuses as it works. The sub-agent's todo "
+    "list is shown in the UI with a `sub:` label and is automatically "
+    "scoped, so it never overwrites your own todo list."
 )
 
 PARAMETERS = {

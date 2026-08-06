@@ -37,7 +37,7 @@ def make_tui() -> tuple[Tui, io.StringIO]:
 class TestTui(unittest.TestCase):
     def test_render_conversation(self):
         tui, buf = make_tui()
-        tui.console.print(tui._render_conversation())
+        tui.console.print(tui._render_frame())
         out = buf.getvalue()
         self.assertIn("hello agent", out)
         self.assertIn("file contents", out)
@@ -231,6 +231,164 @@ class TestTui(unittest.TestCase):
         out = buf.getvalue()
         self.assertNotIn("@@", out)
         self.assertNotIn("no changes", out)
+
+    def test_tool_result_line_limited(self):
+        """A tool result with many lines shows only the first few lines,
+        with an explicit 'N more lines' marker — not the whole output."""
+        tui, buf = make_tui()
+        big = "".join(f"output line {i}\n" for i in range(200))
+        tui.session.last_messages = [
+            Message(role="user", content="read it"),
+            Message(
+                role="assistant", content="",
+                tool_calls=[ToolCall(id="1", name="Read", arguments="{}")],
+            ),
+            Message(role="tool", content=big, tool_call_id="1", name="Read"),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("output line 0", out)   # head shown
+        self.assertIn("output line 4", out)   # within the 5-line cap
+        self.assertNotIn("output line 5\n", out)
+        self.assertNotIn("output line 199", out)
+        self.assertIn("more lines", out)      # truncation marker
+
+    def test_tool_result_short_untouched(self):
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="run it"),
+            Message(
+                role="assistant", content="",
+                tool_calls=[ToolCall(id="1", name="Bash", arguments="{}")],
+            ),
+            Message(role="tool", content="ok\n", tool_call_id="1", name="Bash"),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("ok", out)
+        self.assertNotIn("more lines", out)
+
+    def test_tool_result_long_single_line_capped(self):
+        """Even without newlines, a huge tool result is char-capped."""
+        tui, buf = make_tui()
+        huge = "x" * 50_000
+        tui.session.last_messages = [
+            Message(role="user", content="run it"),
+            Message(
+                role="assistant", content="",
+                tool_calls=[ToolCall(id="1", name="Bash", arguments="{}")],
+            ),
+            Message(role="tool", content=huge, tool_call_id="1", name="Bash"),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertLess(len(out), 5000)
+        self.assertIn("…", out)
+
+    def test_todos_notify_invalidates_history_cache(self):
+        """A TodoWrite call notifies 'todos', which must mark the cached
+        history rows dirty so the Todos panel appears."""
+        tui, _ = make_tui()
+        tui._history_rows()  # warm the cache
+        self.assertFalse(tui._history_dirty)
+        tui._on_notify("todos")
+        self.assertTrue(tui._history_dirty)
+        tui._data_event.clear()
+        tui._on_notify("todos")
+        self.assertTrue(tui._data_event.is_set())  # render wakes promptly
+
+    def test_tools_notify_invalidates_history_cache(self):
+        """A tool round ('tools' notify) marks history dirty so the
+        tool-call and result rows appear live, not after the run."""
+        tui, _ = make_tui()
+        tui._history_rows()  # warm the cache
+        self.assertFalse(tui._history_dirty)
+        tui._on_notify("tools")
+        self.assertTrue(tui._history_dirty)
+
+    def test_stream_cleared_when_run_finishes(self):
+        """When the run completes the live stream buffer is dropped so the
+        final text isn't rendered twice (stream row + history row)."""
+        from types import SimpleNamespace
+
+        tui, _ = make_tui()
+        tui.stream_text = "final words"
+        s = tui.session
+        fake = SimpleNamespace(close=lambda: None)
+        s.client = fake
+        tui._run_agent("hi", tui.run_seq + 1)  # run completes (no API key -> error path)
+        self.assertEqual(tui.stream_text, "")
+
+    def test_todos_panel_visible_after_midrun_update(self):
+        """TodoWrite mid-run: session.todos is set while the history cache
+        is already built; the pinned Todos panel must still appear
+        without waiting for the run to finish."""
+        tui, buf = make_tui()
+        tui.session.todos = []          # no todos at run start
+        tui._history_rows()             # build cache without todos
+        self.assertIsNone(tui._todos_panel())
+        # TodoWrite runs mid-run:
+        tui.session.update_todos(
+            [{"content": "task one", "status": "in_progress"},
+             {"content": "task two", "status": "pending"}]
+        )
+        self.assertEqual(tui.session.todos[0]["content"], "task one")
+        tui.console.print(tui._render_frame())
+        out = buf.getvalue()
+        self.assertIn("Todos", out)
+        self.assertIn("task one", out)
+        self.assertIn("task two", out)
+
+    def test_todos_pinned_above_conversation(self):
+        """The Todos panel is pinned below the status bar and ABOVE the
+        conversation, so a long conversation can't push it away."""
+        tui, buf = make_tui()
+        tui.console.print(tui._render_frame())
+        out = buf.getvalue()
+        self.assertLess(out.index("[BUILD]"), out.index("Todos"))
+        self.assertLess(out.index("Todos"), out.index("hello agent"))
+        # even with a huge conversation, the Todos panel stays pinned
+        tui.session.last_messages = [
+            Message(role="user", content=f"m{i}") for i in range(200)
+        ]
+        tui._history_dirty = True
+        buf2 = io.StringIO()
+        out_c2 = Console(file=buf2, width=100, force_terminal=False)
+        out_c2.print(tui._render_frame())
+        out2 = buf2.getvalue()
+        self.assertLess(out2.index("Todos"), out2.index("m199"))
+        self.assertNotIn("m0", out2)
+
+    def test_todos_panel_hidden_when_empty(self):
+        tui, buf = make_tui()
+        tui.session.todos = []
+        tui.console.print(tui._render_frame())
+        out = buf.getvalue()
+        self.assertNotIn("Todos", out)
+
+    def test_todos_panel_subagent_label(self):
+        """While a sub-agent runs, its scoped todos show with a `sub:`
+        label so they're not mistaken for the parent's list."""
+        tui, buf = make_tui()
+        tui.session.update_todos(
+            [{"content": "parent task", "status": "pending"}]
+        )
+        tui.session.push_todo_scope("sub:1", "find the bug")
+        tui.session.update_todos(
+            [{"content": "search", "status": "in_progress"}]
+        )
+        tui.console.print(tui._render_frame())
+        out = buf.getvalue()
+        self.assertIn("Todos (sub: find the bug)", out)
+        self.assertIn("search", out)
+        # parent's list is restored on pop and the label disappears
+        tui.session.pop_todo_scope()
+        buf2 = io.StringIO()
+        out_c2 = Console(file=buf2, width=100, force_terminal=False)
+        out_c2.print(tui._render_frame())
+        out2 = buf2.getvalue()
+        self.assertIn("parent task", out2)
+        self.assertNotIn("sub: find the bug", out2)
 
 
 if __name__ == "__main__":

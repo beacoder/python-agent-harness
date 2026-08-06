@@ -153,6 +153,10 @@ SUBAGENT_MAX_ROUNDS = 40
 SUBAGENT_BACKEND: str | None = None  # None = inherit main agent
 SUBAGENT_MODEL: str | None = None
 
+# ---- TUI preview limits -------------------------------------------------------
+TOOL_RESULT_PREVIEW_LINES = 5    # max lines of a tool result shown in the TUI
+TOOL_RESULT_PREVIEW_CHARS = 500  # max chars of that preview (long single lines)
+
 # ---- default agent prompts -----------------------------------------------------
 # Ported system prompts (opencode-style) for the main agent and sub-agents,
 # bundled with the package (prompts/agent.txt, prompts/subagent.txt).
