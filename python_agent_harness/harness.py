@@ -37,6 +37,17 @@ def find_skill_dir(project_dir: str) -> str | None:
     return None
 
 
+def find_context_dir(project_dir: str) -> str | None:
+    """Locate the default context directory (first match wins)."""
+    for cand in (
+        os.path.join(os.path.expanduser("~"), ".emacs.d", "contexts"),
+        os.path.join(project_dir, "contexts"),
+    ):
+        if os.path.isdir(cand):
+            return cand
+    return None
+
+
 class AgentSession:
     """One interactive agent session (a "buffer" in elisp terms)."""
 
