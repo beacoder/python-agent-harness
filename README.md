@@ -34,12 +34,18 @@ persistence, and a rich TUI.
 - **Commands** — `init` (create/update AGENTS.md), `review` (uncommitted
   changes / commit / branch / PR), `summary`, and custom commands from
   `prompts/commands/*.txt`.
+- **Editing input** — `prompt_toolkit`-backed multi-line editor with
+  persistent history (Up/Down recall), Enter for a newline, Esc+Enter
+  (or Alt+Enter) to submit.
+- **Diff rendering** — Edit/Write tool calls capture a unified diff of
+  the file change and render it inline (red/green) in the TUI, so file
+  edits are visible without leaving the app.
 
 ## Install
 
 ```sh
 python -m venv venv
-venv/bin/pip install rich httpx
+venv/bin/pip install rich httpx prompt_toolkit
 venv/bin/pip install -e .
 ```
 
@@ -88,6 +94,12 @@ python-agent-harness restore --latest    # restore newest session
 TUI slash commands: `/plan` `/build` `/compact` `/undo` `/history`
 `/save` `/summary` `/exit`.
 
+Input editing: type your message, press **Enter** for a new line, and
+**Esc then Enter** (or **Alt+Enter**) to submit. **Up/Down** recall
+previous inputs from `~/.local/share/python-agent-harness/input_history`.
+**Ctrl-D** quits; **Ctrl-C** cancels the current input or agent run
+without leaving the app.
+
 ## Layout
 
 ```
@@ -105,7 +117,8 @@ python_agent_harness/
 ├── harness.py      AgentSession (wiring hub)
 ├── commands.py     init/review/custom command definitions
 ├── cli.py          argparse entry points
-├── tui.py          rich TUI
+├── tui.py          rich + prompt_toolkit TUI
+├── diffrender.py   unified diff generation + rich rendering
 └── tools/          tool implementations + registry
 ```
 
