@@ -53,14 +53,21 @@ def make_session(
         model=model,
         timeout=settings["timeout"],
     )
-    from .compaction import load_agent_prompt
-    from .harness import find_skill_dir
+    from .compaction import load_agent_prompt, load_context_files
+    from .harness import find_context_dir, find_skill_dir
 
-    skill_dir = find_skill_dir(os.path.abspath(project_dir))
+    abs_project = os.path.abspath(project_dir)
+    skill_dir = find_skill_dir(abs_project)
+    context_dir = find_context_dir(abs_project)
     system_prompt = load_agent_prompt(config.DEFAULT_AGENT_PROMPT_FILE, skill_dir=skill_dir)
+    context_block = load_context_files(context_dir)
+    if context_block and system_prompt:
+        system_prompt = context_block + "\n\n" + system_prompt
+    elif context_block:
+        system_prompt = context_block
     subagent_system_prompt = load_agent_prompt(config.DEFAULT_SUBAGENT_PROMPT_FILE, skill_dir=skill_dir)
     return AgentSession(
-        project_dir=os.path.abspath(project_dir),
+        project_dir=abs_project,
         client=client,
         model=model,
         backend=settings["backend"],
