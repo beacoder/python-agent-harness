@@ -8,6 +8,7 @@ confirmation).
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -165,8 +166,20 @@ class Tui:
             elif m.role == "assistant":
                 body = m.text()
                 if m.tool_calls:
-                    calls = ", ".join(tc.name for tc in m.tool_calls)
-                    rows.append(Text(f"🤖 [tool calls: {calls}]", style="cyan"))
+                    for tc in m.tool_calls:
+                        args = tc.arguments
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except (json.JSONDecodeError, ValueError):
+                                args = {}
+                        if isinstance(args, dict):
+                            params = " ".join(f"{k}={v!r}" for k, v in args.items()
+                                             if k != "content" and len(repr(v)) < 80)
+                        else:
+                            params = ""
+                        label = f"🤖 {tc.name}({params})" if params else f"🤖 {tc.name}"
+                        rows.append(Text(label, style="cyan"))
                 if body:
                     rows.append(Markdown(f"**Agent:** {body}"))
             elif m.role == "tool":
