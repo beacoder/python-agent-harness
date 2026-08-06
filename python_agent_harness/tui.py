@@ -11,9 +11,10 @@ from __future__ import annotations
 import json
 import math
 import os
+import shlex
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -28,6 +29,7 @@ from rich.text import Text
 
 from . import config
 from .agent import run_agent_loop
+from .commands import SessionCommand, find_command
 from .diffrender import render_diff
 from .harness import AgentSession
 from .models import Message
@@ -401,8 +403,11 @@ class Tui:
         self.console.print(
             Panel(
                 "python-agent-harness — agent execution harness\n"
-                "Commands: /plan /build /compact /undo /history /save "
-                "/summary /help /exit\n"
+                "Commands: /plan /build /init /review /explain /compact "
+                "/undo /history /save /summary /help /exit\n"
+                "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
+                "/review [project] [commit|branch|PR] review code changes\n"
+                "/explain [project] [target]          explain code\n"
                 "Ctrl-C cancels the current execution (the app stays open); "
                 "Ctrl-D or /exit quits.\n"
                 "Type a message — Enter for a new line, Esc then Enter "
@@ -466,7 +471,18 @@ class Tui:
             return ""
         return text
 
-    def _start_agent(self, text: str) -> None:
+    def _start_agent(
+        self,
+        text: str,
+        system: str | None = None,
+        restore: Callable[[], None] | None = None,
+    ) -> None:
+        """Run the agent loop on TEXT in a worker thread.
+
+        SYSTEM overrides the session's system prompt for this run only.
+        RESTORE (if given) runs when the run finishes — used by the
+        slash commands to put back state they borrowed (e.g. project_dir).
+        """
         self.stream_text = ""
         self.status = " running"
         self.session.cancel_event.clear()
@@ -476,7 +492,7 @@ class Tui:
         seq = self.run_seq
         self.agent_running = True
         worker = threading.Thread(
-            target=self._run_agent, args=(text, seq), daemon=True
+            target=self._run_agent, args=(text, seq, system, restore), daemon=True
         )
         worker.start()
         cancelled = False
@@ -564,14 +580,20 @@ class Tui:
         except (AttributeError, OSError):
             pass
 
-    def _run_agent(self, text: str, seq: int) -> None:
+    def _run_agent(
+        self,
+        text: str,
+        seq: int,
+        system: str | None = None,
+        restore: Callable[[], None] | None = None,
+    ) -> None:
         try:
             self.conversation_history.append(Message(role="user", content=text))
             run_agent_loop(
                 self.session,
                 messages=list(self.conversation_history),
                 top_level=True,
-                system=self.session.system_prompt,
+                system=system or self.session.system_prompt,
             )
             # Only the current run may update shared state; a cancelled
             # worker that finishes late must not clobber the next run.
@@ -589,6 +611,8 @@ class Tui:
                 self.stream_text = ""
             self._history_dirty = True
             self._data_event.set()
+            if restore is not None:
+                restore()
 
     # ------------------------------------------------------------------
     # slash commands
@@ -618,19 +642,106 @@ class Tui:
             self.console.print(f"saved: {path}")
         elif cmd == "/summary":
             self._run_summary()
+        elif cmd in ("/init", "/review", "/explain"):
+            self._run_slash_command(cmd[1:], arg)
         elif cmd == "/clear":
             self.conversation_history = []
             self.session.last_messages = []
             self.console.print("[yellow]Conversation history cleared.[/yellow]")
         elif cmd == "/help":
             self.console.print(
-                "/plan /build /compact /undo /history /save /summary /clear /exit\n"
+                "/plan /build /init /review /explain /compact /undo /history "
+                "/save /summary /clear /exit\n"
+                "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
+                "/review [project] [commit|branch|PR] review code changes\n"
+                "/explain [project] [target]          explain code\n"
                 "Ctrl-C cancels the current execution (app stays open); "
                 "Ctrl-D or /exit quits."
             )
         else:
             self.console.print(f"unknown command: {cmd}")
         return False
+
+    # ------------------------------------------------------------------
+    # command slash commands (/init /review /explain)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _split_args(arg: str) -> list[str]:
+        """Split a slash-command argument string (shell-like quoting)."""
+        try:
+            return shlex.split(arg)
+        except ValueError:
+            return arg.split()
+
+    def _command_args(self, name: str, arg: str) -> tuple[str | None, str | None]:
+        """Parse slash-command args into (project, extra).
+
+        Positional order matches the CLI: [project] then the command's
+        argument (commit/branch/PR for review, target for explain,
+        --extra TEXT for init).  A lone first token that isn't an
+        existing directory is treated as the command's argument instead
+        of a project, so `/review main` reviews the branch `main` of the
+        current project and `/explain client.py` explains `client.py`.
+        """
+        parts = self._split_args(arg)
+        if not parts:
+            return None, None
+        if name == "init":
+            project = None
+            extra = None
+            rest = parts
+            if rest and rest[0] != "--extra":
+                project = rest[0]
+                rest = rest[1:]
+            if rest:
+                if rest[0] != "--extra":
+                    return None, None
+                extra = " ".join(rest[1:]) if len(rest) > 1 else None
+            return project, extra
+        first_is_dir = os.path.isdir(
+            os.path.abspath(os.path.expanduser(parts[0]))
+        )
+        if first_is_dir:
+            return parts[0], " ".join(parts[1:]) or None
+        return None, " ".join(parts)
+
+    def _run_slash_command(self, name: str, arg: str) -> None:
+        """Run a SessionCommand (/init /review /explain) in this session.
+
+        The command's prompt replaces the system prompt for this run
+        only; the output streams into the conversation panel and stays
+        in history, so the user can follow up on the result.  When a
+        different project is given, the session's project dir is
+        borrowed for the run (tool cwd) and restored afterwards.
+        """
+        cmd = find_command(name)
+        if cmd is None:
+            self.console.print(f"[yellow]unknown command: /{name}[/yellow]")
+            return
+        project, extra = self._command_args(name, arg)
+        if name == "explain" and project is None and not extra:
+            self.console.print(
+                "[yellow]/explain needs a target — e.g. /explain client.py "
+                "or /explain the retry logic in client.py[/yellow]"
+            )
+            return
+        if project:
+            project = os.path.abspath(os.path.expanduser(project))
+        cwd, prompt, kickoff = cmd.prepare(
+            project_dir=project or self.session.project_dir, extra=extra
+        )
+        prev_project = self.session.project_dir
+        if cwd != prev_project:
+            self.session.project_dir = cwd
+
+            def _restore() -> None:
+                self.session.project_dir = prev_project
+
+            restore = _restore
+        else:
+            restore = None
+        self.console.print(f"[cyan]/{name}: {kickoff.strip()}[/cyan]")
+        self._start_agent(kickoff, system=prompt, restore=restore)
 
     def _conversation_text(self) -> str:
         msgs = self.session.last_messages or []

@@ -58,6 +58,23 @@ class SessionCommand:
         self.status = status
         self.validate_dir = validate_dir
 
+    def prepare(
+        self,
+        project_dir: str | None = None,
+        extra: str | None = None,
+    ) -> tuple[str, str, str]:
+        """Resolve (cwd, system_prompt, kickoff) without creating a session.
+
+        Shared by the CLI (which builds a fresh session) and the TUI
+        slash commands (which run inside the current session).
+        """
+        cwd = project_dir or _project_root(__import__("os").getcwd())
+        prompt = _substitute(read_prompt_file(self.prompt_file), cwd, extra)
+        kickoff = self.kickoff
+        if "${path}" in kickoff:
+            kickoff = kickoff.replace("${path}", cwd)
+        return cwd, prompt, kickoff
+
     def run(
         self,
         session_factory,
@@ -65,11 +82,7 @@ class SessionCommand:
         extra: str | None = None,
     ) -> None:
         """Run the command: create a session and start the agent loop."""
-        cwd = project_dir or _project_root(__import__("os").getcwd())
-        prompt = _substitute(read_prompt_file(self.prompt_file), cwd, extra)
-        kickoff = self.kickoff
-        if "${path}" in kickoff:
-            kickoff = kickoff.replace("${path}", cwd)
+        cwd, prompt, kickoff = self.prepare(project_dir, extra)
         session = session_factory(
             project_dir=cwd, system_prompt=prompt, kickoff=kickoff
         )
@@ -126,3 +139,15 @@ def load_custom_commands() -> list[SessionCommand]:
             )
         )
     return commands
+
+
+def find_command(name: str) -> SessionCommand | None:
+    """Look up a command by name: builtins (init/review) then custom."""
+    if name == "init":
+        return initialize_command()
+    if name == "review":
+        return review_command()
+    for c in load_custom_commands():
+        if c.name == name:
+            return c
+    return None

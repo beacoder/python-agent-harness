@@ -1,7 +1,10 @@
 """TUI rendering regression tests."""
 
 import io
+import os
+import tempfile
 import unittest
+import unittest.mock as mock
 
 from rich.console import Console
 from rich.live import Live
@@ -389,6 +392,115 @@ class TestTui(unittest.TestCase):
         out2 = buf2.getvalue()
         self.assertIn("parent task", out2)
         self.assertNotIn("sub: find the bug", out2)
+
+    # ------------------------------------------------------------------
+    # slash commands (/init /review /explain)
+    # ------------------------------------------------------------------
+    def test_slash_command_args_parsing(self):
+        """Arg parsing matches the CLI signatures: [project] first, then
+        the command's argument; a lone non-directory token is the
+        argument (so `/review main` reviews the branch, not a project)."""
+        tui, _ = make_tui()
+        self.assertEqual(tui._command_args("init", ""), (None, None))
+        self.assertEqual(tui._command_args("init", "myproj"), ("myproj", None))
+        self.assertEqual(
+            tui._command_args("init", 'myproj --extra "focus CI"'),
+            ("myproj", "focus CI"),
+        )
+        self.assertEqual(
+            tui._command_args("init", "--extra x"), (None, "x")
+        )
+        self.assertEqual(tui._command_args("review", ""), (None, None))
+        self.assertEqual(tui._command_args("review", "main"), (None, "main"))
+        self.assertEqual(tui._command_args("review", "abc123"), (None, "abc123"))
+        self.assertEqual(
+            tui._command_args("explain", "client.py"), (None, "client.py")
+        )
+        self.assertEqual(
+            tui._command_args("explain", "the retry logic"),
+            (None, "the retry logic"),
+        )
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(tui._command_args("review", d), (d, None))
+            self.assertEqual(tui._command_args("explain", d), (d, None))
+            self.assertEqual(
+                tui._command_args("review", f"{d} main"), (d, "main")
+            )
+
+    def test_slash_dispatch_runs_command_in_session(self):
+        """/init, /review and /explain run their SessionCommand in the
+        current session: the command prompt becomes the run's system
+        prompt and the kickoff message is the user text."""
+        tui, _ = make_tui()
+        captured = {}
+
+        def fake_start(text, system=None, restore=None):
+            captured["text"] = text
+            captured["system"] = system
+            captured["restore"] = restore
+
+        with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+            self.assertFalse(tui._handle_slash("/init"))
+            self.assertIn("AGENTS.md", captured["text"])
+            self.assertIn("Create or update", captured["system"])
+
+            tui._handle_slash("/review main")
+            self.assertIn("Review the requested code changes", captured["text"])
+            self.assertIn("code reviewer", captured["system"])
+            self.assertIn("main", captured["system"])  # $ARGUMENTS substituted
+
+            tui._handle_slash("/explain client.py")
+            self.assertIn("instructions", captured["text"])  # custom kickoff
+            self.assertIn("client.py", captured["system"])
+            self.assertIn("explain", captured["system"])
+
+    def test_slash_command_project_borrowed_and_restored(self):
+        """A project given to a slash command borrows the session's
+        project dir for the run (tool cwd) and restores it afterwards."""
+        tui, _ = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            def fake_start(text, system=None, restore=None):
+                self.assertEqual(
+                    tui.session.project_dir, os.path.abspath(d)
+                )
+                restore()  # simulate the run finishing
+
+            with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+                tui._handle_slash(f"/init {d}")
+        self.assertEqual(tui.session.project_dir, "/tmp/fakeproj")
+
+    def test_slash_command_defaults_to_session_project(self):
+        """Without a project the command runs in the session's project."""
+        tui, _ = make_tui()
+        captured = {}
+
+        def fake_start(text, system=None, restore=None):
+            captured["text"] = text
+            captured["restore"] = restore
+
+        with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+            tui._handle_slash("/init")
+        self.assertIn("/tmp/fakeproj", captured["text"])
+        self.assertIsNone(captured["restore"])
+
+    def test_explain_requires_target(self):
+        tui, buf = make_tui()
+        with mock.patch.object(tui, "_start_agent") as start:
+            tui._handle_slash("/explain")
+        start.assert_not_called()
+        self.assertIn("needs a target", buf.getvalue())
+
+    def test_unknown_slash_command(self):
+        tui, buf = make_tui()
+        self.assertFalse(tui._handle_slash("/bogus"))
+        self.assertIn("unknown command", buf.getvalue())
+
+    def test_help_lists_command_slashes(self):
+        tui, buf = make_tui()
+        tui._handle_slash("/help")
+        out = buf.getvalue()
+        for s in ("/init", "/review", "/explain"):
+            self.assertIn(s, out)
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ import sys
 from . import config
 from .client import Client
 from .commands import (
-    SessionCommand, initialize_command, load_custom_commands, review_command,
+    SessionCommand, find_command, load_custom_commands,
 )
 from .harness import AgentSession
 from .models import Message
@@ -126,19 +126,12 @@ def cmd_review(args: argparse.Namespace) -> int:
 
 
 def cmd_custom(args: argparse.Namespace) -> int:
-    cmd = _find_custom(args.command_name)
+    cmd = find_command(args.command_name)
     if cmd is None:
         print(f"unknown custom command: {args.command_name}", file=sys.stderr)
         return 1
     _run_command(cmd, args.project, args.extra, args.config)
     return 0
-
-
-def _find_custom(name: str) -> SessionCommand | None:
-    for c in load_custom_commands():
-        if c.name == name:
-            return c
-    return None
 
 
 def _run_command(
