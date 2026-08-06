@@ -22,7 +22,7 @@ def default_registry() -> Registry:
     reg = Registry()
     for tool in (
         AgentTool(), TodoWrite(), GlobTool(), Grep(), Read(), Insert(),
-        Edit(), Write(), Mkdir(), Bash(), Skill(), Question(), PlanExit(),
+        Edit(), Write(), Mkdir(), Bash(), Skill(), Question(),
     ):
         reg.register(tool)
     return reg
