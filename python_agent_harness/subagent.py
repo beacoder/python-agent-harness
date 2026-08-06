@@ -30,7 +30,8 @@ def run_subagent(
             session=session,
             messages=messages,
             top_level=False,
-            system=session.system_prompt,
+            system=getattr(session, "subagent_system_prompt", None)
+            or session.system_prompt,
             max_rounds=config.SUBAGENT_MAX_ROUNDS,
         )
         if isinstance(result, str):
