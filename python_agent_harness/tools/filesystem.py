@@ -100,6 +100,7 @@ class GlobTool(Tool):
             depth = int(depth)
 
         git_root = _git_root(base)
+        git_err = None
         if git_root:
             rel = os.path.relpath(base, git_root)
             pathspec = pattern if rel == "." else os.path.join(rel, pattern)
