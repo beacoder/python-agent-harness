@@ -62,6 +62,12 @@ class ToolContext:
         if self.session and hasattr(self.session, "invalidate_cache"):
             self.session.invalidate_cache(path)
 
+    def record_diff(self, diff_text: str) -> None:
+        """Attach a unified diff to the currently-executing tool call."""
+        if self.session and hasattr(self.session, "record_diff"):
+            self.session.record_diff(diff_text)
+
+
     def update_todos(self, todos: list[dict]) -> None:
         if self.session and hasattr(self.session, "update_todos"):
             self.session.update_todos(todos)
