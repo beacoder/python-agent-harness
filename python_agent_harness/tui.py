@@ -8,11 +8,15 @@ confirmation).
 
 from __future__ import annotations
 
-import queue
+import os
 import threading
 import time
 from typing import Any
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -22,8 +26,26 @@ from rich.text import Text
 
 from . import config
 from .agent import run_agent_loop
+from .diffrender import render_diff
 from .harness import AgentSession
 from .models import Message
+
+
+def _history_path() -> str:
+    d = config.SESSION_DIR / "python-agent-harness"
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d / "input_history")
+
+
+def _make_key_bindings() -> KeyBindings:
+    """Esc+Enter (or Alt+Enter) submits; plain Enter inserts a newline."""
+    kb = KeyBindings()
+
+    @kb.add("escape", "enter")
+    def _submit(event: Any) -> None:
+        event.current_buffer.validate_and_handle()
+
+    return kb
 
 
 class UiQuestion:
@@ -45,6 +67,11 @@ class Tui:
         self.question: UiQuestion | None = None
         self.agent_running = False
         self.status = " idle"
+        self.prompt_session: PromptSession = PromptSession(
+            history=FileHistory(_history_path()),
+            key_bindings=_make_key_bindings(),
+            multiline=True,
+        )
 
         session.on_delta = self._on_delta
         session.notify_fn = self._on_notify
@@ -121,6 +148,12 @@ class Tui:
             stream = self.stream_text
         rows: list[Any] = []
 
+        calls_by_id: dict[str, Any] = {}
+        for m in self.session.last_messages or []:
+            if m.role == "assistant" and m.tool_calls:
+                for tc in m.tool_calls:
+                    calls_by_id[tc.id] = tc
+
         # compact summary marker
         for m in self.session.last_messages or []:
             if m.role == "system" and m.text().startswith("**[Compacted Summary]**"):
@@ -140,6 +173,9 @@ class Tui:
                 content = m.text()
                 preview = content[:400] + ("…" if len(content) > 400 else "")
                 rows.append(Text(f"🔧 {m.name or 'tool'}: {preview}", style="dim"))
+                call = calls_by_id.get(m.tool_call_id)
+                if call is not None and call.diff:
+                    rows.append(render_diff(call.diff))
 
         if stream:
             rows.append(Markdown(f"**Agent:** {stream}"))
@@ -181,7 +217,8 @@ class Tui:
                 "/summary /help /exit\n"
                 "Ctrl-C cancels the current execution (the app stays open); "
                 "Ctrl-D or /exit quits.\n"
-                "Type a message (finish with an empty line).",
+                "Type a message — Enter for a new line, Esc then Enter "
+                "(or Alt+Enter) to submit. Up/Down recall history.",
                 border_style="blue",
             )
         )
@@ -214,7 +251,8 @@ class Tui:
         if q.options:
             prompt += " [choices: " + ", ".join(q.options) + "]"
         try:
-            answer = input(prompt + " > ")
+            with patch_stdout():
+                answer = self.prompt_session.prompt(prompt + " > ", multiline=False)
         except (EOFError, KeyboardInterrupt):
             answer = ""
         q.answer = answer
@@ -222,25 +260,16 @@ class Tui:
         self.question = None
 
     def _read_multiline(self) -> str | None:
-        self.console.print("[dim]— input —[/dim]")
-        lines: list[str] = []
-        while True:
-            try:
-                line = input("> ")
-            except EOFError:
-                # Ctrl-D: quit
-                return None
-            except KeyboardInterrupt:
-                # Ctrl-C: cancel this input, stay in the app
-                self.console.print("[dim]input cancelled[/dim]")
-                return ""
-            if not line:
-                break
-            lines.append(line)
-        if not lines:
+        try:
+            with patch_stdout():
+                text = self.prompt_session.prompt("> ")
+        except EOFError:
+            # Ctrl-D: quit
+            return None
+        except KeyboardInterrupt:
+            # Ctrl-C: cancel this input, stay in the app
+            self.console.print("[dim]input cancelled[/dim]")
             return ""
-        text = "\n".join(lines)
-        # strip the trailing empty line that separates paragraphs
         return text
 
     def _start_agent(self, text: str) -> None:
