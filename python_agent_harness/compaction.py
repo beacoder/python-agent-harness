@@ -33,15 +33,65 @@ def strip_frontmatter(text: str) -> str:
     return _FRONTMATTER_RE.sub("", text, count=1)
 
 
-def load_agent_prompt(path: "Path | str | None") -> str | None:
+def _parse_skill_frontmatter(skill_file: Path) -> tuple[str, str] | None:
+    """Extract (name, description) from a SKILL.md frontmatter block."""
+    try:
+        text = skill_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = re.match(r"\A---\n(.*?\n)---\n?", text, re.DOTALL)
+    if not m:
+        return None
+    name = desc = ""
+    for line in m.group(1).splitlines():
+        if line.startswith("name:"):
+            name = line[len("name:"):].strip()
+        elif line.startswith("description:"):
+            desc = line[len("description:"):].strip()
+    if name:
+        return (name, desc)
+    return None
+
+
+def discover_skills(skill_dir: "Path | str | None") -> str:
+    """Build a skill listing from a skill directory.
+
+    Looks for subdirectories containing SKILL.md with frontmatter
+    (name/description).  Returns a formatted listing string, or the
+    static fallback if no skills are found.
+    """
+    if not skill_dir:
+        return _SKILLS_FALLBACK
+    d = Path(skill_dir)
+    if not d.is_dir():
+        return _SKILLS_FALLBACK
+    entries: list[tuple[str, str]] = []
+    for child in sorted(d.iterdir()):
+        if not child.is_dir():
+            continue
+        skill_file = child / "SKILL.md"
+        if skill_file.is_file():
+            parsed = _parse_skill_frontmatter(skill_file)
+            if parsed:
+                entries.append(parsed)
+    if not entries:
+        return _SKILLS_FALLBACK
+    lines = ["Available skills (invoke by name):"]
+    for name, desc in entries:
+        lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+    return "\n".join(lines)
+
+
+def load_agent_prompt(path: "Path | str | None", skill_dir: "Path | str | None" = None) -> str | None:
     """Load an opencode-style agent prompt file, or None if unavailable.
 
     Strips the YAML frontmatter header (name/description/tools) since
     that metadata isn't part of the prompt text, and substitutes the
-    ``{{SKILLS}}`` placeholder (no runtime skill listing is generated
-    here) with a short static fallback note.  Missing files, unreadable
-    files, and empty files all resolve to None so callers can fall back
-    cleanly to no system prompt.
+    ``{{SKILLS}}`` placeholder with the discovered skill listing from
+    *skill_dir* (or a static fallback if no skills are found).
+
+    Missing files, unreadable files, and empty files all resolve to None
+    so callers can fall back cleanly to no system prompt.
     """
     if not path:
         return None
@@ -51,7 +101,8 @@ def load_agent_prompt(path: "Path | str | None") -> str | None:
     except OSError:
         return None
     text = strip_frontmatter(text)
-    text = _SKILLS_PLACEHOLDER_RE.sub(_SKILLS_FALLBACK, text)
+    skills_text = discover_skills(skill_dir)
+    text = _SKILLS_PLACEHOLDER_RE.sub(skills_text, text)
     text = text.strip()
     return text or None
 
