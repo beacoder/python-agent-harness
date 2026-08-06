@@ -107,7 +107,39 @@ def load_agent_prompt(path: "Path | str | None", skill_dir: "Path | str | None" 
     return text or None
 
 
-def strip_compact_prefix(text: str) -> str:
+def load_context_files(context_dir: "Path | str | None") -> str | None:
+    """Read all files in *context_dir* and format them as context blocks.
+
+    Returns a string like:
+        Request context:
+
+        In file `~/.emacs.d/contexts/README.md`:
+
+        ```
+        <file contents>
+        ```
+
+    Returns None if no context directory or no readable files.
+    """
+    if not context_dir:
+        return None
+    d = Path(context_dir)
+    if not d.is_dir():
+        return None
+    blocks: list[str] = []
+    for child in sorted(d.iterdir()):
+        if not child.is_file():
+            continue
+        try:
+            content = child.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not content.strip():
+            continue
+        blocks.append(f"In file `{child}`:\n\n```\n{content.rstrip()}\n```")
+    if not blocks:
+        return None
+    return "Request context:\n\n" + "\n\n".join(blocks)
     """Remove an existing compact frame (header + separator), keeping summary."""
     if text.startswith(config.COMPACT_HEADER):
         text = text[len(config.COMPACT_HEADER):]
