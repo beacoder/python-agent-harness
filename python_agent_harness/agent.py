@@ -148,7 +148,7 @@ class AgentLoop:
                 args = {}
         if not isinstance(args, dict):
             args = {}
-        return self.session.execute_tool(call.name, args)
+        return self.session.execute_tool(call.name, args, call_id=call.id)
 
     def _run_tool_round(self) -> None:
         """Execute all pending tool calls; deliver results as messages."""
@@ -161,6 +161,8 @@ class AgentLoop:
         for p in pending:
             result = sanitize_tool_result(self._execute_tool_call(p.call))
             p.call.result = result
+            if hasattr(self.session, "take_diff"):
+                p.call.diff = self.session.take_diff(p.call.id)
             self.messages.append(
                 Message(
                     role="tool",
