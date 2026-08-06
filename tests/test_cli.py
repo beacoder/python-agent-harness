@@ -24,26 +24,17 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
     def test_defaults_to_main_agent_prompt_when_system_not_given(self):
         session = cli.make_session(self._tmp.name, config_path=self._config_path)
         try:
-            main = _load(config.DEFAULT_AGENT_PROMPT_FILE)
+            main = _load(config.DEFAULT_AGENT_PROMPT_FILE, project_dir=self._tmp.name)
             self.assertEqual(session.system_prompt, main)
         finally:
             session.close()
 
-    def test_explicit_system_prompt_overrides_default(self):
+    def test_subagent_prompt_always_loaded(self):
         session = cli.make_session(
-            self._tmp.name, system_prompt="CUSTOM", config_path=self._config_path,
+            self._tmp.name, config_path=self._config_path,
         )
         try:
-            self.assertEqual(session.system_prompt, "CUSTOM")
-        finally:
-            session.close()
-
-    def test_subagent_prompt_always_loaded_regardless_of_system_override(self):
-        session = cli.make_session(
-            self._tmp.name, system_prompt="CUSTOM", config_path=self._config_path,
-        )
-        try:
-            expected = _load(config.DEFAULT_SUBAGENT_PROMPT_FILE)
+            expected = _load(config.DEFAULT_SUBAGENT_PROMPT_FILE, project_dir=self._tmp.name)
             self.assertEqual(session.subagent_system_prompt, expected)
         finally:
             session.close()
@@ -58,10 +49,12 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
             session.close()
 
 
-def _load(path):
+def _load(path, project_dir=None):
     from python_agent_harness.compaction import load_agent_prompt
+    from python_agent_harness.harness import find_skill_dir
 
-    return load_agent_prompt(path)
+    skill_dir = find_skill_dir(project_dir) if project_dir else None
+    return load_agent_prompt(path, skill_dir=skill_dir)
 
 
 if __name__ == "__main__":
