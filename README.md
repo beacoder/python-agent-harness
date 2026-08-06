@@ -18,6 +18,10 @@ persistence, and a rich TUI.
 - **Tools** — Agent (sub-agents), TodoWrite, Glob (git-aware), Grep
   (rg → git → grep), Read, Insert, Edit (incl. unified diffs), Write, Mkdir,
   Bash, Skill, Question, PlanExit — all OpenAI-compatible tool schemas.
+- **Default agent prompts** — the main agent and sub-agents each get a
+  distinct default system prompt bundled with the package
+  (`prompts/agent.txt`, `prompts/subagent.txt`), with YAML frontmatter
+  stripped. Override the main prompt per-run with `run --system`.
 - **Tool cache** — per-file mtime / per-directory TTL validity, write-through
   invalidation on edits, and per-epoch deduplication
   (`[Cached: Read ... — same as earlier call, see above]`).
