@@ -1,9 +1,6 @@
 # python-agent-harness
 
-A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gptel-agent-harness):
-an agent execution harness with completion supervision, context compaction,
-tool-result caching, plan/build modes, layered bash safety, session
-persistence, and a rich TUI.
+A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gptel-agent-harness): a minimal-dependency coding agent designed for daily use and easy customization.
 
 ## Features
 
