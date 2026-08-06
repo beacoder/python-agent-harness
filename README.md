@@ -47,7 +47,7 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
 ```sh
 python -m venv venv
 venv/bin/pip install rich httpx prompt_toolkit
-venv/bin/pip install -e .
+venv/bin/pip install -e python-agent-harness
 ```
 
 ## Configuration

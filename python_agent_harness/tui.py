@@ -9,6 +9,7 @@ confirmation).
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -30,6 +31,23 @@ from .agent import run_agent_loop
 from .diffrender import render_diff
 from .harness import AgentSession
 from .models import Message
+
+SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
+def _tail_lines(text: str, n: int) -> str:
+    """Keep the last N lines of TEXT, marking the cut with an ellipsis."""
+    lines = text.splitlines()
+    if len(lines) <= n:
+        return text
+    return "…\n" + "\n".join(lines[-n:])
+
+
+def _tail_chars(text: str, n: int) -> str:
+    """Keep the last N chars of TEXT, marking the cut with an ellipsis."""
+    if len(text) <= n:
+        return text
+    return "…" + text[-n:]
 
 
 def _history_path() -> str:
@@ -68,7 +86,11 @@ class Tui:
         self.question: UiQuestion | None = None
         self.agent_running = False
         self.status = " idle"
+        self.run_seq = 0
         self.conversation_history: list[Message] = []
+        self._data_event = threading.Event()
+        self._history_cache: list[Any] | None = None
+        self._history_dirty = True
         self.prompt_session: PromptSession = PromptSession(
             history=FileHistory(_history_path()),
             key_bindings=_make_key_bindings(),
@@ -88,16 +110,25 @@ class Tui:
     def _on_delta(self, text: str) -> None:
         with self.lock:
             self.stream_text += text
+            # bound the buffer so every frame's tail-slicing is
+            # constant-time, no matter how long the generation runs
+            if len(self.stream_text) > 100_000:
+                self.stream_text = self.stream_text[-100_000:]
+        # wake the render loop immediately: streaming text pushes the
+        # display without waiting for the next fixed tick
+        self._data_event.set()
 
     def _on_notify(self, kind: str) -> None:
         if kind == "tools":
             self.status = " running tools"
         elif kind == "compact":
             self.status = " compacted"
+            self._history_dirty = True
         elif kind == "error":
             self.status = " error"
         else:
             self.status = " running"
+        self._data_event.set()
 
     def _on_log(self, msg: str) -> None:
         self.status = f" {msg[:60]}"
@@ -143,29 +174,25 @@ class Tui:
     # ------------------------------------------------------------------
     # rendering
     # ------------------------------------------------------------------
-    def _render_conversation(self) -> Panel:
-        from rich.console import Group
-
-        with self.lock:
-            stream = self.stream_text
+    def _build_history_rows(self) -> list[Any]:
+        """Rows for the stored conversation (messages + todos). No stream."""
         rows: list[Any] = []
-
         calls_by_id: dict[str, Any] = {}
         for m in self.session.last_messages or []:
             if m.role == "assistant" and m.tool_calls:
                 for tc in m.tool_calls:
                     calls_by_id[tc.id] = tc
 
-        # compact summary marker
         for m in self.session.last_messages or []:
             if m.role == "system" and m.text().startswith("**[Compacted Summary]**"):
-                rows.append(Text("📦 " + m.text()[:200], style="dim italic"))
+                rows.append(Text("📦 " + _tail_chars(m.text(), 200), style="dim italic"))
                 continue
             if m.role == "user":
-                if m.text().strip():
-                    rows.append(Markdown(f"**You:** {m.text()}"))
+                body = _tail_lines(m.text(), 12)
+                if body.strip():
+                    rows.append(Markdown(f"**user:** {body}"))
             elif m.role == "assistant":
-                body = m.text()
+                body = _tail_lines(m.text(), 12)
                 if m.tool_calls:
                     for tc in m.tool_calls:
                         args = tc.arguments
@@ -181,18 +208,15 @@ class Tui:
                             params = ""
                         label = f"🤖 {tc.name}({params})" if params else f"🤖 {tc.name}"
                         rows.append(Text(label, style="cyan"))
-                if body:
-                    rows.append(Markdown(f"**Agent:** {body}"))
+                if body.strip():
+                    rows.append(Markdown(f"**assistant:** {body}"))
             elif m.role == "tool":
                 content = m.text()
                 preview = content[:400] + ("…" if len(content) > 400 else "")
-                rows.append(Text(f"🔧 {m.name or 'tool'}: {preview}", style="dim"))
+                rows.append(Text(f"tool: {m.name or 'tool'}: {preview}", style="dim"))
                 call = calls_by_id.get(m.tool_call_id)
                 if call is not None and call.diff:
                     rows.append(render_diff(call.diff))
-
-        if stream:
-            rows.append(Markdown(f"**Agent:** {stream}"))
 
         if self.session.todos:
             t = Table.grid(padding=(0, 1))
@@ -201,9 +225,95 @@ class Tui:
                 mark = {"completed": "✅", "in_progress": "⏳", "pending": "⬜"}.get(status, "•")
                 t.add_row(mark, todo.get("content", ""))
             rows.append(Panel(t, title="Todos", border_style="blue", expand=False))
+        return rows
 
+    def _history_rows(self) -> list[Any]:
+        """Cached history rows; rebuilt only when the conversation changes.
+
+        During streaming only the stream row changes, so we must NOT
+        rebuild (and re-parse Markdown for) the whole conversation every
+        frame — that cost is what made the scroll lag behind the text.
+        """
+        if self._history_dirty or self._history_cache is None:
+            self._history_cache = self._build_history_rows()
+            self._history_dirty = False
+        return list(self._history_cache)
+
+    def _stream_row(self) -> Text | None:
+        """Live stream row (cheap Text, tail-capped)."""
+        with self.lock:
+            stream = self.stream_text
+        if not stream:
+            return None
+        cap = self._visible_row_cap()
+        width = getattr(self.console, "width", None) or 80
+        lines = max(3, cap - 3)
+        preview = _tail_lines(stream, lines)
+        preview = _tail_chars(preview, lines * max(1, width))
+        return Text(f"assistant: {preview}")
+
+    def _render_conversation(self) -> Panel:
+        from rich.console import Group
+
+        rows = self._history_rows()
+        stream_row = self._stream_row()
+        if stream_row is not None:
+            rows.append(stream_row)
+        rows = self._apply_budget(rows)
         group = Group(*rows) if rows else Text("(empty)")
         return Panel(group, title="python-agent-harness", border_style="green")
+
+    def _apply_budget(self, rows: list[Any]) -> list[Any]:
+        """Keep the NEWEST rows that fit the visible terminal area.
+
+        rich's Live crops a too-tall frame from the bottom, which would
+        hide exactly the rows that matter (the latest progress), so we
+        drop old rows first and keep the newest content on screen.
+        """
+        width = getattr(self.console, "width", None) or 80
+        budget = self._visible_row_cap()
+        kept: list[Any] = []
+        for row in reversed(rows):
+            est = self._est_lines(row, width)
+            if budget - est < 0:
+                continue  # older rows are dropped once the budget is spent
+            kept.append(row)
+            budget -= est
+        return kept[::-1]
+
+    def _visible_row_cap(self) -> int:
+        """Max conversation rows that fit the visible terminal area.
+
+        Uses the live terminal height when known (rich reports None for
+        non-terminals, e.g. tests), reserving lines for the status bar,
+        the panel borders and the input prompt.
+        """
+        height = getattr(self.console, "height", None)
+        if not height or height <= 0:
+            return 60
+        return max(5, height - 6)
+
+    @staticmethod
+    def _est_lines(row: Any, width: int) -> int:
+        """Rough wrapped-line estimate for a row (used for the budget)."""
+        if isinstance(row, Text):
+            return max(1, math.ceil(len(row.plain) / max(1, width)))
+        if isinstance(row, Markdown):
+            return max(1, math.ceil(len(row.markup) / max(1, width)))
+        if isinstance(row, Panel):
+            inner = getattr(row.renderable, "renderables", None)
+            return 3 + (len(inner) if isinstance(inner, (list, tuple)) else 1)
+        return 1
+
+    def _render_frame(self) -> Group:
+        """Full frame: status bar pinned on top, conversation below.
+
+        The status bar is placed FIRST so a tall conversation panel can
+        never push it off the bottom of the terminal.
+        """
+        from rich.console import Group
+
+        return Group(self._status_bar(), self._render_conversation())
 
     def _status_bar(self) -> Text:
         mode = self.session.plan_mode.mode.value
@@ -217,6 +327,11 @@ class Tui:
         t = Text()
         t.append(f" [{mode.upper()}]", style=mode_style)
         t.append(ctx)
+        if self.agent_running:
+            frame = SPINNER_FRAMES[int(time.time() * 10) % len(SPINNER_FRAMES)]
+            t.append(f" {frame}", style="bold cyan")
+        elif self.question is not None:
+            t.append(" ❓", style="yellow")
         t.append(f"{self.status}", style="dim")
         return t
 
@@ -243,6 +358,8 @@ class Tui:
                 if self.question is not None:
                     self._ask_question_blocking()
                     continue
+                self.console.print(self._status_bar())
+                self._flush()
                 text = self._read_multiline()
                 if text is None:
                     break
@@ -261,8 +378,9 @@ class Tui:
 
     def _ask_question_blocking(self) -> None:
         q = self.question
-        self.console.print(self._render_conversation())
+        self.console.print(self._render_frame())
         self.console.print()
+        self._flush()
         prompt = q.prompt
         if q.options:
             prompt += " [choices: " + ", ".join(q.options) + "]"
@@ -274,6 +392,7 @@ class Tui:
         q.answer = answer
         q.event.set()
         self.question = None
+        self._data_event.set()  # re-render promptly after the answer
 
     def _read_multiline(self) -> str | None:
         try:
@@ -292,39 +411,101 @@ class Tui:
         self.stream_text = ""
         self.status = " running"
         self.session.cancel_event.clear()
+        self._data_event.clear()
+        self._history_dirty = True
+        self.run_seq += 1
+        seq = self.run_seq
         self.agent_running = True
-        worker = threading.Thread(target=self._run_agent, args=(text,), daemon=True)
+        worker = threading.Thread(
+            target=self._run_agent, args=(text, seq), daemon=True
+        )
         worker.start()
         cancelled = False
         try:
-            with Live(
-                self._render_conversation(),
-                console=self.console,
-                refresh_per_second=10,
-                screen=False,
-            ) as live:
-                while worker.is_alive():
-                    if self.question is not None:
-                        live.stop()
-                        self._ask_question_blocking()
-                        live.start()
-                    live.update(self._render_conversation())
-                    time.sleep(0.05)
-                live.update(self._render_conversation())
+            if self.console.is_dumb_terminal:
+                cancelled = self._run_dumb(worker)
+            else:
+                cancelled = self._run_live(worker)
         except KeyboardInterrupt:
-            # Ctrl-C during execution: stop the run, keep the app open
+            # Ctrl-C during execution: cancel the run, keep the app open.
+            # The worker is a daemon and cancel-aware; don't join it — a
+            # hung HTTP read may take a while, and the UI must return to
+            # the input prompt immediately.
             cancelled = True
             self.session.cancel()
-            worker.join(timeout=5)
             self.console.print(
                 "\n[dim]execution cancelled — add more messages or /exit[/dim]"
             )
+            self._flush()
         finally:
             self.agent_running = False
             if not cancelled:
                 self.console.print()
+                self._flush()
 
-    def _run_agent(self, text: str) -> None:
+    def _run_live(self, worker: threading.Thread) -> bool:
+        """Live-based display (real terminal). Returns True if cancelled.
+
+        Event-driven: the render loop blocks on `_data_event` and wakes
+        the moment new stream text arrives, so the text pushes the
+        scroll immediately instead of waiting for a fixed tick.  The
+        short timeout keeps the spinner animating between data bursts.
+        """
+        with Live(
+            self._render_frame(),
+            console=self.console,
+            refresh_per_second=30,
+            screen=False,
+        ) as live:
+            while worker.is_alive():
+                if self.question is not None:
+                    live.stop()
+                    self._ask_question_blocking()
+                    live.start()
+                    continue
+                self._data_event.wait(timeout=0.1)
+                self._data_event.clear()
+                live.update(self._render_frame())
+                self._flush()
+            live.update(self._render_frame())
+            self._flush()
+        return False
+
+    def _run_dumb(self, worker: threading.Thread) -> bool:
+        """Dumb-terminal fallback: print each frame as a normal line.
+
+        rich's Live intentionally renders nothing on dumb terminals
+        (TERM unset/"dumb"), so without this the status bar and spinner
+        would never appear there.  Same event-driven wakeup as `_run_live`.
+        """
+        self.console.print(self._render_frame())
+        self._flush()
+        while worker.is_alive():
+            if self.question is not None:
+                self._ask_question_blocking()
+                continue
+            self._data_event.wait(timeout=0.1)
+            self._data_event.clear()
+            self.console.print(self._render_frame())
+            self._flush()
+        self.console.print(self._render_frame())
+        self._flush()
+        return False
+
+    def _flush(self) -> None:
+        """Force stdout through so Live frames render in real time.
+
+        rich's Live does not flush after each refresh, and tty stdout is
+        line-buffered — without this the status bar/spinner would sit in
+        the stdio buffer and only appear once the run ends (or the 8KB
+        buffer fills).
+        """
+        try:
+            self.console.file.flush()
+        except (AttributeError, OSError):
+            pass
+
+    def _run_agent(self, text: str, seq: int) -> None:
         try:
             self.conversation_history.append(Message(role="user", content=text))
             run_agent_loop(
@@ -333,12 +514,17 @@ class Tui:
                 top_level=True,
                 system=self.session.system_prompt,
             )
-            if self.session.last_messages:
+            # Only the current run may update shared state; a cancelled
+            # worker that finishes late must not clobber the next run.
+            if seq == self.run_seq and self.session.last_messages:
                 self.conversation_history = list(self.session.last_messages)
         except Exception as e:  # noqa: BLE001
-            self._on_log(f"agent error: {e}")
+            if seq == self.run_seq:
+                self._on_log(f"agent error: {e}")
         finally:
-            self.agent_running = False
+            # the run is done: history changed, refresh the display
+            self._history_dirty = True
+            self._data_event.set()
 
     # ------------------------------------------------------------------
     # slash commands

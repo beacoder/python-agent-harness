@@ -119,25 +119,25 @@ class Client:
         self.timeout = timeout
         self.verify = verify if verify is not None else _resolve_ca_bundle()
         self._http = httpx.Client(timeout=timeout, verify=self.verify)
-        self._active_response = None  # set while a stream is being read
         self.log_path: Path | None = _llm_log_path() if config.LLM_LOG_ENABLED else None
 
     def close(self) -> None:
         self._http.close()
 
     def abort(self) -> None:
-        """Abort the in-flight streaming request (called on cancel).
+        """Abort the in-flight request (called on cancel).
 
-        Closes the active response so the blocking read in the worker
-        thread raises immediately; the caller turns that into a clean
-        cancellation instead of an error.
+        Closing just the response object does NOT interrupt a blocked
+        ``iter_lines()`` read, so the whole connection pool is closed
+        instead — that unblocks the worker thread's read immediately —
+        and a fresh client is swapped in for the next request.
         """
-        resp = self._active_response
-        if resp is not None:
-            try:
-                resp.close()
-            except Exception:  # noqa: BLE001 - best effort
-                pass
+        old = self._http
+        self._http = httpx.Client(timeout=self.timeout, verify=self.verify)
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001 - best effort
+            pass
 
     # -- request plumbing -------------------------------------------------
     def _headers(self) -> dict[str, str]:
@@ -210,53 +210,49 @@ class Client:
             with self._http.stream(
                 "POST", self._url(), headers=self._headers(), json=payload
             ) as resp:
-                self._active_response = resp
-                try:
-                    if resp.status_code >= 400:
-                        body = resp.read().decode("utf-8", "replace")
-                        raise ApiError(
-                            f"API error {resp.status_code}: {body[:500]}"
+                if resp.status_code >= 400:
+                    body = resp.read().decode("utf-8", "replace")
+                    raise ApiError(
+                        f"API error {resp.status_code}: {body[:500]}"
+                    )
+                for chunk in _iter_sse(resp.iter_lines()):
+                    if not chunk:
+                        continue
+                    if chunk == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(chunk)
+                    except json.JSONDecodeError:
+                        continue
+                    if data.get("usage"):
+                        u = data["usage"]
+                        usage.input_tokens = int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
+                        usage.output_tokens = int(u.get("completion_tokens") or u.get("output_tokens") or 0)
+                    choices = data.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    if isinstance(delta.get("content"), str) and delta["content"]:
+                        content_parts.append(delta["content"])
+                        if on_delta:
+                            on_delta(delta["content"])
+                    if delta.get("reasoning_content"):
+                        content_parts.append(delta["reasoning_content"])
+                        if on_delta:
+                            on_delta(delta["reasoning_content"])
+                    for tc in delta.get("tool_calls") or []:
+                        idx = tc.get("index", 0)
+                        entry = tc_index.setdefault(
+                            idx,
+                            {"id": "", "name": "", "arguments": ""},
                         )
-                    for chunk in _iter_sse(resp.iter_lines()):
-                        if not chunk:
-                            continue
-                        if chunk == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(chunk)
-                        except json.JSONDecodeError:
-                            continue
-                        if data.get("usage"):
-                            u = data["usage"]
-                            usage.input_tokens = int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
-                            usage.output_tokens = int(u.get("completion_tokens") or u.get("output_tokens") or 0)
-                        choices = data.get("choices") or []
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta") or {}
-                        if isinstance(delta.get("content"), str) and delta["content"]:
-                            content_parts.append(delta["content"])
-                            if on_delta:
-                                on_delta(delta["content"])
-                        if delta.get("reasoning_content"):
-                            content_parts.append(delta["reasoning_content"])
-                            if on_delta:
-                                on_delta(delta["reasoning_content"])
-                        for tc in delta.get("tool_calls") or []:
-                            idx = tc.get("index", 0)
-                            entry = tc_index.setdefault(
-                                idx,
-                                {"id": "", "name": "", "arguments": ""},
-                            )
-                            fn = tc.get("function") or {}
-                            entry["id"] += tc.get("id") or ""
-                            entry["name"] += fn.get("name") or ""
-                            frag = fn.get("arguments") or ""
-                            entry["arguments"] += frag
-                            if on_tool_call and frag:
-                                on_tool_call(entry["name"], entry["id"], frag)
-                finally:
-                    self._active_response = None
+                        fn = tc.get("function") or {}
+                        entry["id"] += tc.get("id") or ""
+                        entry["name"] += fn.get("name") or ""
+                        frag = fn.get("arguments") or ""
+                        entry["arguments"] += frag
+                        if on_tool_call and frag:
+                            on_tool_call(entry["name"], entry["id"], frag)
         except httpx.HTTPError as e:
             raise ApiError(f"network error: {e}") from e
 

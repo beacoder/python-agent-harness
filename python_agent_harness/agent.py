@@ -187,7 +187,9 @@ class AgentLoop:
         try:
             return self._run(rounds)
         finally:
-            session.last_messages = list(self.messages)
+            # A cancelled run must not clobber state for the next run.
+            if not session.cancel_event.is_set():
+                session.last_messages = list(self.messages)
 
     def _run(self, rounds: int) -> str | None:
         session = self.session
@@ -202,6 +204,12 @@ class AgentLoop:
                 if self.compact():
                     continue
 
+            cancel = session.cancel_event
+
+            def safe_delta(text: str) -> None:
+                if not cancel.is_set() and session.on_delta is not None:
+                    session.on_delta(text)
+
             try:
                 assistant, usage = session.client.chat(
                     self.messages,
@@ -210,7 +218,7 @@ class AgentLoop:
                     temperature=session.temperature,
                     max_tokens=session.max_tokens,
                     reasoning_effort=session.reasoning_effort,
-                    on_delta=session.on_delta,
+                    on_delta=safe_delta,
                 )
             except Exception as e:  # noqa: BLE001 - API errors become ERRS
                 if session.cancel_event.is_set():
@@ -218,6 +226,9 @@ class AgentLoop:
                 self.info.error = f"Error: {e}"
                 session.notify("error")
                 break
+
+            if session.cancel_event.is_set():
+                return None  # response arrived after cancel: drop it
 
             session.calibrator.update(usage.input_tokens)
             session.remember_user_text(self.messages)
