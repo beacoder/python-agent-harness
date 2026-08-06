@@ -76,9 +76,13 @@ def discover_skills(skill_dir: "Path | str | None") -> str:
                 entries.append(parsed)
     if not entries:
         return _SKILLS_FALLBACK
-    lines = ["Available skills (invoke by name):"]
+    lines = ["<available-skills>"]
     for name, desc in entries:
-        lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+        lines.append(f"  <skill>")
+        lines.append(f"    <name>{name}</name>")
+        lines.append(f"    <description>{desc}</description>")
+        lines.append(f"  </skill>")
+    lines.append("</available-skills>")
     return "\n".join(lines)
 
 
