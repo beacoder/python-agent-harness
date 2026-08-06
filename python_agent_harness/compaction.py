@@ -8,6 +8,7 @@ cache epoch, and resume with the last user request.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from . import config
@@ -17,6 +18,42 @@ def read_prompt_file(name: str) -> str:
     """Read a prompt file from the package prompts dir."""
     path = Path(__file__).parent / "prompts" / name
     return path.read_text(encoding="utf-8")
+
+
+_FRONTMATTER_RE = re.compile(r"\A---\n.*?\n---\n?", re.DOTALL)
+_SKILLS_PLACEHOLDER_RE = re.compile(r"\{\{\s*SKILLS\s*\}\}")
+_SKILLS_FALLBACK = (
+    "Invoke with a skill name and optional args; the tool reports an "
+    "error if no matching skill is found."
+)
+
+
+def strip_frontmatter(text: str) -> str:
+    """Strip a leading YAML frontmatter block (--- ... ---) if present."""
+    return _FRONTMATTER_RE.sub("", text, count=1)
+
+
+def load_agent_prompt(path: "Path | str | None") -> str | None:
+    """Load an opencode-style agent prompt file, or None if unavailable.
+
+    Strips the YAML frontmatter header (name/description/tools) since
+    that metadata isn't part of the prompt text, and substitutes the
+    ``{{SKILLS}}`` placeholder (no runtime skill listing is generated
+    here) with a short static fallback note.  Missing files, unreadable
+    files, and empty files all resolve to None so callers can fall back
+    cleanly to no system prompt.
+    """
+    if not path:
+        return None
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    text = strip_frontmatter(text)
+    text = _SKILLS_PLACEHOLDER_RE.sub(_SKILLS_FALLBACK, text)
+    text = text.strip()
+    return text or None
 
 
 def strip_compact_prefix(text: str) -> str:
