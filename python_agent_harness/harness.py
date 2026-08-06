@@ -26,6 +26,17 @@ from .tools import Registry, ToolContext
 from .undo import UndoStack
 
 
+def find_skill_dir(project_dir: str) -> str | None:
+    """Locate the skill directory (first match wins)."""
+    for cand in (
+        os.path.join(os.path.expanduser("~"), ".emacs.d", "skills"),
+        os.path.join(project_dir, "skills"),
+    ):
+        if os.path.isdir(cand):
+            return cand
+    return None
+
+
 class AgentSession:
     """One interactive agent session (a "buffer" in elisp terms)."""
 
@@ -295,12 +306,7 @@ class AgentSession:
         return None
 
     def _find_skill_dir(self) -> str | None:
-        for cand in (
-            os.path.join(os.path.expanduser("~"), ".emacs.d", "skills"),
-            os.path.join(self.project_dir, "skills"),
-        ):
-            if os.path.isdir(cand):
-                return cand
+        return find_skill_dir(self.project_dir)
         return None
 
     def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str:
