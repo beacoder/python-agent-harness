@@ -65,6 +65,38 @@ class TestTui(unittest.TestCase):
         ):
             pass
 
+    def test_diff_rendered_for_edit_tool_call(self):
+        """A ToolCall.diff on an Edit/Write call is rendered in the panel."""
+        tui, buf = make_tui()
+        diff_text = (
+            "--- a/f.py\n+++ b/f.py\n@@ -1,2 +1,2 @@\n"
+            " line1\n-old line\n+new line\n"
+        )
+        tui.session.last_messages = [
+            Message(role="user", content="edit the file"),
+            Message(
+                role="assistant", content="",
+                tool_calls=[ToolCall(id="e1", name="Edit", arguments="{}", diff=diff_text)],
+            ),
+            Message(
+                role="tool", content="Successfully replaced text in f.py",
+                tool_call_id="e1", name="Edit",
+            ),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("old line", out)
+        self.assertIn("new line", out)
+        self.assertIn("@@", out)
+
+    def test_no_diff_panel_when_diff_absent(self):
+        """Tool calls without a diff (e.g. Read) render no diff block."""
+        tui, buf = make_tui()
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertNotIn("@@", out)
+        self.assertNotIn("no changes", out)
+
 
 if __name__ == "__main__":
     unittest.main()
