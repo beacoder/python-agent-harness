@@ -150,6 +150,14 @@ SUBAGENT_MAX_ROUNDS = 40
 SUBAGENT_BACKEND: str | None = None  # None = inherit main agent
 SUBAGENT_MODEL: str | None = None
 
+# ---- default agent prompts -----------------------------------------------------
+# Ported system prompts (opencode-style) for the main agent and sub-agents,
+# bundled with the package (prompts/agent.txt, prompts/subagent.txt).
+# Missing files are tolerated: callers fall back to no system prompt.
+PROMPTS_DIR = Path(__file__).parent / "prompts"
+DEFAULT_AGENT_PROMPT_FILE = PROMPTS_DIR / "agent.txt"
+DEFAULT_SUBAGENT_PROMPT_FILE = PROMPTS_DIR / "subagent.txt"
+
 # ---- configuration file ---------------------------------------------------------
 CONFIG_DIR = Path(
     os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
