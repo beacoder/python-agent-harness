@@ -39,7 +39,13 @@ def make_session(
     config_path: str | None = None,
     model: str | None = None,
 ) -> AgentSession:
-    """Create an AgentSession from config file + env (no env required)."""
+    """Create an AgentSession from config file + env (no env required).
+
+    When SYSTEM_PROMPT is not given, defaults to the ported main-agent
+    prompt (config.DEFAULT_AGENT_PROMPT_FILE); the sub-agent prompt
+    always defaults to config.DEFAULT_SUBAGENT_PROMPT_FILE.  Either
+    default falls back to no system prompt if its file is unavailable.
+    """
     settings = config.load_llm_config(config_path)
     model = model or settings["model"]
     client = Client(
@@ -48,12 +54,18 @@ def make_session(
         model=model,
         timeout=settings["timeout"],
     )
+    from .compaction import load_agent_prompt
+
+    if system_prompt is None:
+        system_prompt = load_agent_prompt(config.DEFAULT_AGENT_PROMPT_FILE)
+    subagent_system_prompt = load_agent_prompt(config.DEFAULT_SUBAGENT_PROMPT_FILE)
     return AgentSession(
         project_dir=os.path.abspath(project_dir),
         client=client,
         model=model,
         backend=settings["backend"],
         system_prompt=system_prompt,
+        subagent_system_prompt=subagent_system_prompt,
         temperature=settings["temperature"],
         max_tokens=settings["max_tokens"],
         reasoning_effort=settings["reasoning_effort"],
