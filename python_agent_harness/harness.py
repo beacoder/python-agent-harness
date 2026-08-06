@@ -356,7 +356,6 @@ class AgentSession:
 
     def _find_skill_dir(self) -> str | None:
         return find_skill_dir(self.project_dir)
-        return None
 
     def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str:
         """Run a delegated sub-agent task with an isolated todos scope.
@@ -421,8 +420,14 @@ class AgentSession:
     # session persistence hooks
     # ------------------------------------------------------------------
     def remember_user_text(self, messages: list) -> None:
+        """Remember the last real user message for session-title generation.
+
+        Skips harness-injected nudges so a title is never generated from
+        "Review the original user request and the Task Completion Rules…".
+        """
+        nudge = config.NUDGE_MESSAGE
         for m in reversed(messages):
-            if m.role == "user":
+            if m.role == "user" and m.text() != nudge:
                 self.store.remember_first_user_message(m.text())
                 break
 

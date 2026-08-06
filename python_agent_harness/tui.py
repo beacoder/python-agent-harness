@@ -597,7 +597,11 @@ class Tui:
             )
             # Only the current run may update shared state; a cancelled
             # worker that finishes late must not clobber the next run.
-            if seq == self.run_seq and self.session.last_messages:
+            if (
+                seq == self.run_seq
+                and not self.session.cancel_event.is_set()
+                and self.session.last_messages
+            ):
                 self.conversation_history = list(self.session.last_messages)
         except Exception as e:  # noqa: BLE001
             if seq == self.run_seq:

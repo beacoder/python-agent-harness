@@ -172,7 +172,12 @@ class AgentLoop:
                     name=p.call.name,
                 )
             )
-            self.session.last_messages = list(self.messages)
+            if self.top_level:
+                # only the top-level loop mirrors its messages onto the
+                # shared session: a sub-agent runs inside the parent's
+                # tool round and must never clobber the parent's
+                # conversation history (the TUI renders from it)
+                self.session.last_messages = list(self.messages)
         self.info.pending = []
         self.session.notify("tools")
 
@@ -187,8 +192,9 @@ class AgentLoop:
         try:
             return self._run(rounds)
         finally:
-            # A cancelled run must not clobber state for the next run.
-            if not session.cancel_event.is_set():
+            # A cancelled run must not clobber state for the next run,
+            # and a sub-agent must never overwrite the parent's history.
+            if not session.cancel_event.is_set() and self.top_level:
                 session.last_messages = list(self.messages)
 
     def _run(self, rounds: int) -> str | None:
@@ -218,7 +224,9 @@ class AgentLoop:
                     temperature=session.temperature,
                     max_tokens=session.max_tokens,
                     reasoning_effort=session.reasoning_effort,
-                    on_delta=safe_delta,
+                    # sub-agents must not stream into the parent's live
+                    # stream row — their text is private until returned
+                    on_delta=(safe_delta if self.top_level else None),
                 )
             except Exception as e:  # noqa: BLE001 - API errors become ERRS
                 if session.cancel_event.is_set():
@@ -234,12 +242,13 @@ class AgentLoop:
             # (text and/or tool calls) so later turns and the UI see it
             if assistant.text().strip() or assistant.tool_calls:
                 self.messages.append(assistant)
-                if not assistant.tool_calls:
+                if not assistant.tool_calls and self.top_level:
                     session.last_messages = list(self.messages)
 
             session.calibrator.update(usage.input_tokens)
-            session.remember_user_text(self.messages)
-            session.auto_save(self.messages, self.system)
+            if self.top_level:
+                session.remember_user_text(self.messages)
+                session.auto_save(self.messages, self.system)
 
             if assistant.tool_calls:
                 self.info.pending = [

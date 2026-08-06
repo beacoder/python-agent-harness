@@ -21,11 +21,10 @@ def run_subagent(
     session = parent_session
     try:
         messages = [Message(role="user", content=prompt)]
-        if session.plan_mode.is_plan:
-            messages.insert(
-                0,
-                Message(role="user", content=session.plan_mode.plan_reminder()),
-            )
+        # NOTE: the plan-mode read-only reminder is injected by the agent
+        # loop itself (`AgentLoop._inject_pending_prompts`, once per
+        # sub-agent FSM) — do NOT insert it here as well, or it appears
+        # twice in the request.
         result = run_agent_loop(
             session=session,
             messages=messages,
