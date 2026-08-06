@@ -144,6 +144,54 @@ def load_context_files(context_dir: "Path | str | None") -> str | None:
     if not blocks:
         return None
     return "Request context:\n\n" + "\n\n".join(blocks)
+
+
+def load_task_completion_rules() -> str | None:
+    """Load ``prompts/task-completion-rules.txt``, or None if unavailable.
+
+    These rules are injected automatically into every agent system
+    prompt (main agent, sub-agents, and session commands), so the model
+    never stops before the task is fully completed and verified.
+    """
+    p = Path(__file__).parent / "prompts" / "task-completion-rules.txt"
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    text = text.strip()
+    return text or None
+
+
+def assemble_agent_prompt(
+    project_dir: str,
+    agent_prompt: str | None,
+    include_context: bool = True,
+) -> str | None:
+    """Assemble the effective system prompt for an agent run.
+
+    Order: [project context files] -> task-completion-rules.txt ->
+    the actual agent prompt.  The completion rules are always the LAST
+    context piece, immediately before the agent prompt, so they read as
+    global ground rules rather than part of the task instructions.
+
+    ``include_context=False`` drops the project context files (used for
+    sub-agents, which get the rules but not the parent's context).
+    Returns None if every part is empty/missing.
+    """
+    parts: list[str] = []
+    if include_context:
+        # lazy import: harness imports this module at call time
+        from .harness import find_context_dir
+
+        context_block = load_context_files(find_context_dir(project_dir))
+        if context_block:
+            parts.append(context_block)
+    rules = load_task_completion_rules()
+    if rules:
+        parts.append(rules)
+    if agent_prompt:
+        parts.append(agent_prompt)
+    return "\n\n".join(parts) if parts else None
     """Remove an existing compact frame (header + separator), keeping summary."""
     if text.startswith(config.COMPACT_HEADER):
         text = text[len(config.COMPACT_HEADER):]

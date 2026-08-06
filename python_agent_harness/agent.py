@@ -39,7 +39,15 @@ class AgentLoop:
         self.session = session
         self.messages: list[Message] = messages if messages is not None else []
         self.top_level = top_level
-        self.system = system
+        # fall back to the session's prompt so a run never loses it;
+        # sub-agent loops use the session's SUB-AGENT prompt (their own),
+        # never the parent's system prompt (which carries the parent's
+        # context and task-completion rules)
+        if system is not None:
+            self.system = system
+        else:
+            attr = "system_prompt" if top_level else "subagent_system_prompt"
+            self.system = getattr(session, attr, None)
         self.max_rounds = max_rounds
         self.info = FsmInfo(
             buffer=session,

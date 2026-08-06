@@ -734,6 +734,11 @@ class Tui:
         cwd, prompt, kickoff = cmd.prepare(
             project_dir=project or self.session.project_dir, extra=extra
         )
+        # keep the project context + task-completion rules in front of
+        # the command's prompt (the "actual agent prompt" for this run)
+        from .compaction import assemble_agent_prompt
+
+        system = assemble_agent_prompt(cwd, prompt)
         prev_project = self.session.project_dir
         if cwd != prev_project:
             self.session.project_dir = cwd
@@ -745,7 +750,7 @@ class Tui:
         else:
             restore = None
         self.console.print(f"[cyan]/{name}: {kickoff.strip()}[/cyan]")
-        self._start_agent(kickoff, system=prompt, restore=restore)
+        self._start_agent(kickoff, system=system, restore=restore)
 
     def _conversation_text(self) -> str:
         msgs = self.session.last_messages or []

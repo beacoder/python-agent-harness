@@ -62,16 +62,29 @@ class TestSubagentPromptSelection(unittest.TestCase):
         self.assertEqual(result, "sub-agent done")
         self.assertEqual(session.client.systems, ["SUBAGENT PROMPT"])
 
-    def test_falls_back_to_main_prompt_when_subagent_prompt_missing(self):
+    def test_falls_back_to_default_subagent_prompt_when_missing(self):
+        """Without a configured subagent prompt, the DEFAULT bundled
+        subagent prompt is used — never the parent's main prompt."""
         session = make_session("MAIN AGENT PROMPT", None, self._tmp.name)
         run_subagent(session, "task", "do something")
-        self.assertEqual(session.client.systems, ["MAIN AGENT PROMPT"])
+        from python_agent_harness import config as cfg
+        from python_agent_harness.compaction import load_agent_prompt
+
+        default_sub = load_agent_prompt(cfg.DEFAULT_SUBAGENT_PROMPT_FILE)
+        self.assertEqual(session.client.systems, [default_sub])
+        self.assertNotIn("MAIN AGENT PROMPT", session.client.systems[0])
 
     def test_falls_back_when_session_lacks_attribute_entirely(self):
+        """Same fallback when the session object has no attribute at all."""
         session = make_session("MAIN AGENT PROMPT", None, self._tmp.name)
         del session.subagent_system_prompt  # simulate an older session object
         run_subagent(session, "task", "do something")
-        self.assertEqual(session.client.systems, ["MAIN AGENT PROMPT"])
+        from python_agent_harness import config as cfg
+        from python_agent_harness.compaction import load_agent_prompt
+
+        default_sub = load_agent_prompt(cfg.DEFAULT_SUBAGENT_PROMPT_FILE)
+        self.assertEqual(session.client.systems, [default_sub])
+        self.assertNotIn("MAIN AGENT PROMPT", session.client.systems[0])
 
     def test_plan_mode_reminder_prepended_but_prompt_still_subagent(self):
         session = make_session("MAIN", "SUB", self._tmp.name)

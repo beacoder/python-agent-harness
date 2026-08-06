@@ -24,18 +24,27 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
     def test_defaults_to_main_agent_prompt_when_system_not_given(self):
         session = cli.make_session(self._tmp.name, config_path=self._config_path)
         try:
-            main = _load(config.DEFAULT_AGENT_PROMPT_FILE, project_dir=self._tmp.name, with_context=True)
-            self.assertEqual(session.system_prompt, main)
+            main = _load(config.DEFAULT_AGENT_PROMPT_FILE, project_dir=self._tmp.name)
+            self.assertIn(main, session.system_prompt)          # agent prompt present
+            self.assertIn("Task Completion Rules", session.system_prompt)  # rules injected
+            self.assertLess(  # rules are the last context piece, before the prompt
+                session.system_prompt.index("Task Completion Rules"),
+                session.system_prompt.index(main[:20]),
+            )
         finally:
             session.close()
 
     def test_subagent_prompt_always_loaded(self):
+        """Sub-agents get ONLY their own system prompt — no parent
+        context and no task-completion rules."""
         session = cli.make_session(
             self._tmp.name, config_path=self._config_path,
         )
         try:
             expected = _load(config.DEFAULT_SUBAGENT_PROMPT_FILE, project_dir=self._tmp.name)
             self.assertEqual(session.subagent_system_prompt, expected)
+            self.assertNotIn("Task Completion Rules", session.subagent_system_prompt)
+            self.assertNotIn("Request context:", session.subagent_system_prompt)
         finally:
             session.close()
 

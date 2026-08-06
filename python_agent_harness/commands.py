@@ -86,11 +86,16 @@ class SessionCommand:
         session = session_factory(
             project_dir=cwd, system_prompt=prompt, kickoff=kickoff
         )
+        # the command prompt is the "actual agent prompt"; the project
+        # context and task-completion rules are kept in front of it
+        from .compaction import assemble_agent_prompt
+
+        system = assemble_agent_prompt(cwd, prompt)
         run_agent_loop(
             session,
             messages=[Message(role="user", content=kickoff)],
             top_level=True,
-            system=prompt,
+            system=system,
         )
 
 

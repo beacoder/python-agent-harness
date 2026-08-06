@@ -9,7 +9,22 @@ from __future__ import annotations
 
 from . import config
 from .agent import run_agent_loop
+from .compaction import load_agent_prompt
 from .models import Message
+
+
+def _subagent_system_prompt(session: object) -> str | None:
+    """The sub-agent's system prompt: its OWN prompt only.
+
+    Never falls back to the parent's `system_prompt` (which carries the
+    parent's project context and task-completion rules) — a sub-agent
+    must not inherit any context from the parent.  When the session has
+    no sub-agent prompt configured, the default bundled one is used.
+    """
+    own = getattr(session, "subagent_system_prompt", None)
+    if own:
+        return own
+    return load_agent_prompt(config.DEFAULT_SUBAGENT_PROMPT_FILE)
 
 
 def run_subagent(
@@ -29,8 +44,7 @@ def run_subagent(
             session=session,
             messages=messages,
             top_level=False,
-            system=getattr(session, "subagent_system_prompt", None)
-            or session.system_prompt,
+            system=_subagent_system_prompt(session),
             max_rounds=config.SUBAGENT_MAX_ROUNDS,
         )
         if isinstance(result, str):

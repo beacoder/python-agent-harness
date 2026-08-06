@@ -53,19 +53,20 @@ def make_session(
         model=model,
         timeout=settings["timeout"],
     )
-    from .compaction import load_agent_prompt, load_context_files
-    from .harness import find_context_dir, find_skill_dir
+    from .compaction import assemble_agent_prompt, load_agent_prompt
+    from .harness import find_skill_dir
 
     abs_project = os.path.abspath(project_dir)
     skill_dir = find_skill_dir(abs_project)
-    context_dir = find_context_dir(abs_project)
-    system_prompt = load_agent_prompt(config.DEFAULT_AGENT_PROMPT_FILE, skill_dir=skill_dir)
-    context_block = load_context_files(context_dir)
-    if context_block and system_prompt:
-        system_prompt = context_block + "\n\n" + system_prompt
-    elif context_block:
-        system_prompt = context_block
-    subagent_system_prompt = load_agent_prompt(config.DEFAULT_SUBAGENT_PROMPT_FILE, skill_dir=skill_dir)
+    system_prompt = assemble_agent_prompt(
+        abs_project,
+        load_agent_prompt(config.DEFAULT_AGENT_PROMPT_FILE, skill_dir=skill_dir),
+    )
+    # sub-agents get ONLY their own system prompt — no parent project
+    # context and no task-completion rules injected
+    subagent_system_prompt = load_agent_prompt(
+        config.DEFAULT_SUBAGENT_PROMPT_FILE, skill_dir=skill_dir
+    )
     return AgentSession(
         project_dir=abs_project,
         client=client,
@@ -147,8 +148,14 @@ def _run_command(
 
 def _adopt(session: AgentSession, kw: dict) -> AgentSession:
     # SessionCommand.run builds its own session kwargs; reuse ours.
+    # The command's prompt becomes the "actual agent prompt"; the
+    # project context + task-completion rules are kept in front of it.
     if kw.get("system_prompt") is not None:
-        session.system_prompt = kw["system_prompt"]
+        from .compaction import assemble_agent_prompt
+
+        session.system_prompt = assemble_agent_prompt(
+            session.project_dir, kw["system_prompt"]
+        )
     return session
 
 
