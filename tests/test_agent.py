@@ -1,5 +1,6 @@
 """End-to-end agent loop tests with a fake client and fake session."""
 
+import os
 import unittest
 from unittest import mock
 
@@ -240,6 +241,142 @@ class TestAgentLoop(unittest.TestCase):
         session.cancel_event.set()
         loop = AgentLoop(session, messages=[Message(role="user", content="read it")])
         self.assertIsNone(loop.run())
+
+    def test_title_generated_after_fsm_finishes(self):
+        """The session must get an LLM title once the FSM run completes."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.client.script = ["bye"]
+        session.client.chat_sync_calls = []
+
+        orig_chat_sync = session.client.chat_sync
+
+        def tracking_chat_sync(messages, system=None, temperature=None,
+                               max_tokens=None, reasoning_effort=None):
+            session.client.chat_sync_calls.append((messages, system))
+            return orig_chat_sync(messages, system=system)
+
+        session.client.chat_sync = tracking_chat_sync
+        with mock.patch(
+            "python_agent_harness.compaction.read_prompt_file",
+            return_value="TITLE-PROMPT",
+        ):
+            loop = AgentLoop(session, messages=[Message(role="user", content="hi there")])
+            loop.run()
+        self.assertEqual(len(session.client.chat_sync_calls), 1)
+        self.assertEqual(session.client.chat_sync_calls[0][1], "TITLE-PROMPT")
+        self.assertEqual(session.store.title, "SYNC-OK")
+        self.assertTrue(os.path.basename(session.store.file_path).startswith("SYNC-OK_"))
+        # one-shot: a second run must not re-generate the title
+        session.client.script = ["again"]
+        AgentLoop(session, messages=[Message(role="user", content="hi there")]).run()
+        self.assertEqual(len(session.client.chat_sync_calls), 1)
+
+    def test_no_title_for_empty_first_message(self):
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.client.script = ["bye"]
+        session.client.chat_sync_calls = []
+        loop = AgentLoop(session, messages=[Message(role="user", content="")])
+        loop.run()
+        self.assertEqual(session.client.chat_sync_calls, [])
+        self.assertIsNone(session.store.title)
+
+    def test_stale_cancelled_run_does_not_clobber_next_run(self):
+        """A cancelled worker finishing late must not overwrite the next
+        run's shared history even after the new run cleared the event."""
+        session = RecordingSession()
+        session.tools_enabled = False
+
+        class AbortClient(FakeClient):
+            """Ctrl-C aborts the request; the blocked read raises late,
+            after the next run already cleared the shared event."""
+
+            def __init__(self):
+                super().__init__([])
+
+            def chat(self, *a, **k):
+                session.cancel()  # Ctrl-C: cancel() aborts the HTTP client
+                session.cancel_event.clear()  # next run started meanwhile
+                raise RuntimeError("aborted read")
+
+        session.client = AbortClient()
+        # run 1: user asks q1, presses Ctrl-C mid-flight; the stale worker
+        # finishes late (after the next run cleared the event)
+        loop1 = AgentLoop(session, messages=[Message(role="user", content="q1")])
+        # must be treated as a cancel (None), not a spurious error, and
+        # must not clobber the shared history with its partial messages
+        self.assertIsNone(loop1.run())
+        self.assertEqual(session.last_messages, [])
+        self.assertIsNone(session.store.title)
+
+        # run 2 completes normally: full history must be present
+        session.client = FakeClient(["second answer"])
+        loop2 = AgentLoop(session, messages=[Message(role="user", content="q2")])
+        self.assertEqual(loop2.run(), "second answer")
+        roles = [m.role for m in session.last_messages]
+        self.assertEqual(roles, ["user", "assistant"])
+        self.assertEqual(session.last_messages[0].text(), "q2")
+
+    def test_cancel_generation_sticks_after_event_cleared(self):
+        """A cancelled run stays cancelled once the next run clears the
+        shared event (the per-run generation is what protects state)."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        loop = AgentLoop(session, messages=[Message(role="user", content="q1")])
+        loop._cancel_gen = session.cancel_generation  # run() start
+        session.cancel()
+        session.cancel_event.clear()  # next run cleared the shared event
+        self.assertTrue(loop._is_cancelled())
+
+    def test_cancel_between_chat_and_tools_skips_tools(self):
+        """Ctrl-C after the model emitted tool calls but before the tools
+        run: the tools must not execute and the history must not change."""
+        session = RecordingSession()
+        session.tools_enabled = True
+
+        class CancelAfterChat(FakeClient):
+            def __init__(self):
+                super().__init__([])
+
+            def chat(self, *a, **k):
+                result = super().chat(*a, **k)
+                session.cancel()
+                session.cancel_event.clear()  # next run cleared the event
+                return result
+
+        session.client = CancelAfterChat()
+        session.client.script = [
+            ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="read it")])
+        self.assertIsNone(loop.run())
+        self.assertEqual(session.executed, [])
+        self.assertEqual(session.last_messages, [])
+
+    def test_stale_worker_does_not_stream_deltas(self):
+        """A stale cancelled worker must not stream into the live row."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        deltas = []
+        session.on_delta = deltas.append
+
+        class StreamingClient(FakeClient):
+            def __init__(self):
+                super().__init__([])
+
+            def chat(self, messages, **k):
+                session.cancel()  # Ctrl-C while the request is in flight
+                on_delta = k.get("on_delta")
+                if on_delta:
+                    on_delta("partial text")
+                return super().chat(messages, **k)
+
+        session.client = StreamingClient()
+        session.client.script = ["full answer"]
+        loop1 = AgentLoop(session, messages=[Message(role="user", content="q1")])
+        self.assertIsNone(loop1.run())
+        self.assertEqual(deltas, [])
 
 
 if __name__ == "__main__":

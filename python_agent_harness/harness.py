@@ -110,6 +110,10 @@ class AgentSession:
         self._pending_execute_prompt: str | None = None
         self.last_messages: list = []
         self.cancel_event = threading.Event()
+        # Monotonic cancel identity: cancel() bumps this counter, so a
+        # worker from a cancelled run can tell it was cancelled even
+        # after the next run clears the shared event.
+        self.cancel_generation = 0
         self._skill_dir = self._find_skill_dir()
 
         # TUI hooks (overridden by the UI)
@@ -440,6 +444,38 @@ class AgentSession:
         except OSError as e:
             self.log(f"auto-save failed: {e}")
 
+    def generate_session_title(self) -> None:
+        """Generate a title from the first real user message (title.txt).
+
+        Mirrors gptel-agent-harness--generate-session-title: one-shot per
+        session (guarded by store.title / title_pending); on success the
+        session file is renamed to <title>_<TS>.md.
+        """
+        store = self.store
+        if store.title or store.title_pending:
+            return
+        first = store.first_user_message()
+        if not first:
+            return
+        store.title_pending = True
+        try:
+            from .compaction import read_prompt_file
+            from .models import Message as Msg
+
+            system = read_prompt_file("title.txt")
+            resp, _ = self.client.chat_sync(
+                [Msg(role="user", content=first)], system=system
+            )
+            title = resp.text()
+            if title:
+                store.apply_title(title)
+                if self.store.title:
+                    self.log(f"session titled — {self.store.title}")
+        except Exception as e:  # noqa: BLE001 - title failure is non-fatal
+            self.log(f"title generation failed: {e}")
+        finally:
+            store.title_pending = False
+
     def _conversation_text(self, messages: list) -> str:
         parts: list[str] = []
         for m in messages:
@@ -464,8 +500,14 @@ class AgentSession:
         Sets the cancel event (checked by the agent loop) and aborts the
         active HTTP stream so a blocking read unblocks immediately.  The
         loop turns this into a clean stop, not an error.
+
+        The generation counter makes the cancellation stick to the run
+        that was active: a stale worker finishing late (e.g. after a
+        long tool call) stays cancelled even once the next run clears
+        the shared event, so it can never clobber the new run's state.
         """
         self.cancel_event.set()
+        self.cancel_generation += 1
         if hasattr(self.client, "abort"):
             try:
                 self.client.abort()

@@ -5,8 +5,8 @@ Commands:
   config [--init]          show effective LLM config / write a template file
   init [project]           create/update AGENTS.md
   review [args]            review uncommitted changes / commit / branch / PR
-  explain <target>         explain code (from prompts/commands/explain.txt)
-  <custom>                 any prompt file in prompts/commands/
+  <custom>                 any prompt file in prompts/commands/ (except
+                           TUI-only slash commands such as explain)
   summary                  summarize the current (saved) session
   sessions                 list saved sessions
   restore <file>           restore a saved session
@@ -31,6 +31,11 @@ from .harness import AgentSession
 from .models import Message
 from .session import SessionStore
 from .tools import default_registry
+
+
+# Commands available only as TUI slash commands (e.g. /explain) — they
+# are NOT registered as CLI subcommands.
+TUI_ONLY_COMMANDS = {"explain"}
 
 
 def make_session(
@@ -246,6 +251,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_review.add_argument("arguments", nargs="?", help="commit/branch/PR, or empty")
 
     for cmd in load_custom_commands():
+        if cmd.name in TUI_ONLY_COMMANDS:
+            continue  # TUI slash command only (e.g. /explain)
         p = sub.add_parser(cmd.name, help=f"run custom command {cmd.name}")
         _add_config_arg(p, suppress=True)
         p.add_argument("project", nargs="?")

@@ -91,6 +91,26 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         finally:
             session.close()
 
+    def test_explain_not_a_cli_subcommand(self):
+        """explain is a TUI slash command only — no CLI subcommand.
+
+        It must still resolve as a SessionCommand so the TUI /explain
+        keeps working (via commands.find_command).
+        """
+        from python_agent_harness.commands import find_command
+
+        parser = cli.build_parser()
+        subparsers = next(
+            a for a in parser._actions
+            if a.__class__.__name__ == "_SubParsersAction"
+        )
+        self.assertNotIn("explain", subparsers.choices)
+        self.assertIn("run", subparsers.choices)
+        self.assertIn("review", subparsers.choices)
+        cmd = find_command("explain")
+        self.assertIsNotNone(cmd)
+        self.assertEqual(cmd.name, "explain")
+
 
 def _load(path, project_dir=None, with_context=False):
     from python_agent_harness.compaction import load_agent_prompt, load_context_files

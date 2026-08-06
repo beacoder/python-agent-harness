@@ -58,6 +58,24 @@ class AgentLoop:
         )
         self.fsm = Fsm(info=self.info)
         self.supervisor = Supervisor(session)
+        # Cancellation identity for this run, captured at run() start:
+        # cancel() bumps the session generation, so a stale worker from
+        # a cancelled run stays cancelled even after the next run clears
+        # the shared event (and must not touch shared state).
+        self._cancel_gen = 0
+
+    def _is_cancelled(self) -> bool:
+        """Whether THIS run was cancelled (event set or generation moved).
+
+        The plain event is not enough: `_start_agent` clears it before
+        every run, so a worker from a cancelled run that finishes late
+        (e.g. after a long tool call) would otherwise see it cleared and
+        clobber the new run's `session.last_messages`.
+        """
+        return (
+            self.session.cancel_event.is_set()
+            or self.session.cancel_generation != self._cancel_gen
+        )
 
     # ------------------------------------------------------------------
     # context management
@@ -167,7 +185,18 @@ class AgentLoop:
         pending = list(self.info.pending)
         if not pending:
             return
+        if self._is_cancelled():
+            # Ctrl-C before the round started: do not run tools (they
+            # have side effects) and do not touch shared state — a stale
+            # worker must never mirror its partial history over the next
+            # run's `session.last_messages`.
+            return
         for p in pending:
+            if self._is_cancelled():
+                # cancelled mid-round: stop running further tools; the
+                # results already delivered stay local to this (dead) run
+                self.info.pending = []
+                return
             result = sanitize_tool_result(self._execute_tool_call(p.call))
             p.call.result = result
             if hasattr(self.session, "take_diff"):
@@ -180,7 +209,7 @@ class AgentLoop:
                     name=p.call.name,
                 )
             )
-            if self.top_level:
+            if self.top_level and not self._is_cancelled():
                 # only the top-level loop mirrors its messages onto the
                 # shared session: a sub-agent runs inside the parent's
                 # tool round and must never clobber the parent's
@@ -195,6 +224,7 @@ class AgentLoop:
     def run(self) -> str | None:
         """Run the loop; returns the final assistant text (or None)."""
         session = self.session
+        self._cancel_gen = session.cancel_generation
         self.fsm.transition(State.WAIT)
         rounds = 0
         try:
@@ -202,14 +232,18 @@ class AgentLoop:
         finally:
             # A cancelled run must not clobber state for the next run,
             # and a sub-agent must never overwrite the parent's history.
-            if not session.cancel_event.is_set() and self.top_level:
+            if not self._is_cancelled() and self.top_level:
                 session.last_messages = list(self.messages)
+                # FSM finished: give the session a meaningful title from
+                # the first real user message (one-shot; no-op when the
+                # title already exists or generation is in flight)
+                session.generate_session_title()
 
     def _run(self, rounds: int) -> str | None:
         session = self.session
         while rounds < self.max_rounds:
             rounds += 1
-            if session.cancel_event.is_set():
+            if self._is_cancelled():
                 return None
             self._inject_pending_prompts()
             self._update_context_ratio()
@@ -218,10 +252,8 @@ class AgentLoop:
                 if self.compact():
                     continue
 
-            cancel = session.cancel_event
-
             def safe_delta(text: str) -> None:
-                if not cancel.is_set() and session.on_delta is not None:
+                if not self._is_cancelled() and session.on_delta is not None:
                     session.on_delta(text)
 
             try:
@@ -237,13 +269,13 @@ class AgentLoop:
                     on_delta=(safe_delta if self.top_level else None),
                 )
             except Exception as e:  # noqa: BLE001 - API errors become ERRS
-                if session.cancel_event.is_set():
+                if self._is_cancelled():
                     return None  # cancelled (Ctrl-C), not an error
                 self.info.error = f"Error: {e}"
                 session.notify("error")
                 break
 
-            if session.cancel_event.is_set():
+            if self._is_cancelled():
                 return None  # response arrived after cancel: drop it
 
             # persist the assistant response in the conversation history
@@ -266,7 +298,7 @@ class AgentLoop:
                 self.fsm.transition(State.TOOL)
                 self.fsm.transition(State.TRET)
                 self._run_tool_round()
-                if session.cancel_event.is_set():
+                if self._is_cancelled():
                     return None
                 self.fsm.transition(State.WAIT)
                 continue

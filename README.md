@@ -31,7 +31,9 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
   `/undo` `/history`.
 - **Sessions** — auto-saved after every response to
   `~/.local/share/python-agent-harness/sessions/`, LLM-generated titles
-  (renames the file), `restore` / `restore-latest` / `sessions` commands.
+  (one-shot per session, fired when the FSM run finishes; the file is
+  renamed to `<title>_<TS>.md`), `restore` / `restore-latest` /
+  `sessions` commands.
 - **Commands** — `init` (create/update AGENTS.md), `review` (uncommitted
   changes / commit / branch / PR), `summary`, and custom commands from
   `prompts/commands/*.txt`.
@@ -87,19 +89,22 @@ file with `--config PATH` (also settable via `PYTHON_AGENT_HARNESS_CONFIG`).
 python-agent-harness run [project-dir]   # interactive TUI agent
 python-agent-harness init [project]      # create/update AGENTS.md
 python-agent-harness review [project] [commit|branch|PR]
-python-agent-harness explain [project] [target]
 python-agent-harness sessions            # list saved sessions
 python-agent-harness restore --latest    # restore newest session
 ```
 
-TUI slash commands: `/plan` `/build` `/compact` `/undo` `/history`
-`/save` `/summary` `/exit`.
+TUI slash commands: `/plan` `/build` `/init` `/review` `/explain`
+`/compact` `/undo` `/history` `/save` `/summary` `/clear` `/exit`
+(`/explain [project] [target]` explains code — TUI slash command only,
+not a CLI subcommand).
 
 Input editing: type your message, press **Enter** for a new line, and
 **Esc then Enter** (or **Alt+Enter**) to submit. **Up/Down** recall
 previous inputs from `~/.local/share/python-agent-harness/input_history`.
 **Ctrl-D** quits; **Ctrl-C** cancels the current input or agent run
-without leaving the app.
+without leaving the app — the conversation history is preserved, so you
+can immediately ask a follow-up question; a cancelled worker can never
+clobber the next run's state (per-run cancellation identity).
 
 ## Layout
 
@@ -138,3 +143,5 @@ venv/bin/python -m unittest discover -s tests -v
 - [x] Bash tiers: catastrophic → plan gate → destructive → dangerous → run
 - [x] Cache dedup messages and write-through invalidation
 - [x] Session metadata round-trip and title sanitization
+- [x] One-shot LLM title generation after the FSM run finishes
+- [x] Ctrl-C cancel: stale workers can't clobber the next run's history
