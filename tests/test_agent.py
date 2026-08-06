@@ -68,7 +68,7 @@ class RecordingSession(AgentSession):
             tool_names=self.store.tool_names,
         )
 
-    def execute_tool(self, name, args):
+    def execute_tool(self, name, args, call_id=None):
         self.executed.append((name, args))
         if name == "Read":
             return "file content"
