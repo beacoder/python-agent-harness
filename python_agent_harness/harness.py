@@ -60,6 +60,8 @@ class AgentSession:
         self.undo = UndoStack()
         self.bash_policy = BashPolicy()
         self.tool_ctx = ToolContext(self)
+        self._tool_diffs: dict[str, str] = {}
+        self._active_call_id: str | None = None
         self.store = SessionStore(
             project_dir=project_dir,
             model=model,
@@ -114,8 +116,15 @@ class AgentSession:
     def tool_specs(self) -> list:
         return self.registry.specs()
 
-    def execute_tool(self, name: str, args: dict[str, Any]) -> str:
-        """Execute a tool with cache + safety integration."""
+    def execute_tool(
+        self, name: str, args: dict[str, Any], call_id: str | None = None
+    ) -> str:
+        """Execute a tool with cache + safety integration.
+
+        ``call_id`` (when given) lets Edit/Write attach a unified diff
+        for the TUI to render; retrieve it afterwards with
+        ``take_diff(call_id)``.
+        """
         # cache path for read/glob/grep
         cached = self._cache_get(name, args)
         if cached is not None:
@@ -137,7 +146,11 @@ class AgentSession:
                 except SafetyViolation as e:
                     return str(e)
 
-        result = self.registry.execute(name, args, self.tool_ctx)
+        self._active_call_id = call_id
+        try:
+            result = self.registry.execute(name, args, self.tool_ctx)
+        finally:
+            self._active_call_id = None
 
         # cache store + write-through invalidation
         if self.cache.cacheable_p(result):
@@ -148,6 +161,15 @@ class AgentSession:
                 self.cache.invalidate_path(path)
         self.notify("tool")
         return result
+
+    def record_diff(self, diff_text: str) -> None:
+        """Attach a unified diff to the tool call currently executing."""
+        if self._active_call_id and diff_text:
+            self._tool_diffs[self._active_call_id] = diff_text
+
+    def take_diff(self, call_id: str) -> str | None:
+        """Pop and return the diff recorded for CALL_ID, if any."""
+        return self._tool_diffs.pop(call_id, None)
 
     def _plan_blocked(self, name: str, args: dict[str, Any]) -> str | None:
         if name == "Bash":
