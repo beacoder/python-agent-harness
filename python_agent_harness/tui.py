@@ -68,6 +68,7 @@ class Tui:
         self.question: UiQuestion | None = None
         self.agent_running = False
         self.status = " idle"
+        self.conversation_history: list[Message] = []
         self.prompt_session: PromptSession = PromptSession(
             history=FileHistory(_history_path()),
             key_bindings=_make_key_bindings(),
@@ -325,12 +326,15 @@ class Tui:
 
     def _run_agent(self, text: str) -> None:
         try:
+            self.conversation_history.append(Message(role="user", content=text))
             run_agent_loop(
                 self.session,
-                messages=[Message(role="user", content=text)],
+                messages=list(self.conversation_history),
                 top_level=True,
                 system=self.session.system_prompt,
             )
+            if self.session.last_messages:
+                self.conversation_history = list(self.session.last_messages)
         except Exception as e:  # noqa: BLE001
             self._on_log(f"agent error: {e}")
         finally:
@@ -364,9 +368,13 @@ class Tui:
             self.console.print(f"saved: {path}")
         elif cmd == "/summary":
             self._run_summary()
+        elif cmd == "/clear":
+            self.conversation_history = []
+            self.session.last_messages = []
+            self.console.print("[yellow]Conversation history cleared.[/yellow]")
         elif cmd == "/help":
             self.console.print(
-                "/plan /build /compact /undo /history /save /summary /exit\n"
+                "/plan /build /compact /undo /history /save /summary /clear /exit\n"
                 "Ctrl-C cancels the current execution (app stays open); "
                 "Ctrl-D or /exit quits."
             )
