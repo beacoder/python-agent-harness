@@ -283,6 +283,11 @@ class AgentSession:
     def find_skill(self, name: str) -> str | None:
         if not self._skill_dir:
             return None
+        # Check subdirectory with SKILL.md (e.g. skills/cba-rules/SKILL.md)
+        p = os.path.join(self._skill_dir, name, "SKILL.md")
+        if os.path.isfile(p):
+            return p
+        # Fallback: flat file (e.g. skills/cba-rules.md or .txt)
         for ext in (".md", ".txt"):
             p = os.path.join(self._skill_dir, name + ext)
             if os.path.isfile(p):
