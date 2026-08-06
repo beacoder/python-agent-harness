@@ -13,9 +13,11 @@ import re
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from .base import Tool, ToolContext
+from ..diffrender import unified_diff
 
 MAX_OUTPUT = 200_000  # truncation cap (chars)
 
@@ -309,6 +311,13 @@ class Write(Tool):
         path = os.path.abspath(os.path.join(args["path"], args["filename"]))
         ctx.guard_path(path, "Write")
         existed = os.path.exists(path)
+        old_content = ""
+        if existed:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    old_content = f.read()
+            except OSError:
+                old_content = ""
         try:
             ctx.snapshot(path, "Write")
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -319,6 +328,9 @@ class Write(Tool):
         ctx.invalidate_cache(path)
         if not existed:
             ctx.record_absent(path, "Write")
+        diff_text = unified_diff(old_content, args["content"], path)
+        if diff_text:
+            ctx.record_diff(diff_text)
         return f"Created file {args['filename']} in {args['path']}"
 
 
@@ -369,44 +381,102 @@ class Edit(Tool):
         except OSError as e:
             return f"Error: {e}"
         ctx.invalidate_cache(path)
+        diff_text = unified_diff(content, new, path)
+        if diff_text:
+            ctx.record_diff(diff_text)
         return f"Successfully replaced text in {path}"
 
 
-def _apply_diff(content: str, diff: str) -> str:
-    """Apply a simple unified diff to CONTENT; raises on failure."""
-    import difflib
+_HUNK_HEADER_RE = re.compile(
+    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_len>\d+))? "
+    r"\+(?P<new_start>\d+)(?:,(?P<new_len>\d+))? @@"
+)
 
-    lines = content.splitlines(keepends=True)
-    patch = difflib.unified_diff(lines, lines, lineterm="")
-    del patch
-    new_lines = content.splitlines(keepends=True)
-    hunks: list[tuple[int, list[str]]] = []
-    current: list[str] = []
-    line_no = 0
+
+@dataclass
+class _Hunk:
+    old_start: int  # 1-based
+    old_len: int
+    ops: list[tuple[str, str]]  # (' '|'-'|'+', line-content incl. trailing \n)
+
+
+def _parse_unified_diff(diff: str) -> list[_Hunk]:
+    """Parse a unified diff into hunks; raises ValueError on malformed input."""
+    hunks: list[_Hunk] = []
+    current: _Hunk | None = None
     for raw in diff.splitlines(keepends=True):
-        if raw.startswith("+++") or raw.startswith("---") or raw.startswith("@@") or raw.startswith("diff --git"):
-            if current:
-                hunks.append((line_no, current))
-                current = []
+        if raw.startswith("--- ") or raw.startswith("+++ ") or raw.startswith("diff --git"):
             continue
+        m = _HUNK_HEADER_RE.match(raw)
+        if m:
+            if current is not None:
+                hunks.append(current)
+            old_start = int(m.group("old_start"))
+            old_len = int(m.group("old_len") or "1")
+            current = _Hunk(old_start=old_start, old_len=old_len, ops=[])
+            continue
+        if current is None:
+            continue  # ignore stray lines before the first hunk header
         if raw.startswith("+"):
-            current.append(raw[1:])
+            current.ops.append(("+", raw[1:]))
         elif raw.startswith("-"):
-            current.append(None)  # type: ignore[arg-type]
+            current.ops.append(("-", raw[1:]))
         elif raw.startswith(" "):
-            current.append(raw[1:])
+            current.ops.append((" ", raw[1:]))
+        elif raw.strip() == "" or raw == "\n":
+            current.ops.append((" ", raw))
         else:
-            if current:
-                hunks.append((line_no, current))
-                current = []
-    if current:
-        hunks.append((line_no, current))
-    # crude hunk application: strip old lines, insert new ones
-    result = []
-    removed = 0
+            raise ValueError(f"malformed diff line: {raw!r}")
+    if current is not None:
+        hunks.append(current)
+    if not hunks:
+        raise ValueError("no hunks found in diff")
+    return hunks
+
+
+def _apply_diff(content: str, diff: str) -> str:
+    """Apply a unified diff to CONTENT; raises ValueError on failure.
+
+    Hunks are applied in order using their declared old-file line
+    positions; context/removed lines are verified against the source
+    so a stale or mismatched hunk fails loudly instead of silently
+    corrupting the file.
+    """
+    hunks = _parse_unified_diff(diff)
+    src_lines = content.splitlines(keepends=True)
+    result: list[str] = []
+    cursor = 0  # 0-based index into src_lines already consumed
+
     for hunk in hunks:
-        pass
-    return "".join(new_lines)
+        start = hunk.old_start - 1 if hunk.old_start > 0 else 0
+        if start < cursor:
+            raise ValueError("hunks overlap or are out of order")
+        # copy untouched lines before this hunk verbatim
+        result.extend(src_lines[cursor:start])
+        cursor = start
+        for op, text in hunk.ops:
+            if op == " ":
+                if cursor >= len(src_lines) or src_lines[cursor] != text:
+                    raise ValueError(
+                        f"context line mismatch at line {cursor + 1}: "
+                        f"expected {text!r}, found "
+                        f"{src_lines[cursor] if cursor < len(src_lines) else '<eof>'!r}"
+                    )
+                result.append(text)
+                cursor += 1
+            elif op == "-":
+                if cursor >= len(src_lines) or src_lines[cursor] != text:
+                    raise ValueError(
+                        f"removed line mismatch at line {cursor + 1}: "
+                        f"expected {text!r}, found "
+                        f"{src_lines[cursor] if cursor < len(src_lines) else '<eof>'!r}"
+                    )
+                cursor += 1
+            elif op == "+":
+                result.append(text)
+
+    result.extend(src_lines[cursor:])
+    return "".join(result)
 
 
 class Insert(Tool):
