@@ -235,6 +235,9 @@ class Tui:
                 border_style="blue",
             )
         )
+        if config.LLM_LOG_ENABLED:
+            from .client import _llm_log_path
+            self.console.print(f"[dim]LLM logs: {_llm_log_path()}[/dim]")
         while True:
             try:
                 if self.question is not None:
