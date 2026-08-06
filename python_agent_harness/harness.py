@@ -36,6 +36,7 @@ class AgentSession:
         model: str,
         backend: str = "OpenAI-compatible",
         system_prompt: str | None = None,
+        subagent_system_prompt: str | None = None,
         temperature: float = config.TEMPERATURE,
         max_tokens: int = config.MAX_TOKENS,
         reasoning_effort: str | None = None,
@@ -47,6 +48,7 @@ class AgentSession:
         self.model = model
         self.backend = backend
         self.system_prompt = system_prompt
+        self.subagent_system_prompt = subagent_system_prompt
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
