@@ -7,6 +7,9 @@ Supports any backend speaking the chat-completions protocol
 from __future__ import annotations
 
 import json
+import os
+import time
+from pathlib import Path
 from typing import Any, Callable, Iterator
 
 import httpx
@@ -19,6 +22,73 @@ class ApiError(Exception):
     """Raised when the API call itself fails (network/HTTP)."""
 
 
+def _llm_log_path() -> Path:
+    """Return the LLM log file path."""
+    return Path(f"/tmp/python-agent-harness-{os.getuid()}-{time.strftime('%Y-%m-%d')}.jsonl")
+
+
+def _log_llm_interaction(payload: dict[str, Any], response_msg: "Message", usage: "Usage") -> None:
+    """Append an LLM interaction to the log file as pretty-printed JSON."""
+    if not config.LLM_LOG_ENABLED:
+        return
+    try:
+        log_file = _llm_log_path()
+
+        # Build the entry in the same format as the conversation:
+        # { "model": ..., "messages": [...all messages including response...] }
+        messages = list(payload.get("messages", []))
+
+        # Append the assistant response
+        resp: dict[str, Any] = {"role": "assistant"}
+        if response_msg.text():
+            resp["content"] = response_msg.text()
+        if response_msg.tool_calls:
+            resp["tool_calls"] = [
+                {
+                    "type": "function",
+                    "id": tc.id,
+                    "function": {
+                        "name": tc.name,
+                        "arguments": tc.arguments if isinstance(tc.arguments, str)
+                        else json.dumps(tc.arguments, ensure_ascii=False),
+                    },
+                }
+                for tc in response_msg.tool_calls
+            ]
+        messages.append(resp)
+
+        entry: dict[str, Any] = {
+            "model": payload.get("model", ""),
+            "messages": messages,
+        }
+
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, indent=2, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 - logging must never break the agent
+        pass
+
+
+def _resolve_ca_bundle() -> str | bool:
+    """Return a CA bundle path usable for TLS verification, or True (default).
+
+    Python's bundled cert.pem often lacks the internal CA chain,
+    so prefer a system CA bundle when one exists.  An explicit
+    SSL_CERT_FILE env var wins; otherwise fall back to common system
+    bundle locations before letting httpx use its default.
+    """
+    env = os.environ.get("SSL_CERT_FILE")
+    if env and os.path.isfile(env):
+        return env
+    for cand in (
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/ssl/ca-bundle.pem",
+    ):
+        if os.path.isfile(cand):
+            return cand
+    return True
+
+
 class Client:
     def __init__(
         self,
@@ -26,12 +96,14 @@ class Client:
         api_key: str | None = None,
         model: str | None = None,
         timeout: float = 600.0,
+        verify: str | bool | None = None,
     ) -> None:
         self.base_url = (base_url or config.DEFAULT_BASE_URL).rstrip("/")
         self.api_key = api_key or _default_api_key()
         self.model = model or config.DEFAULT_MODEL
         self.timeout = timeout
-        self._http = httpx.Client(timeout=timeout)
+        self.verify = verify if verify is not None else _resolve_ca_bundle()
+        self._http = httpx.Client(timeout=timeout, verify=self.verify)
         self._active_response = None  # set while a stream is being read
 
     def close(self) -> None:
@@ -184,8 +256,12 @@ class Client:
                 for i in sorted(tc_index)
             ]
         if content or tool_calls:
-            return Message(role="assistant", content=content, tool_calls=tool_calls), usage
-        return Message(role="assistant", content=""), usage
+            msg = Message(role="assistant", content=content, tool_calls=tool_calls)
+            _log_llm_interaction(payload, msg, usage)
+            return msg, usage
+        msg = Message(role="assistant", content="")
+        _log_llm_interaction(payload, msg, usage)
+        return msg, usage
 
     # -- non-streaming chat -------------------------------------------------
     def chat_sync(
@@ -221,7 +297,9 @@ class Client:
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
         content = msg.get("content") or ""
-        return Message(role="assistant", content=content), usage
+        result = Message(role="assistant", content=content)
+        _log_llm_interaction(payload, result, usage)
+        return result, usage
 
 
 def _default_api_key() -> str | None:
