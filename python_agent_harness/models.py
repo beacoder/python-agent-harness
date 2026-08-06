@@ -21,6 +21,7 @@ class ToolCall:
     name: str
     arguments: dict[str, Any] | str
     result: str | None = None
+    diff: str | None = None  # unified diff for Edit/Write, for TUI rendering
 
 
 @dataclass
