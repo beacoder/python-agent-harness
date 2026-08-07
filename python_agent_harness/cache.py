@@ -53,9 +53,6 @@ class ToolCache:
         self.invalidations = 0
 
     # -- key handling ------------------------------------------------------
-    def make_key(self, tool: str, args: tuple) -> tuple:
-        return (tool, *args)
-
     def _file_mtime(self, path: str) -> float | None:
         try:
             return os.path.getmtime(path)
@@ -125,13 +122,6 @@ class ToolCache:
     def clear(self) -> None:
         self.table.clear()
         self.seen.clear()
-
-    def stats(self) -> str:
-        return (
-            f"Cache: {len(self.table)} entries, {len(self.seen)} seen | "
-            f"Hits: {self.hits}, Misses: {self.misses}, "
-            f"Dedups: {self.dedups}, Invalidations: {self.invalidations}"
-        )
 
     # -- dedup messages -------------------------------------------------------
     def dedup_message(self, tool: str, args: tuple, result: str) -> str:
