@@ -166,6 +166,7 @@ def assemble_agent_prompt(
     project_dir: str,
     agent_prompt: str | None,
     include_context: bool = True,
+    context_path: str | None = None,
 ) -> str | None:
     """Assemble the effective system prompt for an agent run.
 
@@ -176,6 +177,7 @@ def assemble_agent_prompt(
 
     ``include_context=False`` drops the project context files (used for
     sub-agents, which get the rules but not the parent's context).
+    ``context_path`` overrides the default context directory discovery.
     Returns None if every part is empty/missing.
     """
     parts: list[str] = []
@@ -183,7 +185,7 @@ def assemble_agent_prompt(
         # lazy import: harness imports this module at call time
         from .harness import find_context_dir
 
-        context_block = load_context_files(find_context_dir(project_dir))
+        context_block = load_context_files(find_context_dir(project_dir, context_path))
         if context_block:
             parts.append(context_block)
     rules = load_task_completion_rules()
@@ -192,23 +194,6 @@ def assemble_agent_prompt(
     if agent_prompt:
         parts.append(agent_prompt)
     return "\n\n".join(parts) if parts else None
-    """Remove an existing compact frame (header + separator), keeping summary."""
-    if text.startswith(config.COMPACT_HEADER):
-        text = text[len(config.COMPACT_HEADER):]
-    sep = config.COMPACT_SEPARATOR
-    idx = text.find(sep)
-    if idx != -1:
-        text = text[:idx] + "\n\n" + text[idx + len(sep):]
-    return text
-
-
-def insert_compact_frame(summary: str) -> str:
-    """Wrap SUMMARY in header + separator."""
-    return (
-        config.COMPACT_HEADER
-        + summary
-        + config.COMPACT_SEPARATOR
-    )
 
 
 def last_user_request(messages: list[dict]) -> str | None:
