@@ -159,10 +159,6 @@ class BashPolicy:
     confirm_allowed: bool = True  # mirrors gptel-confirm-tool-calls opt-out
     plan_mode: bool = False
 
-    def clear_session(self) -> None:
-        self.session_allow.clear()
-        self.session_deny.clear()
-
     def verdict(self, command: str) -> str | None:
         """Return an error string to deliver, or None to run."""
         # tier 1: forbidden path tokens
