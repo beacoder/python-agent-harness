@@ -54,30 +54,30 @@ venv/bin/pip install -e python-agent-harness
 
 ## Configuration
 
-LLM settings live in a TOML config file — no environment variables needed:
+LLM settings live in a JSON config file — no environment variables needed:
 
 ```sh
-python-agent-harness config --init        # write ~/.config/python-agent-harness/config.toml
+python-agent-harness config --init        # write ~/.config/python-agent-harness/config.json
 python-agent-harness config               # show effective settings (API key masked)
 ```
 
-Edit `~/.config/python-agent-harness/config.toml`:
+Edit `~/.config/python-agent-harness/config.json`:
 
-```toml
-[llm]
-base_url = "https://api.deepseek.com/v1"   # any OpenAI-compatible endpoint
-api_key  = "sk-..."
-model    = "deepseek-chat"
-reasoning_effort = "medium"                # "low" | "medium" | "high" (thinking models)
-# backend = "DeepSeek"
-# temperature = 0.0
-# max_tokens  = 8192
-# timeout     = 600.0
+```json
+{
+  "llm": {
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "sk-...",
+    "model": "deepseek-chat",
+    "reasoning_effort": "medium"
+  }
+}
 ```
 
 `reasoning_effort` is passed to the API as-is (omitted when unset), so you
 can use whatever your provider accepts ("low"/"medium"/"high" for OpenAI
-and compatible providers).
+and compatible providers). Other optional keys: `backend`, `temperature`,
+`max_tokens`, `timeout`.
 
 Precedence: code defaults < config file < `OPENAI_*` environment variables
 (env still wins if you set them, but nothing is required).  Use a custom
