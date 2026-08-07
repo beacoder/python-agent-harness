@@ -7,6 +7,8 @@ to reduce drift.
 
 from __future__ import annotations
 
+from . import config
+
 
 def is_cjk_char(c: str) -> bool:
     """Return True if C is a CJK or full-width character."""
@@ -34,8 +36,6 @@ def context_window_for(model: str) -> int:
     Entries are matched in order using substring matching, so more
     specific patterns must come before general ones (see config).
     """
-    from . import config
-
     lowered = model.lower()
     for pattern, size in config.CONTEXT_WINDOWS:
         if pattern in lowered:
@@ -48,7 +48,7 @@ class TokenCalibrator:
 
     Updated after each response using the API-reported input token
     count.  Applied to future estimations to reduce drift.  Clamped
-    to [0.5, 3.0] to avoid pathological values.
+    to [CALIBRATION_MIN, CALIBRATION_MAX] to avoid pathological values.
     """
 
     def __init__(self) -> None:
@@ -65,7 +65,7 @@ class TokenCalibrator:
         ):
             return
         ratio = actual_input / float(raw)
-        ratio = max(0.5, min(3.0, ratio))
+        ratio = max(config.CALIBRATION_MIN, min(config.CALIBRATION_MAX, ratio))
         self.factor = ratio
 
     def calibrate(self, estimated: int) -> int:
