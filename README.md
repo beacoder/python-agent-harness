@@ -122,10 +122,6 @@ LLM request/response bodies are logged as JSON to
 
 ```sh
 python-agent-harness run [project-dir]   # interactive TUI agent
-python-agent-harness init [project]      # create/update AGENTS.md
-python-agent-harness review [project] [commit|branch|PR]
-python-agent-harness sessions            # list saved sessions
-python-agent-harness restore --latest    # restore newest session
 ```
 
 TUI slash commands: `/plan` `/build` `/init` `/review` `/explain`
