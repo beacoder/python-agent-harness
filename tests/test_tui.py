@@ -502,6 +502,173 @@ class TestTui(unittest.TestCase):
         for s in ("/init", "/review", "/explain"):
             self.assertIn(s, out)
 
+    def test_completer_slash_commands(self):
+        from prompt_toolkit.document import Document
+
+        from python_agent_harness.tui import SlashCompleter
+
+        c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
+        completions = list(
+            c.get_completions(Document(text="/ini", cursor_position=4), None)
+        )
+        names = [x.text for x in completions]
+        self.assertIn("/init", names)
+        self.assertNotIn("/plan", names)
+        completions = list(
+            c.get_completions(Document(text="/", cursor_position=1), None)
+        )
+        names = [x.text for x in completions]
+        for cmd in ("/plan", "/build", "/init", "/review", "/exit"):
+            self.assertIn(cmd, names)
+
+    def test_completer_tilde_paths(self):
+        """~/wor + Tab must complete to ~/workspace (the user's case),
+        bare ~ completes to ~/, and mid-sentence ~-tokens complete too."""
+        from prompt_toolkit.document import Document
+
+        from python_agent_harness.tui import SlashCompleter
+
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, "workspace"))
+            os.mkdir(os.path.join(d, "workbench"))
+            with mock.patch.dict(os.environ, {"HOME": d}):
+                c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
+                completions = list(
+                    c.get_completions(Document(text="~/wor", cursor_position=5), None)
+                )
+                names = [x.text for x in completions]
+                self.assertIn("kspace/", names)   # workspace
+                self.assertIn("kbench/", names)   # workbench
+                # bare ~ -> the trailing slash only (home dir itself)
+                completions = list(
+                    c.get_completions(Document(text="~", cursor_position=1), None)
+                )
+                self.assertEqual([x.text for x in completions], ["/"])
+                # mid-sentence token completes
+                completions = list(
+                    c.get_completions(
+                        Document(text="see ~/wor", cursor_position=9), None
+                    )
+                )
+                self.assertIn("kspace/", [x.text for x in completions])
+
+    def test_completer_plain_text_no_completion(self):
+        from prompt_toolkit.document import Document
+
+        from python_agent_harness.tui import SlashCompleter
+
+        c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
+        for text in ("hello", "fix the /init bug", ""):
+            completions = list(
+                c.get_completions(Document(text=text, cursor_position=len(text)), None)
+            )
+            self.assertEqual(completions, [], f"unexpected completions for {text!r}")
+
+    def test_completer_directories(self):
+        from prompt_toolkit.document import Document
+
+        from python_agent_harness.tui import SlashCompleter
+
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, "alpha"))
+            os.mkdir(os.path.join(d, "beta"))
+            open(os.path.join(d, "file.txt"), "w").close()
+            open(os.path.join(d, "alpha", "inner.py"), "w").close()
+            c = SlashCompleter(get_project_dir=lambda: d)
+            completions = list(
+                c.get_completions(Document(text="/init ", cursor_position=6), None)
+            )
+            names = [x.text for x in completions]
+            self.assertIn("alpha/", names)   # directories get a trailing slash
+            self.assertIn("beta/", names)
+            self.assertIn("file.txt", names)  # files complete too (e.g. /explain)
+            # partial dir prefix: only the suffix is inserted at the cursor
+            completions = list(
+                c.get_completions(Document(text="/init al", cursor_position=8), None)
+            )
+            self.assertEqual([x.text for x in completions], ["pha/"])
+            # empty arg lists the project dir's own contents, not its siblings
+            completions = list(
+                c.get_completions(Document(text="/init ", cursor_position=6), None)
+            )
+            self.assertIn("alpha/", [x.text for x in completions])
+            # trailing slash drills into the subdirectory
+            completions = list(
+                c.get_completions(Document(text="/init alpha/", cursor_position=12), None)
+            )
+            self.assertIn("inner.py", [x.text for x in completions])
+
+    def test_tab_key_binding_completes(self):
+        """Tab (c-i) must trigger completion end-to-end, and Shift+Tab
+        must cycle backwards through the completion menu."""
+        import asyncio
+
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.history import FileHistory
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        from python_agent_harness.tui import SlashCompleter, _make_prompt_session
+
+        async def run(text: str, keys: str) -> str:
+            with tempfile.TemporaryDirectory() as d, create_pipe_input() as inp:
+                c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
+                s = _make_prompt_session(
+                    FileHistory(os.path.join(d, "hist")), c,
+                    input=inp, output=DummyOutput(),
+                )
+                task = asyncio.ensure_future(s.prompt_async("> "))
+                await asyncio.sleep(0.1)
+                inp.send_text(text)
+                await asyncio.sleep(0.2)
+                inp.send_text(keys)
+                await asyncio.sleep(0.3)
+                inp.send_text("\x1b\r")
+                return await asyncio.wait_for(task, 5)
+
+        self.assertEqual(asyncio.run(run("/ini", "\t")), "/init")
+
+    def test_tab_burst_input_completes(self):
+        """Text and Tab arriving in a single input burst must still
+        complete (regression: complete_while_typing's background task
+        used to create the completion state first, so the Tab-triggered
+        task bailed out without inserting)."""
+        import asyncio
+
+        from prompt_toolkit.history import FileHistory
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        from python_agent_harness.tui import SlashCompleter, _make_prompt_session
+
+        async def run(burst: str) -> str:
+            with tempfile.TemporaryDirectory() as d, create_pipe_input() as inp:
+                c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
+                s = _make_prompt_session(
+                    FileHistory(os.path.join(d, "hist")), c,
+                    input=inp, output=DummyOutput(),
+                )
+                task = asyncio.ensure_future(s.prompt_async("> "))
+                await asyncio.sleep(0.1)
+                inp.send_text(burst)  # text + Tab in one chunk
+                await asyncio.sleep(0.5)
+                inp.send_text("\x1b\r")
+                return await asyncio.wait_for(task, 5)
+
+        self.assertEqual(asyncio.run(run("/ini\t")), "/init")
+
+    def test_shift_tab_key_binding(self):
+        """Shift+Tab (s-tab) must exist as a key binding handler."""
+        from prompt_toolkit.key_binding.key_bindings import KeyBindings
+
+        from python_agent_harness.tui import _make_key_bindings
+
+        kb = _make_key_bindings()
+        self.assertIsInstance(kb, KeyBindings)
+        handlers = {b.keys: b.handler for b in kb.bindings}
+        self.assertIn(("c-i",), handlers)    # Tab
+        self.assertIn(("s-tab",), handlers)  # Shift+Tab
+
 
 if __name__ == "__main__":
     unittest.main()

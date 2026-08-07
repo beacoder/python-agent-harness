@@ -14,9 +14,10 @@ import os
 import shlex
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -88,14 +89,146 @@ def _history_path() -> str:
 
 
 def _make_key_bindings() -> KeyBindings:
-    """Esc+Enter (or Alt+Enter) submits; plain Enter inserts a newline."""
+    """Esc+Enter (or Alt+Enter) submits; plain Enter inserts a newline.
+
+    Tab triggers completion explicitly (first Tab inserts the common
+    part / opens the menu, further Tabs cycle), Shift+Tab cycles
+    backwards — prompt_toolkit's defaults don't reliably bind Tab in
+    every mode/version.
+    """
     kb = KeyBindings()
 
     @kb.add("escape", "enter")
     def _submit(event: Any) -> None:
         event.current_buffer.validate_and_handle()
 
+    @kb.add("c-i")
+    def _complete(event: Any) -> None:
+        b = event.current_buffer
+        if b.complete_state:
+            b.complete_next()
+        else:
+            b.start_completion(insert_common_part=True)
+
+    @kb.add("s-tab")
+    def _complete_backward(event: Any) -> None:
+        b = event.current_buffer
+        if b.complete_state:
+            b.complete_previous()
+        else:
+            b.start_completion(select_first=True)
+
     return kb
+
+
+def _make_prompt_session(
+    history: FileHistory, completer: Completer, **kwargs: Any
+) -> PromptSession:
+    """Create the TUI's input session.
+
+    ``complete_while_typing`` is off on purpose: it races with Tab's
+    ``start_completion`` (a keystroke-triggered completion can create
+    the completion state just before the Tab-triggered task runs, which
+    then bails out without inserting the common part).  Tab must be the
+    single, deterministic trigger.
+    """
+    return PromptSession(
+        history=history,
+        key_bindings=_make_key_bindings(),
+        completer=completer,
+        complete_while_typing=False,
+        multiline=True,
+        **kwargs,
+    )
+
+
+SLASH_COMMANDS = [
+    "/plan", "/build", "/init", "/review", "/explain", "/compact",
+    "/undo", "/history", "/save", "/summary", "/sessions",
+    "/restore", "/clear", "/exit",
+]
+
+
+def _custom_slash_commands() -> list[str]:
+    from .commands import load_custom_commands
+
+    return sorted(f"/{c.name}" for c in load_custom_commands())
+
+
+class SlashCompleter(Completer):
+    """Tab-completion for the input line.
+
+    - A first token starting with ``/`` completes against the known
+      slash commands (builtins + custom commands from
+      prompts/commands/*.txt); if no command matches, it is treated as
+      an absolute path.
+    - After a slash command's space, Tab completes paths relative to
+      the session's project dir (absolute and ``~`` paths work too).
+    - Any other ``~``-prefixed or ``/``-containing token (e.g.
+      ``~/wor``, ``docs/``) completes as a path: ``~`` against $HOME,
+      otherwise relative to the project dir. Plain words without ``/``
+      are left alone.
+    - Directories get a trailing ``/`` so repeated Tab drills deeper;
+      ``~`` alone completes to ``~/``.
+    """
+
+    def __init__(self, get_project_dir: Callable[[], str]) -> None:
+        self.get_project_dir = get_project_dir
+
+    def _slash_commands(self) -> list[str]:
+        return sorted(set(SLASH_COMMANDS + _custom_slash_commands()))
+
+    def _complete_paths(self, arg: str) -> Iterable[Completion]:
+        expanded = os.path.expanduser(arg)
+        if not arg:
+            directory, prefix = self.get_project_dir() or os.getcwd(), ""
+        elif expanded.endswith(os.sep):
+            base = expanded if os.path.isabs(expanded) else os.path.join(
+                self.get_project_dir() or os.getcwd(), expanded)
+            directory, prefix = base, ""
+        elif os.path.isdir(expanded):
+            # "~" or an existing dir without a trailing slash: complete
+            # the trailing slash itself (bash-style), not its siblings.
+            yield Completion(text="/", start_position=0, display=arg + "/")
+            return
+        else:
+            base = expanded if os.path.isabs(expanded) else os.path.join(
+                self.get_project_dir() or os.getcwd(), expanded)
+            directory, prefix = os.path.dirname(base), os.path.basename(base)
+        try:
+            entries = sorted(os.listdir(directory or "."))
+        except OSError:
+            return
+        for name in entries:
+            if not name.startswith(prefix):
+                continue
+            suffix = name[len(prefix):]
+            if os.path.isdir(os.path.join(directory, name)):
+                suffix += "/"
+                display = name + "/"
+            else:
+                display = name
+            # start_position=0 appends at the cursor; the typed prefix is
+            # already in the buffer, so only the remaining suffix is inserted.
+            yield Completion(text=suffix, start_position=0, display=display)
+
+    def get_completions(self, document: Any, complete_event: Any):
+        text = document.text_before_cursor
+        if text.startswith("/"):
+            if " " not in text:
+                cmds = [c for c in self._slash_commands() if c.startswith(text)]
+                for cmd in cmds:
+                    yield Completion(cmd, start_position=-len(text))
+                if cmds:
+                    return
+                yield from self._complete_paths(text)  # absolute path
+                return
+            arg = text.split(" ", 1)[1]
+            yield from self._complete_paths(arg)
+            return
+        token = text.rsplit(" ", 1)[-1] if " " in text else text
+        if token.startswith("~") or "/" in token:
+            yield from self._complete_paths(token)
 
 
 class UiQuestion:
@@ -122,10 +255,9 @@ class Tui:
         self._data_event = threading.Event()
         self._history_cache: list[Any] | None = None
         self._history_dirty = True
-        self.prompt_session: PromptSession = PromptSession(
-            history=FileHistory(_history_path()),
-            key_bindings=_make_key_bindings(),
-            multiline=True,
+        self.prompt_session: PromptSession = _make_prompt_session(
+            FileHistory(_history_path()),
+            SlashCompleter(lambda: str(self.session.project_dir)),
         )
 
         session.on_delta = self._on_delta

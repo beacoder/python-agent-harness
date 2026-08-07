@@ -39,7 +39,16 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
   `prompts/commands/*.txt`.
 - **Editing input** — `prompt_toolkit`-backed multi-line editor with
   persistent history (Up/Down recall), Enter for a newline, Esc+Enter
-  (or Alt+Enter) to submit.
+  (or Alt+Enter) to submit, and **Tab completion** (Tab to complete,
+  Shift+Tab to cycle backwards): the first token starting with `/`
+  completes against the slash commands (builtins + custom
+  `prompts/commands/*.txt`); after a slash command's space, Tab
+  completes paths relative to the project dir (absolute and `~` paths
+  work too; directories get a trailing `/` to keep drilling).  In plain
+  messages, any token containing `/` or starting with `~` (e.g.
+  `~/wor`, `docs/`) completes as a path the same way — `~` against
+  `$HOME`, otherwise relative to the project dir — so `~/wor` + Tab
+  becomes `~/workspace/`.
 - **Diff rendering** — Edit/Write tool calls capture a unified diff of
   the file change and render it inline (red/green) in the TUI, so file
   edits are visible without leaving the app.
