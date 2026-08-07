@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest import mock
 
-from python_agent_harness.agent import AgentLoop
+from python_agent_harness.agent import AgentLoop, Supervisor, sanitize_tool_result
 from python_agent_harness.harness import AgentSession
 from python_agent_harness.models import Message, ToolCall, Usage
 from python_agent_harness.planmode import PlanMode
@@ -242,8 +242,8 @@ class TestAgentLoop(unittest.TestCase):
         loop = AgentLoop(session, messages=[Message(role="user", content="read it")])
         self.assertIsNone(loop.run())
 
-    def test_title_generated_after_fsm_finishes(self):
-        """The session must get an LLM title once the FSM run completes."""
+    def test_title_generated_after_loop_finishes(self):
+        """The session must get an LLM title once the agent loop completes."""
         session = RecordingSession()
         session.tools_enabled = False
         session.client.script = ["bye"]
@@ -377,6 +377,90 @@ class TestAgentLoop(unittest.TestCase):
         loop1 = AgentLoop(session, messages=[Message(role="user", content="q1")])
         self.assertIsNone(loop1.run())
         self.assertEqual(deltas, [])
+
+
+class FakeSupervisorSession:
+    def __init__(self, alive=True, tools=True, compacting=False):
+        self.alive = alive
+        self.tools_enabled = tools
+        self.compacting = compacting
+
+
+class TestSupervisor(unittest.TestCase):
+    def test_terminal_agentic_top_level_nudges(self):
+        sup = Supervisor(FakeSupervisorSession())
+        self.assertTrue(sup.supervise(
+            terminal=True, agentic=True, top_level=True, pending=False,
+        ))
+        self.assertEqual(sup.nudge_count, 1)
+
+    def test_nudge_budget_exhausted(self):
+        sup = Supervisor(FakeSupervisorSession())
+        for _ in range(2):
+            sup.supervise(terminal=True, agentic=True, top_level=True, pending=False)
+        self.assertEqual(sup.nudge_count, 2)
+        self.assertFalse(sup.supervise(
+            terminal=True, agentic=True, top_level=True, pending=False,
+        ))
+
+    def test_dead_session_fails_closed(self):
+        sup = Supervisor(FakeSupervisorSession(alive=False))
+        self.assertFalse(sup.supervise(
+            terminal=True, agentic=True, top_level=True, pending=False,
+        ))
+
+    def test_reset_nudges_on_tool_calls(self):
+        sup = Supervisor(FakeSupervisorSession())
+        sup.supervise(terminal=True, agentic=True, top_level=True, pending=False)
+        sup.reset_nudges()
+        self.assertEqual(sup.nudge_count, 0)
+
+    def test_compacting_blocks_supervision(self):
+        sup = Supervisor(FakeSupervisorSession(compacting=True))
+        self.assertFalse(sup.supervise(
+            terminal=True, agentic=True, top_level=True, pending=False,
+        ))
+
+    def test_non_agentic_does_not_nudge(self):
+        sup = Supervisor(FakeSupervisorSession(tools=False))
+        self.assertFalse(sup.supervise(
+            terminal=True, agentic=False, top_level=True, pending=False,
+        ))
+
+    def test_non_top_level_does_not_nudge(self):
+        sup = Supervisor(FakeSupervisorSession())
+        self.assertFalse(sup.supervise(
+            terminal=True, agentic=True, top_level=False, pending=False,
+        ))
+
+    def test_pending_tools_does_not_nudge(self):
+        sup = Supervisor(FakeSupervisorSession())
+        self.assertFalse(sup.supervise(
+            terminal=True, agentic=True, top_level=True, pending=True,
+        ))
+
+    def test_non_terminal_does_not_nudge(self):
+        sup = Supervisor(FakeSupervisorSession())
+        self.assertFalse(sup.supervise(
+            terminal=False, agentic=True, top_level=True, pending=False,
+        ))
+
+
+class TestSanitizeToolResult(unittest.TestCase):
+    def test_none_becomes_error_placeholder(self):
+        self.assertEqual(
+            sanitize_tool_result(None),
+            "Error: tool produced no result (it may have been interrupted or failed to return).",
+        )
+
+    def test_empty_string_kept(self):
+        self.assertEqual(sanitize_tool_result(""), "")
+
+    def test_string_kept(self):
+        self.assertEqual(sanitize_tool_result("x"), "x")
+
+    def test_non_string_str_converted(self):
+        self.assertEqual(sanitize_tool_result(42), "42")
 
 
 if __name__ == "__main__":
