@@ -115,7 +115,6 @@ SESSION_DIR = Path(
 )
 SESSION_SUBDIR = "python-agent-harness/sessions"
 AUTO_SAVE_SESSION = True
-PREVIEW_LINES = 40
 
 # ---- LLM interaction logs ---------------------------------------------------
 LLM_LOG_ENABLED = True
@@ -150,8 +149,6 @@ TEMPERATURE = 0.0
 
 # ---- sub-agents ---------------------------------------------------------------
 SUBAGENT_MAX_ROUNDS = 40
-SUBAGENT_BACKEND: str | None = None  # None = inherit main agent
-SUBAGENT_MODEL: str | None = None
 
 # ---- TUI preview limits -------------------------------------------------------
 TOOL_RESULT_PREVIEW_LINES = 5    # max lines of a tool result shown in the TUI
@@ -182,6 +179,11 @@ DEFAULT_LLM: dict = {
     "reasoning_effort": None,
 }
 
+DEFAULT_PATHS: dict = {
+    "context_path": None,
+    "skill_path": None,
+}
+
 CONFIG_TEMPLATE = """\
 {{
   "_comment": "python-agent-harness configuration. Location: {path}. Precedence: code defaults < this file < OPENAI_* environment variables.",
@@ -189,6 +191,11 @@ CONFIG_TEMPLATE = """\
     "base_url": "https://api.deepseek.com/v1",
     "model": "deepseek-chat",
     "reasoning_effort": "medium"
+  }},
+  "paths": {{
+    "_comment": "Optional overrides for context and skill directories. Absolute paths or ~ expansion supported.",
+    "context_path": null,
+    "skill_path": null
   }}
 }}
 """
@@ -241,6 +248,33 @@ def load_llm_config(path: str | os.PathLike | None = None) -> dict:
         val = os.environ.get(env)
         if val:
             settings[key] = val
+    return settings
+
+
+def load_paths_config(path: str | os.PathLike | None = None) -> dict:
+    """Load paths settings from the config file.
+
+    Returns a dict with ``context_path`` and ``skill_path`` keys.
+    Values are expanded (~ → home) and resolved to absolute paths when
+    set; None means "use default discovery logic".
+    """
+    import json
+
+    settings = dict(DEFAULT_PATHS)
+    cfg_path = _config_path(path)
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, "rb") as f:
+                data = json.load(f)
+        except Exception:  # noqa: BLE001
+            return settings
+        paths = data.get("paths") or {}
+        if not isinstance(paths, dict):
+            return settings
+        for key in ("context_path", "skill_path"):
+            val = paths.get(key)
+            if isinstance(val, str) and val.strip():
+                settings[key] = os.path.abspath(os.path.expanduser(val.strip()))
     return settings
 
 
