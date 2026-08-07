@@ -37,12 +37,12 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
 - **Sessions** — auto-saved after every response to
   `~/.local/share/python-agent-harness/sessions/`, LLM-generated titles
   (one-shot per session, fired when the agent loop finishes; the file is
-  renamed to `<title>_<TS>.md`), `restore` (with `--latest`) /
-  `sessions` CLI commands.
-- **Commands** — `init` (create/update AGENTS.md), `review` (uncommitted
-  changes / commit / branch / PR), and custom commands from
-  `prompts/commands/*.txt`; `summary` and `explain` are TUI slash
-  commands only.  Tool availability: `init`/`review` may use **all
+  renamed to `<title>_<TS>.md`), `/restore` (with `--latest`) and
+  `/sessions` TUI commands.
+- **Commands** — `/init` (create/update AGENTS.md), `/review` (uncommitted
+  changes / commit / branch / PR), `/summary`, `/explain` and custom
+  commands from `prompts/commands/*.txt` — all TUI slash commands.
+  Tool availability: `/init`/`/review` may use **all
   tools except PlanExit** (the PlanExit tool is hidden for the run,
   including for spawned sub-agents); custom commands may use all tools
   including PlanExit; `compact`/`summary` run with **no tools** (a
@@ -129,8 +129,7 @@ TUI slash commands: `/plan` `/build` `/init` `/review` `/explain`
 `/restore` `/clear` `/exit` — `/explain [project] [target]` explains
 code and `/summary` appends a conversation summary (both TUI-only);
 `/sessions` lists saved sessions and `/restore [path|title|--latest]`
-restores one (they are also CLI subcommands; in the TUI, `/restore`
-additionally matches sessions by title substring).
+restores one (`/restore` matches sessions by title substring).
 
 Input editing: type your message, press **Enter** for a new line, and
 **Esc then Enter** (or **Alt+Enter**) to submit. **Up/Down** recall

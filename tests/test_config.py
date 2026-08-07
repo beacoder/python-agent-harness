@@ -158,7 +158,7 @@ class TestConfigCli(unittest.TestCase):
         self.assertEqual(before.config, "/x.json")
         after = parser.parse_args(["run", "/tmp", "--config", "/x.json"])
         self.assertEqual(after.config, "/x.json")
-        plain = parser.parse_args(["sessions"])
+        plain = parser.parse_args(["config"])
         self.assertIsNone(plain.config)
 
 

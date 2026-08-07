@@ -574,7 +574,8 @@ class Tui:
                 "Type a message — Enter for a new line, Esc then Enter "
                 "(or Alt+Enter) to submit. Up/Down recall history.",
                 border_style="blue",
-            )
+            ),
+            markup=False,
         )
         if config.LLM_LOG_ENABLED:
             self.console.print(f"[dim]LLM logs: {self.session.client.log_path}[/dim]")
@@ -859,7 +860,8 @@ class Tui:
                 "/sessions                            list saved sessions\n"
                 "/restore [path | title | --latest]   restore a saved session\n"
                 "Ctrl-C cancels the current execution (app stays open); "
-                "Ctrl-D or /exit quits."
+                "Ctrl-D or /exit quits.",
+                markup=False,
             )
         else:
             self.console.print(f"unknown command: {cmd}")

@@ -590,6 +590,14 @@ class TestTui(unittest.TestCase):
         out = buf.getvalue()
         for s in ("/init", "/review", "/explain"):
             self.assertIn(s, out)
+        # bracket usage text must not be swallowed by rich markup
+        for s in (
+            "/init [project] [--extra TEXT]       create/update AGENTS.md",
+            "/review [project] [commit|branch|PR] review code changes",
+            "/explain [project] [target]",
+            "/restore [path | title | --latest]   restore a saved session",
+        ):
+            self.assertIn(s, out)
 
     def test_completer_slash_commands(self):
         from prompt_toolkit.document import Document

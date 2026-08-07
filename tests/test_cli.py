@@ -106,7 +106,10 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         )
         self.assertNotIn("explain", subparsers.choices)
         self.assertIn("run", subparsers.choices)
-        self.assertIn("review", subparsers.choices)
+        self.assertNotIn("review", subparsers.choices)
+        self.assertNotIn("init", subparsers.choices)
+        self.assertNotIn("sessions", subparsers.choices)
+        self.assertNotIn("restore", subparsers.choices)
         cmd = find_command("explain")
         self.assertIsNotNone(cmd)
         self.assertEqual(cmd.name, "explain")
@@ -209,36 +212,17 @@ class TestCommandToolAvailability(unittest.TestCase):
 
 
 class TestCliSessionCommands(unittest.TestCase):
-    def test_cmd_restore_unreadable_file(self):
-        """An unreadable session file must produce a clean error, not a
-        traceback."""
-        from types import SimpleNamespace
-
+    def test_removed_cli_subcommands(self):
+        """init/review/sessions/restore are TUI slash commands only."""
         from python_agent_harness import cli
 
-        args = SimpleNamespace(file="/tmp", latest=False, config=None)
-        self.assertEqual(cli.cmd_restore(args), 1)
-
-    def test_cmd_sessions_skips_unreadable_files(self):
-        """A session entry that cannot be read (e.g. a directory named
-        *.md) is listed as unreadable instead of crashing."""
-        import os
-        import tempfile
-        from pathlib import Path
-
-        from python_agent_harness import cli, config
-
-        with tempfile.TemporaryDirectory() as d:
-            old_dir = config.SESSION_DIR
-            config.SESSION_DIR = Path(d)
-            try:
-                sessions = Path(d) / "python-agent-harness" / "sessions"
-                sessions.mkdir(parents=True)
-                (sessions / "broken.md").mkdir()  # dir masquerading as a session
-                (sessions / "good_260805120000.md").write_text("hello")
-                self.assertEqual(cli.cmd_sessions(None), 0)
-            finally:
-                config.SESSION_DIR = old_dir
+        parser = cli.build_parser()
+        subparsers = next(
+            a for a in parser._actions
+            if a.__class__.__name__ == "_SubParsersAction"
+        )
+        for name in ("init", "review", "sessions", "restore"):
+            self.assertNotIn(name, subparsers.choices)
 
 
 def _load(path, project_dir=None, with_context=False):
