@@ -849,6 +849,7 @@ class Tui:
         elif cmd == "/clear":
             self.conversation_history = []
             self.session.last_messages = []
+            self.session.clear_todos()
             self.console.print("[yellow]Conversation history cleared.[/yellow]")
         elif cmd == "/help":
             self.console.print(
@@ -1064,6 +1065,7 @@ class Tui:
         # Replace conversation history
         self.conversation_history = messages
         self.session.last_messages = list(messages)
+        self.session.clear_todos()
         self._history_dirty = True
         model = meta.get("gptel-model", "?")
         project = meta.get("python-agent-harness--project-dir", "?")

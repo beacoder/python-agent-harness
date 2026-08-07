@@ -360,6 +360,14 @@ class AgentSession:
             self.todos = list(self._todo_scopes[self._todo_scope_stack[-1]])
             self.notify("todos")
 
+    def clear_todos(self) -> None:
+        """Drop all todo scopes (e.g. session cleared or restored)."""
+        self._todo_scopes = {"main": []}
+        self._todo_scope_stack = ["main"]
+        self._todo_scope_labels = {}
+        self.todos = []
+        self.notify("todos")
+
     def find_skill(self, name: str) -> str | None:
         if not self._skill_dir:
             return None
