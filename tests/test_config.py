@@ -27,24 +27,24 @@ class TestConfigFile(unittest.TestCase):
                 os.environ[k] = v
 
     def test_missing_file_uses_defaults(self):
-        settings = config.load_llm_config("/no/such/file.toml")
+        settings = config.load_llm_config("/no/such/file.json")
         self.assertEqual(settings["base_url"], config.DEFAULT_LLM["base_url"])
         self.assertEqual(settings["model"], config.DEFAULT_LLM["model"])
         self.assertIsNone(settings["api_key"])
 
     def test_file_overrides_defaults(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.toml"
+            p = Path(d) / "config.json"
             p.write_text(
-                '[llm]\n'
-                'base_url = "https://api.example.com/v1"\n'
-                'api_key = "sk-test"\n'
-                'model = "custom-model"\n'
-                'backend = "Example"\n'
-                'temperature = 0.2\n'
-                'max_tokens = 2048\n'
-                'timeout = 30.0\n'
-                'reasoning_effort = "high"\n',
+                '{"llm": {'
+                '"base_url": "https://api.example.com/v1", '
+                '"api_key": "sk-test", '
+                '"model": "custom-model", '
+                '"backend": "Example", '
+                '"temperature": 0.2, '
+                '"max_tokens": 2048, '
+                '"timeout": 30.0, '
+                '"reasoning_effort": "high"}}',
                 encoding="utf-8",
             )
             settings = config.load_llm_config(p)
@@ -58,7 +58,7 @@ class TestConfigFile(unittest.TestCase):
             self.assertEqual(settings["reasoning_effort"], "high")
 
     def test_reasoning_effort_default_none(self):
-        settings = config.load_llm_config("/no/such/file.toml")
+        settings = config.load_llm_config("/no/such/file.json")
         self.assertIsNone(settings["reasoning_effort"])
 
     def test_reasoning_effort_unset_omitted_from_payload(self):
@@ -73,8 +73,8 @@ class TestConfigFile(unittest.TestCase):
 
     def test_partial_file_keeps_defaults(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.toml"
-            p.write_text('[llm]\nmodel = "only-model"\n', encoding="utf-8")
+            p = Path(d) / "config.json"
+            p.write_text('{"llm": {"model": "only-model"}}', encoding="utf-8")
             settings = config.load_llm_config(p)
             self.assertEqual(settings["model"], "only-model")
             self.assertEqual(settings["base_url"], config.DEFAULT_LLM["base_url"])
@@ -82,23 +82,23 @@ class TestConfigFile(unittest.TestCase):
 
     def test_env_still_wins(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.toml"
-            p.write_text('[llm]\nmodel = "file-model"\n', encoding="utf-8")
+            p = Path(d) / "config.json"
+            p.write_text('{"llm": {"model": "file-model"}}', encoding="utf-8")
             os.environ["OPENAI_MODEL"] = "env-model"
             settings = config.load_llm_config(p)
             self.assertEqual(settings["model"], "env-model")
 
-    def test_bad_toml_raises(self):
+    def test_bad_json_raises(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.toml"
-            p.write_text("not [valid toml", encoding="utf-8")
+            p = Path(d) / "config.json"
+            p.write_text("not {valid json", encoding="utf-8")
             with self.assertRaises(ValueError):
                 config.load_llm_config(p)
 
     def test_env_path_env_var(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "custom.toml"
-            p.write_text('[llm]\nmodel = "via-env-path"\n', encoding="utf-8")
+            p = Path(d) / "custom.json"
+            p.write_text('{"llm": {"model": "via-env-path"}}', encoding="utf-8")
             os.environ["PYTHON_AGENT_HARNESS_CONFIG"] = str(p)
             settings = config.load_llm_config()
             self.assertEqual(settings["model"], "via-env-path")
@@ -109,7 +109,7 @@ class TestConfigFile(unittest.TestCase):
         self.assertEqual(config.mask_secret(""), "(unset)")
 
     def test_template_contains_llm(self):
-        self.assertIn("[llm]", config.CONFIG_TEMPLATE)
+        self.assertIn('"llm"', config.CONFIG_TEMPLATE)
         self.assertIn("base_url", config.CONFIG_TEMPLATE)
         self.assertIn("reasoning_effort", config.CONFIG_TEMPLATE)
 
@@ -131,7 +131,7 @@ class TestConfigCli(unittest.TestCase):
         from python_agent_harness.cli import main
 
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.toml"
+            p = Path(d) / "config.json"
             rc = main(["config", "--init", "--path", str(p)])
             self.assertEqual(rc, 0)
             self.assertTrue(p.exists())
@@ -142,8 +142,8 @@ class TestConfigCli(unittest.TestCase):
         from python_agent_harness.cli import main
 
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.toml"
-            p.write_text("[llm]\n", encoding="utf-8")
+            p = Path(d) / "config.json"
+            p.write_text('{"llm": {}}', encoding="utf-8")
             rc = main(["config", "--init", "--path", str(p)])
             self.assertEqual(rc, 1)
             rc = main(["config", "--init", "--force", "--path", str(p)])
@@ -154,10 +154,10 @@ class TestConfigCli(unittest.TestCase):
         from python_agent_harness.cli import build_parser
 
         parser = build_parser()
-        before = parser.parse_args(["--config", "/x.toml", "run", "/tmp"])
-        self.assertEqual(before.config, "/x.toml")
-        after = parser.parse_args(["run", "/tmp", "--config", "/x.toml"])
-        self.assertEqual(after.config, "/x.toml")
+        before = parser.parse_args(["--config", "/x.json", "run", "/tmp"])
+        self.assertEqual(before.config, "/x.json")
+        after = parser.parse_args(["run", "/tmp", "--config", "/x.json"])
+        self.assertEqual(after.config, "/x.json")
         plain = parser.parse_args(["sessions"])
         self.assertIsNone(plain.config)
 
