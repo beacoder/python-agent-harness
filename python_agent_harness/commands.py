@@ -90,7 +90,8 @@ class SessionCommand:
         # context and task-completion rules are kept in front of it
         from .compaction import assemble_agent_prompt
 
-        system = assemble_agent_prompt(cwd, prompt)
+        context_path = getattr(session, "_configured_context_path", None)
+        system = assemble_agent_prompt(cwd, prompt, context_path=context_path)
         run_agent_loop(
             session,
             messages=[Message(role="user", content=kickoff)],
