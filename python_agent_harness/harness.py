@@ -26,8 +26,14 @@ from .tools import Registry, ToolContext
 from .undo import UndoStack
 
 
-def find_skill_dir(project_dir: str) -> str | None:
-    """Locate the skill directory (first match wins)."""
+def find_skill_dir(project_dir: str, configured: str | None = None) -> str | None:
+    """Locate the skill directory.
+
+    If *configured* is set (from config file), use it directly.
+    Otherwise search default locations (first match wins).
+    """
+    if configured and os.path.isdir(configured):
+        return configured
     for cand in (
         os.path.join(os.path.expanduser("~"), ".emacs.d", "skills"),
         os.path.join(project_dir, "skills"),
@@ -37,8 +43,14 @@ def find_skill_dir(project_dir: str) -> str | None:
     return None
 
 
-def find_context_dir(project_dir: str) -> str | None:
-    """Locate the default context directory (first match wins)."""
+def find_context_dir(project_dir: str, configured: str | None = None) -> str | None:
+    """Locate the default context directory.
+
+    If *configured* is set (from config file), use it directly.
+    Otherwise search default locations (first match wins).
+    """
+    if configured and os.path.isdir(configured):
+        return configured
     for cand in (
         os.path.join(os.path.expanduser("~"), ".emacs.d", "contexts"),
         os.path.join(project_dir, "contexts"),
@@ -64,6 +76,8 @@ class AgentSession:
         reasoning_effort: str | None = None,
         tool_names: list[str] | None = None,
         registry: Registry | None = None,
+        context_path: str | None = None,
+        skill_path: str | None = None,
     ) -> None:
         self.project_dir = project_dir
         self.client = client
@@ -76,6 +90,8 @@ class AgentSession:
         self.reasoning_effort = reasoning_effort
         self.tools_enabled = True
         self.alive = True
+        self._configured_context_path = context_path
+        self._configured_skill_path = skill_path
 
         self.registry = registry or Registry()
         self.cache = ToolCache()
@@ -359,7 +375,7 @@ class AgentSession:
         return None
 
     def _find_skill_dir(self) -> str | None:
-        return find_skill_dir(self.project_dir)
+        return find_skill_dir(self.project_dir, self._configured_skill_path)
 
     def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str:
         """Run a delegated sub-agent task with an isolated todos scope.
