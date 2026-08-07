@@ -27,8 +27,8 @@ from .client import Client
 from .commands import (
     SessionCommand, find_command, load_custom_commands,
 )
-from .harness import AgentSession
-from .session import SessionStore
+from .agent_session import AgentSession
+from .session_store import SessionStore
 from .tools import default_registry
 
 
@@ -58,8 +58,8 @@ def make_session(
         model=model,
         timeout=settings["timeout"],
     )
-    from .compaction import assemble_agent_prompt, load_agent_prompt
-    from .harness import find_skill_dir
+    from .prompts import assemble_agent_prompt, load_agent_prompt
+    from .agent_session import find_skill_dir
 
     abs_project = os.path.abspath(project_dir)
     skill_dir = find_skill_dir(abs_project, paths.get("skill_path"))
@@ -162,7 +162,7 @@ def _adopt(session: AgentSession, kw: dict) -> AgentSession:
     # The command's prompt becomes the "actual agent prompt"; the
     # project context + task-completion rules are kept in front of it.
     if kw.get("system_prompt") is not None:
-        from .compaction import assemble_agent_prompt
+        from .prompts import assemble_agent_prompt
 
         session.system_prompt = assemble_agent_prompt(
             session.project_dir, kw["system_prompt"],
@@ -187,8 +187,8 @@ def cmd_sessions(args: argparse.Namespace) -> int:
 
 
 def cmd_restore(args: argparse.Namespace) -> int:
-    from .session import SessionStore as Store
-    from .session import title_from_filename
+    from .session_store import SessionStore as Store
+    from .session_store import title_from_filename
 
     path = args.file
     if not path and args.latest:

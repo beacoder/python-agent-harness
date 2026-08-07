@@ -19,9 +19,9 @@ from .client import Client
 from .models import AgentMode
 from .planmode import PlanMode
 from .safety import BashPolicy, SafetyViolation, check_path
-from .session import SessionStore
+from .session_store import SessionStore
 from .subagent import run_subagent
-from .tokenizer import TokenCalibrator
+from .token_estimator import TokenCalibrator
 from .tools import Registry, ToolContext
 from .undo import UndoStack
 
@@ -428,7 +428,7 @@ class AgentSession:
         self.registry.register(PlanExit())
 
     def _mode_prompts(self) -> dict[str, str]:
-        from .compaction import read_prompt_file
+        from .prompts import read_prompt_file
 
         return {
             "plan": read_prompt_file("plan.txt"),
@@ -475,7 +475,7 @@ class AgentSession:
             return
         store.title_pending = True
         try:
-            from .compaction import read_prompt_file
+            from .prompts import read_prompt_file
             from .models import Message as Msg
 
             system = read_prompt_file("title.txt")
@@ -542,7 +542,7 @@ class AgentSession:
         replaced by the summary frame + the last real user request, the
         cache epoch is reset, and the session file is refreshed.
         """
-        from .compaction import last_user_request, read_prompt_file
+        from .prompts import last_user_request, read_prompt_file
         from .models import Message as Msg
 
         messages = self.last_messages or []
@@ -585,7 +585,7 @@ class AgentSession:
         text is sent with the summary prompt, and the result is appended
         as an assistant message plus a session save.
         """
-        from .compaction import read_prompt_file
+        from .prompts import read_prompt_file
         from .models import Message as Msg
 
         messages = self.last_messages or []

@@ -19,13 +19,13 @@ import json
 from typing import Any
 
 from . import config
-from .compaction import last_user_request, read_prompt_file
+from .prompts import last_user_request, read_prompt_file
 from .models import Message, ToolCall
-from .tokenizer import context_window_for, estimate_payload_tokens
+from .token_estimator import context_window_for, estimate_payload_tokens
 
 
 class AgentLoop:
-    """Runs one agent session until terminal or max rounds."""
+    """Runs one agent session until terminal (main) or max rounds (sub-agent)."""
 
     def __init__(
         self,
@@ -47,7 +47,9 @@ class AgentLoop:
         else:
             attr = "system_prompt" if top_level else "subagent_system_prompt"
             self.system = getattr(session, attr, None)
-        self.max_rounds = max_rounds
+        # max_rounds only bounds sub-agent loops: the main agent runs until
+        # the model gives a terminal response or the user aborts it (Ctrl-C)
+        self.max_rounds = max_rounds if not top_level else None
         self.pending: list[ToolCall] = []
         self.error: str | None = None
         self.harness_injected: bool = False
@@ -234,7 +236,7 @@ class AgentLoop:
 
     def _run(self, rounds: int) -> str | None:
         session = self.session
-        while rounds < self.max_rounds:
+        while self.max_rounds is None or rounds < self.max_rounds:
             rounds += 1
             if self._is_cancelled():
                 return None
@@ -306,7 +308,8 @@ class AgentLoop:
                 return f"Error: {self.error or 'unknown error'}"
             return assistant.text()
 
-        # round budget exhausted, or an API error broke the loop
+        # round budget exhausted (sub-agents only), or an API error broke
+        # the loop
         if self.error:
             return self.error
         return self.messages[-1].text() if self.messages else None

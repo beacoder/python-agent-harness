@@ -1,6 +1,6 @@
 import unittest
 
-from python_agent_harness.tokenizer import (
+from python_agent_harness.token_estimator import (
     TokenCalibrator,
     context_window_for,
     estimate_payload_tokens,

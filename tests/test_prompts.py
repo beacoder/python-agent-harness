@@ -1,4 +1,4 @@
-"""Tests for the default agent-prompt loader (compaction.load_agent_prompt)."""
+"""Tests for the default agent-prompt loader (prompts.load_agent_prompt)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from python_agent_harness import config
-from python_agent_harness.compaction import load_agent_prompt, strip_frontmatter
+from python_agent_harness.prompts import load_agent_prompt, strip_frontmatter
 
 
 class TestStripFrontmatter(unittest.TestCase):

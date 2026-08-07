@@ -32,9 +32,9 @@ from . import config
 from .agent import run_agent_loop
 from .commands import find_command
 from .diffrender import render_diff
-from .harness import AgentSession
+from .agent_session import AgentSession
 from .models import Message
-from .session import SessionStore, title_from_filename
+from .session_store import SessionStore, title_from_filename
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -877,7 +877,7 @@ class Tui:
         )
         # keep the project context + task-completion rules in front of
         # the command's prompt (the "actual agent prompt" for this run)
-        from .compaction import assemble_agent_prompt
+        from .prompts import assemble_agent_prompt
 
         system = assemble_agent_prompt(
             cwd, prompt, context_path=self.session._configured_context_path

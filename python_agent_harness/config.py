@@ -148,7 +148,7 @@ MAX_TOKENS = 8192
 TEMPERATURE = 0.0
 
 # ---- sub-agents ---------------------------------------------------------------
-SUBAGENT_MAX_ROUNDS = 40
+SUBAGENT_MAX_ROUNDS = 60
 
 # ---- TUI preview limits -------------------------------------------------------
 TOOL_RESULT_PREVIEW_LINES = 5    # max lines of a tool result shown in the TUI

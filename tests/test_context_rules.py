@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from python_agent_harness import compaction, config
-from python_agent_harness.compaction import (
+from python_agent_harness import prompts, config
+from python_agent_harness.prompts import (
     assemble_agent_prompt,
     load_agent_prompt,
     load_task_completion_rules,
@@ -30,7 +30,7 @@ class TestTaskCompletionRules(unittest.TestCase):
             ctx.mkdir()
             (ctx / "general-rules.md").write_text("GENERAL CONTEXT", encoding="utf-8")
             with mock.patch(
-                "python_agent_harness.harness.find_context_dir",
+                "python_agent_harness.agent_session.find_context_dir",
                 return_value=str(ctx),
             ):
                 prompt = assemble_agent_prompt(d, "ACTUAL AGENT PROMPT")
@@ -54,7 +54,7 @@ class TestTaskCompletionRules(unittest.TestCase):
 
     def test_assemble_missing_rules_falls_back(self):
         with mock.patch.object(
-            compaction, "load_task_completion_rules", return_value=None
+            prompts, "load_task_completion_rules", return_value=None
         ):
             self.assertEqual(
                 assemble_agent_prompt("/tmp", "AGENT", include_context=False),
@@ -122,7 +122,7 @@ class TestTaskCompletionRules(unittest.TestCase):
         """A bare run_agent_loop without a system prompt still uses the
         session's assembled prompt (rules included)."""
         from python_agent_harness.agent import AgentLoop
-        from python_agent_harness.harness import AgentSession
+        from python_agent_harness.agent_session import AgentSession
         from python_agent_harness.models import Message
         from python_agent_harness.tools import default_registry
 

@@ -121,14 +121,14 @@ clobber the next run's state (per-run cancellation identity).
 python_agent_harness/
 ├── agent.py        agent loop (supervision, nudges, compaction)
 ├── client.py       OpenAI-compatible streaming client (httpx)
-├── tokenizer.py    CJK-aware token estimation + calibration
+├── token_estimator.py  CJK-aware token estimation + calibration
 ├── safety.py       path guards + bash policy tiers
 ├── undo.py         file snapshots / undo
 ├── cache.py        tool-result cache + dedup
 ├── planmode.py     build/plan mode + plan file lifecycle
-├── compaction.py   compact frame / anchored summary
-├── session.py      session persistence + titles
-├── harness.py      AgentSession (wiring hub)
+├── prompts.py      prompt loading + system prompt assembly
+├── session_store.py  session persistence + titles
+├── agent_session.py  AgentSession (wiring hub)
 ├── commands.py     init/review/custom command definitions
 ├── cli.py          argparse entry points
 ├── tui.py          rich + prompt_toolkit TUI

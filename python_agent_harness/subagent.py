@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from . import config
 from .agent import run_agent_loop
-from .compaction import load_agent_prompt
+from .prompts import load_agent_prompt
 from .models import Message
 
 

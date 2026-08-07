@@ -3,7 +3,7 @@
 import json
 import unittest
 
-from python_agent_harness.harness import AgentSession
+from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall, Usage
 from python_agent_harness.tools import default_registry
 

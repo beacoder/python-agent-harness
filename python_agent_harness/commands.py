@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from .agent import run_agent_loop
-from .compaction import read_prompt_file
+from .prompts import read_prompt_file
 from .models import Message
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -88,7 +88,7 @@ class SessionCommand:
         )
         # the command prompt is the "actual agent prompt"; the project
         # context and task-completion rules are kept in front of it
-        from .compaction import assemble_agent_prompt
+        from .prompts import assemble_agent_prompt
 
         context_path = getattr(session, "_configured_context_path", None)
         system = assemble_agent_prompt(cwd, prompt, context_path=context_path)

@@ -1,9 +1,11 @@
-"""Context compaction.
+"""Prompt loading and assembly.
 
-Ported from gptel-agent-harness.el: on high context usage, abort the
-current round, summarize the whole conversation (compact.txt as system
-prompt, tools disabled), wrap the summary in a compact frame, reset the
-cache epoch, and resume with the last user request.
+Ported from gptel-agent-harness.el: loads bundled prompt files
+(agent/subagent/commands), strips YAML frontmatter, discovers skills
+for the {{SKILLS}} placeholder, assembles the effective system prompt
+from project context files + task-completion rules + agent prompt, and
+provides last_user_request() for the compaction flow (summarize the
+conversation and resume with the last user request).
 """
 
 from __future__ import annotations
@@ -183,7 +185,7 @@ def assemble_agent_prompt(
     parts: list[str] = []
     if include_context:
         # lazy import: harness imports this module at call time
-        from .harness import find_context_dir
+        from .agent_session import find_context_dir
 
         context_block = load_context_files(find_context_dir(project_dir, context_path))
         if context_block:

@@ -5,9 +5,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from python_agent_harness.harness import AgentSession
+from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, Usage
-from python_agent_harness.session import SessionStore
+from python_agent_harness.session_store import SessionStore
 from python_agent_harness.subagent import run_subagent
 from python_agent_harness.tools import default_registry
 
@@ -68,7 +68,7 @@ class TestSubagentPromptSelection(unittest.TestCase):
         session = make_session("MAIN AGENT PROMPT", None, self._tmp.name)
         run_subagent(session, "task", "do something")
         from python_agent_harness import config as cfg
-        from python_agent_harness.compaction import load_agent_prompt
+        from python_agent_harness.prompts import load_agent_prompt
 
         default_sub = load_agent_prompt(cfg.DEFAULT_SUBAGENT_PROMPT_FILE)
         self.assertEqual(session.client.systems, [default_sub])
@@ -80,7 +80,7 @@ class TestSubagentPromptSelection(unittest.TestCase):
         del session.subagent_system_prompt  # simulate an older session object
         run_subagent(session, "task", "do something")
         from python_agent_harness import config as cfg
-        from python_agent_harness.compaction import load_agent_prompt
+        from python_agent_harness.prompts import load_agent_prompt
 
         default_sub = load_agent_prompt(cfg.DEFAULT_SUBAGENT_PROMPT_FILE)
         self.assertEqual(session.client.systems, [default_sub])
@@ -113,7 +113,7 @@ class TestSubagentPromptSelection(unittest.TestCase):
         responsible for loading the bundled subagent prompt file by
         default — it must differ from the main system_prompt."""
         from python_agent_harness import config as cfg
-        from python_agent_harness.compaction import load_agent_prompt
+        from python_agent_harness.prompts import load_agent_prompt
 
         main = load_agent_prompt(cfg.DEFAULT_AGENT_PROMPT_FILE)
         sub = load_agent_prompt(cfg.DEFAULT_SUBAGENT_PROMPT_FILE)

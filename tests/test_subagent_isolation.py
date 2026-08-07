@@ -7,7 +7,7 @@ import json
 import unittest
 
 from python_agent_harness.agent import run_agent_loop
-from python_agent_harness.harness import AgentSession
+from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall, Usage
 from python_agent_harness.tools import default_registry
 
@@ -136,7 +136,7 @@ class TestSubagentIsolation(unittest.TestCase):
         """A session without a configured subagent prompt must still give
         the sub-agent ONLY its own default prompt — never the parent's
         system prompt (which carries context + completion rules)."""
-        from python_agent_harness.compaction import assemble_agent_prompt
+        from python_agent_harness.prompts import assemble_agent_prompt
 
         parent = make_session(RecClient([]))
         parent.system_prompt = assemble_agent_prompt(

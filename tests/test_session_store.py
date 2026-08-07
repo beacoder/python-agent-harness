@@ -1,6 +1,6 @@
 import unittest
 
-from python_agent_harness.session import (
+from python_agent_harness.session_store import (
     SessionStore, sanitize_title, title_from_filename,
 )
 

@@ -5,10 +5,10 @@ import unittest
 from unittest import mock
 
 from python_agent_harness.agent import AgentLoop, Supervisor, sanitize_tool_result
-from python_agent_harness.harness import AgentSession
+from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall, Usage
 from python_agent_harness.planmode import PlanMode
-from python_agent_harness.session import SessionStore
+from python_agent_harness.session_store import SessionStore
 from python_agent_harness.tools import default_registry
 
 
@@ -258,7 +258,7 @@ class TestAgentLoop(unittest.TestCase):
 
         session.client.chat_sync = tracking_chat_sync
         with mock.patch(
-            "python_agent_harness.compaction.read_prompt_file",
+            "python_agent_harness.prompts.read_prompt_file",
             return_value="TITLE-PROMPT",
         ):
             loop = AgentLoop(session, messages=[Message(role="user", content="hi there")])
