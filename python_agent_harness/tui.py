@@ -233,12 +233,35 @@ class SlashCompleter(Completer):
 
 class UiQuestion:
     def __init__(self, prompt: str, multiple: bool = False,
-                 options: list[str] | None = None) -> None:
+                 options: list[str] | None = None,
+                 custom: bool = True) -> None:
         self.prompt = prompt
         self.multiple = multiple
         self.options = options or []
+        self.custom = custom
         self.answer: str | None = None
         self.event = threading.Event()
+
+
+def _resolve_numbered_choice(answer: str, options: list[str]) -> str:
+    """Map bare numbers in ANSWER (1-based) to the matching option label.
+
+    Comma-separated numbers pick several options (multiple select);
+    non-numeric tokens pass through unchanged as free-text answers;
+    out-of-range numbers are kept as typed.  Empty answers stay empty.
+    """
+    if not options or not answer.strip():
+        return answer
+    resolved: list[str] = []
+    for part in answer.split(","):
+        part = part.strip()
+        if part.isdigit():
+            idx = int(part)
+            if 1 <= idx <= len(options):
+                resolved.append(options[idx - 1])
+                continue
+        resolved.append(part)
+    return ", ".join(resolved)
 
 
 class Tui:
@@ -315,7 +338,9 @@ class Tui:
             options = q.get("options") or []
             multiple = bool(q.get("multiple"))
             custom = q.get("custom", True)
-            ui_q = UiQuestion(prompt, multiple=multiple, options=list(options))
+            ui_q = UiQuestion(
+                prompt, multiple=multiple, options=list(options), custom=custom,
+            )
             answer = self._ask_sync(ui_q)
             if multiple:
                 answer = ", ".join(a.strip() for a in answer.split(",") if a.strip())
@@ -580,15 +605,32 @@ class Tui:
         self.console.print(self._render_frame())
         self.console.print()
         self._flush()
-        prompt = q.prompt
-        if q.options:
-            prompt += " [choices: " + ", ".join(q.options) + "]"
+        options = q.options or []
+        if options and any(len(o) > 1 for o in options):
+            # long option labels get a numbered list: type the number to pick
+            self.console.print(Text(q.prompt))
+            for i, opt in enumerate(options, 1):
+                line = Text(f"  {i}) ", style="cyan")
+                line.append(opt)
+                self.console.print(line)
+            if q.multiple:
+                hint = "Enter numbers, comma-separated"
+            else:
+                hint = "Enter a number"
+            if q.custom:
+                hint += ", or type your own answer"
+            self.console.print(f"[dim]{hint}[/dim]")
+            prompt = "> "
+        elif options:
+            prompt = q.prompt + " [choices: " + ", ".join(options) + "] > "
+        else:
+            prompt = q.prompt + " > "
         try:
             with patch_stdout():
-                answer = self.prompt_session.prompt(prompt + " > ", multiline=False)
+                answer = self.prompt_session.prompt(prompt, multiline=False)
         except (EOFError, KeyboardInterrupt):
             answer = ""
-        q.answer = answer
+        q.answer = _resolve_numbered_choice(answer, options)
         q.event.set()
         self.question = None
         self._data_event.set()  # re-render promptly after the answer

@@ -13,7 +13,7 @@ from python_agent_harness.client import Client
 from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall
 from python_agent_harness.tools import default_registry
-from python_agent_harness.tui import Tui
+from python_agent_harness.tui import Tui, UiQuestion, _resolve_numbered_choice
 
 
 def make_tui() -> tuple[Tui, io.StringIO]:
@@ -668,6 +668,82 @@ class TestTui(unittest.TestCase):
         handlers = {b.keys: b.handler for b in kb.bindings}
         self.assertIn(("c-i",), handlers)    # Tab
         self.assertIn(("s-tab",), handlers)  # Shift+Tab
+
+
+    # ------------------------------------------------------------------
+    # question selection (number keys)
+    # ------------------------------------------------------------------
+    def test_numbered_choice_resolution(self):
+        """Bare numbers map to option labels; everything else passes
+        through untouched (free-text answers, out-of-range, empty)."""
+        options = ["foo bar", "baz", "qux"]
+        self.assertEqual(_resolve_numbered_choice("1", options), "foo bar")
+        self.assertEqual(_resolve_numbered_choice("2", options), "baz")
+        self.assertEqual(_resolve_numbered_choice("3", options), "qux")
+        self.assertEqual(_resolve_numbered_choice("1,3", options), "foo bar, qux")
+        self.assertEqual(_resolve_numbered_choice("2, custom", options), "baz, custom")
+        self.assertEqual(_resolve_numbered_choice("custom", options), "custom")
+        self.assertEqual(_resolve_numbered_choice("0", options), "0")
+        self.assertEqual(_resolve_numbered_choice("9", options), "9")
+        self.assertEqual(_resolve_numbered_choice("", options), "")
+        self.assertEqual(_resolve_numbered_choice("1", []), "1")
+        self.assertEqual(_resolve_numbered_choice("1", ["only"]), "only")
+
+    def test_ask_question_number_maps_to_option(self):
+        """Typing a bare number selects the numbered option label."""
+        tui, _ = make_tui()
+        q = UiQuestion("Pick one", options=["long option a", "long option b"])
+        tui.question = q
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="2"):
+            tui._ask_question_blocking()
+        self.assertEqual(q.answer, "long option b")
+        self.assertIsNone(tui.question)
+
+    def test_ask_question_prints_numbered_options(self):
+        """Long option labels render as a numbered list before the input."""
+        tui, buf = make_tui()
+        q = UiQuestion("Pick one", options=["long option a", "long option b"])
+        tui.question = q
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="1"):
+            tui._ask_question_blocking()
+        out = buf.getvalue()
+        self.assertIn("Pick one", out)
+        self.assertIn("1) long option a", out)
+        self.assertIn("2) long option b", out)
+
+    def test_ask_question_short_options_stay_inline(self):
+        """Single-letter options (y/n/a/d) keep the compact inline
+        format, but a number still resolves to the matching option."""
+        tui, _ = make_tui()
+        q = UiQuestion("Proceed?", options=["y", "n"])
+        tui.question = q
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="1") as m:
+            tui._ask_question_blocking()
+        self.assertEqual(q.answer, "y")
+        m.assert_called_once_with("Proceed? [choices: y, n] > ", multiline=False)
+
+    def test_ask_question_custom_answer_passthrough(self):
+        """Free-text answers (not numbers) are returned verbatim."""
+        tui, _ = make_tui()
+        q = UiQuestion("Pick one", options=["long option a", "long option b"])
+        tui.question = q
+        with mock.patch.object(
+            tui.prompt_session, "prompt", return_value="something else"
+        ):
+            tui._ask_question_blocking()
+        self.assertEqual(q.answer, "something else")
+
+    def test_ask_question_multiple_numbers(self):
+        """Comma-separated numbers select several options (multiple)."""
+        tui, _ = make_tui()
+        q = UiQuestion(
+            "Pick several", multiple=True,
+            options=["first choice", "second choice", "third choice"],
+        )
+        tui.question = q
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="1,3"):
+            tui._ask_question_blocking()
+        self.assertEqual(q.answer, "first choice, third choice")
 
 
 if __name__ == "__main__":
