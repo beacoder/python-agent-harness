@@ -4,7 +4,7 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
 
 ## Features
 
-- **Agent loop with FSM supervision** — the model is nudged (max 2) when it
+- **Agent loop with completion supervision** — the model is nudged (max 2) when it
   tries to stop before the task is complete; the nudge counter resets on tool
   calls; tool results are sanitized so a failed call never strands the loop.
 - **Context management** — CJK-aware token estimation, per-model context
@@ -31,7 +31,7 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
   `/undo` `/history`.
 - **Sessions** — auto-saved after every response to
   `~/.local/share/python-agent-harness/sessions/`, LLM-generated titles
-  (one-shot per session, fired when the FSM run finishes; the file is
+  (one-shot per session, fired when the agent loop finishes; the file is
   renamed to `<title>_<TS>.md`), `restore` / `restore-latest` /
   `sessions` commands.
 - **Commands** — `init` (create/update AGENTS.md), `review` (uncommitted
@@ -110,8 +110,7 @@ clobber the next run's state (per-run cancellation identity).
 
 ```
 python_agent_harness/
-├── agent.py        agent loop (FSM, nudges, compaction)
-├── fsm.py          state machine + supervision
+├── agent.py        agent loop (supervision, nudges, compaction)
 ├── client.py       OpenAI-compatible streaming client (httpx)
 ├── tokenizer.py    CJK-aware token estimation + calibration
 ├── safety.py       path guards + bash policy tiers
@@ -143,5 +142,5 @@ venv/bin/python -m unittest discover -s tests -v
 - [x] Bash tiers: catastrophic → plan gate → destructive → dangerous → run
 - [x] Cache dedup messages and write-through invalidation
 - [x] Session metadata round-trip and title sanitization
-- [x] One-shot LLM title generation after the FSM run finishes
+- [x] One-shot LLM title generation after the agent loop finishes
 - [x] Ctrl-C cancel: stale workers can't clobber the next run's history
