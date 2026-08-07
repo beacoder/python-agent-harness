@@ -1,12 +1,12 @@
-"""Core agent loop: FSM-driven send -> tool -> supervise.
+"""Core agent loop: send -> tool -> supervise.
 
 Implements the gptel-agent-harness supervision semantics:
 
-- context ratio is computed before each top-level WAIT; compaction is
+- context ratio is computed before each top-level request; compaction is
   triggered past the threshold (top-level, agentic, not already compacting)
 - queued plan/build-mode prompts are injected before sending
-- terminal states on an agentic top-level loop nudge the model back to
-  WAIT while nudge budget remains (max 2), reset on tool calls
+- a terminal response on an agentic top-level loop nudges the model back
+  to work while nudge budget remains (max 2), reset on tool calls
 - tool results are sanitized (None -> error placeholder, non-str -> str)
 - tool-call batches never strand the loop: failures become error results
 - token calibration is updated from API-reported input tokens
@@ -20,7 +20,6 @@ from typing import Any
 
 from . import config
 from .compaction import insert_compact_frame, last_user_request, read_prompt_file
-from .fsm import Fsm, FsmInfo, PendingToolCall, State, Supervisor, sanitize_tool_result
 from .models import Message, ToolCall
 from .tokenizer import context_window_for, estimate_payload_tokens
 
@@ -49,14 +48,9 @@ class AgentLoop:
             attr = "system_prompt" if top_level else "subagent_system_prompt"
             self.system = getattr(session, attr, None)
         self.max_rounds = max_rounds
-        self.info = FsmInfo(
-            buffer=session,
-            model=session.model,
-            backend=session.backend,
-            tools=bool(session.tools_enabled),
-            top_level=top_level,
-        )
-        self.fsm = Fsm(info=self.info)
+        self.pending: list[ToolCall] = []
+        self.error: str | None = None
+        self.harness_injected: bool = False
         self.supervisor = Supervisor(session)
         # Cancellation identity for this run, captured at run() start:
         # cancel() bumps the session generation, so a stale worker from
@@ -105,12 +99,12 @@ class AgentLoop:
     # ------------------------------------------------------------------
     def _inject_pending_prompts(self) -> None:
         if not self.top_level:
-            if self.session.plan_mode.is_plan and not self.info.harness_injected:
+            if self.session.plan_mode.is_plan and not self.harness_injected:
                 self.messages.insert(
                     len(self.messages),
                     Message(role="user", content=self.session.plan_mode.plan_reminder()),
                 )
-                self.info.harness_injected = True
+                self.harness_injected = True
             return
         prompts = self.session.plan_mode.consume_prompts()
         prompts = prompts + list(self.session.pending_user_prompts)
@@ -182,7 +176,7 @@ class AgentLoop:
         The assistant message carrying the tool calls was already
         appended by the main loop; here we add the per-call results.
         """
-        pending = list(self.info.pending)
+        pending = list(self.pending)
         if not pending:
             return
         if self._is_cancelled():
@@ -195,18 +189,18 @@ class AgentLoop:
             if self._is_cancelled():
                 # cancelled mid-round: stop running further tools; the
                 # results already delivered stay local to this (dead) run
-                self.info.pending = []
+                self.pending = []
                 return
-            result = sanitize_tool_result(self._execute_tool_call(p.call))
-            p.call.result = result
+            result = sanitize_tool_result(self._execute_tool_call(p))
+            p.result = result
             if hasattr(self.session, "take_diff"):
-                p.call.diff = self.session.take_diff(p.call.id)
+                p.diff = self.session.take_diff(p.id)
             self.messages.append(
                 Message(
                     role="tool",
                     content=result,
-                    tool_call_id=p.call.id,
-                    name=p.call.name,
+                    tool_call_id=p.id,
+                    name=p.name,
                 )
             )
             if self.top_level and not self._is_cancelled():
@@ -215,7 +209,7 @@ class AgentLoop:
                 # tool round and must never clobber the parent's
                 # conversation history (the TUI renders from it)
                 self.session.last_messages = list(self.messages)
-        self.info.pending = []
+        self.pending = []
         self.session.notify("tools")
 
     # ------------------------------------------------------------------
@@ -225,7 +219,6 @@ class AgentLoop:
         """Run the loop; returns the final assistant text (or None)."""
         session = self.session
         self._cancel_gen = session.cancel_generation
-        self.fsm.transition(State.WAIT)
         rounds = 0
         try:
             return self._run(rounds)
@@ -234,7 +227,7 @@ class AgentLoop:
             # and a sub-agent must never overwrite the parent's history.
             if not self._is_cancelled() and self.top_level:
                 session.last_messages = list(self.messages)
-                # FSM finished: give the session a meaningful title from
+                # Loop finished: give the session a meaningful title from
                 # the first real user message (one-shot; no-op when the
                 # title already exists or generation is in flight)
                 session.generate_session_title()
@@ -271,7 +264,7 @@ class AgentLoop:
             except Exception as e:  # noqa: BLE001 - API errors become ERRS
                 if self._is_cancelled():
                     return None  # cancelled (Ctrl-C), not an error
-                self.info.error = f"Error: {e}"
+                self.error = f"Error: {e}"
                 session.notify("error")
                 break
 
@@ -291,35 +284,31 @@ class AgentLoop:
                 session.auto_save(self.messages, self.system)
 
             if assistant.tool_calls:
-                self.info.pending = [
-                    PendingToolCall(call=tc) for tc in assistant.tool_calls
-                ]
+                self.pending = list(assistant.tool_calls)
                 self.supervisor.reset_nudges()
-                self.fsm.transition(State.TOOL)
-                self.fsm.transition(State.TRET)
                 self._run_tool_round()
                 if self._is_cancelled():
                     return None
-                self.fsm.transition(State.WAIT)
                 continue
 
-            self.fsm.transition()  # WAIT -> TYPE
-            self.fsm.transition()  # TYPE -> DONE | ERRS (pending is empty here)
-            target = self.fsm.state
-            if target in (State.DONE, State.ERRS):
-                effective = self.supervisor.supervise(self.fsm, target)
-                if effective == State.WAIT:
-                    self.messages.append(
-                        Message(role="user", content=config.NUDGE_MESSAGE)
-                    )
-                    continue
-                if target == State.ERRS:
-                    return f"Error: {self.info.error or 'unknown error'}"
-                return assistant.text()
+            # no tool calls: decide whether to nudge or stop
+            if self.supervisor.supervise(
+                terminal=True,
+                agentic=bool(session.tools_enabled),
+                top_level=self.top_level,
+                pending=bool(self.pending),
+            ):
+                self.messages.append(
+                    Message(role="user", content=config.NUDGE_MESSAGE)
+                )
+                continue
+            if self.error:
+                return f"Error: {self.error or 'unknown error'}"
+            return assistant.text()
 
         # round budget exhausted, or an API error broke the loop
-        if self.info.error:
-            return self.info.error
+        if self.error:
+            return self.error
         return self.messages[-1].text() if self.messages else None
 
 
@@ -335,3 +324,83 @@ def run_agent_loop(
         session, messages=messages, top_level=top_level,
         system=system, max_rounds=max_rounds,
     ).run()
+NIL_RESULT_PLACEHOLDER = (
+    "Error: tool produced no result (it may have been interrupted or failed to return)."
+)
+
+
+class Supervisor:
+    """Completion supervision: nudge the model when it stops too early."""
+
+    def __init__(self, session: object) -> None:
+        self.session = session
+        self.nudge_count = 0
+
+    # -- helpers -----------------------------------------------------------
+    @property
+    def agentic(self) -> bool:
+        return bool(self.session.tools_enabled)
+
+    @property
+    def alive(self) -> bool:
+        return self.session.alive
+
+    def can_nudge(self) -> bool:
+        """Fails closed: a dead session has NO nudge budget.
+
+        Mirrors the Emacs logic where a dead buffer can never record
+        nudges and would otherwise loop forever.
+        """
+        return self.alive and self.nudge_count < config.MAX_NUDGES
+
+    def inject_nudge(self) -> bool:
+        """Increment the nudge counter. Returns True on success; never raises.
+
+        The caller (agent loop) appends the nudge message itself when the
+        supervision decides to nudge.
+        """
+        self.nudge_count += 1
+        return True
+
+    def reset_nudges(self) -> None:
+        self.nudge_count = 0
+
+    # -- supervision -------------------------------------------------------
+    def supervise(
+        self,
+        *,
+        terminal: bool,
+        agentic: bool,
+        top_level: bool,
+        pending: bool,
+    ) -> bool:
+        """Decide whether to nudge the model back to work.
+
+        Returns True to inject a nudge and run another round; False to
+        let the loop terminate.
+
+        Handles:
+        - compaction in progress -> never nudge, let the loop terminate
+        - terminal response on an agentic top-level loop with nudge
+          budget left and no pending tool calls -> nudge
+        """
+        if self.session.compacting:
+            return False
+        if terminal and agentic and top_level and self.can_nudge() and not pending:
+            self.inject_nudge()
+            return True
+        return False
+
+
+def sanitize_tool_result(result: object) -> str:
+    """Sanitize a tool result for the model.
+
+    - str (incl. empty) kept as-is
+    - None -> error placeholder (backends reject JSON null content)
+    - anything else -> str()
+    """
+    if result is None:
+        return NIL_RESULT_PLACEHOLDER
+    if isinstance(result, str):
+        return result
+    return str(result)
