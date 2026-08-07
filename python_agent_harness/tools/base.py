@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import field
 from typing import Any
 
 from ..models import ToolSpec
@@ -24,11 +24,6 @@ class ToolContext:
     @property
     def cwd(self) -> str:
         return self.session.project_dir if self.session else "."
-
-    def approve(self, prompt: str) -> bool:
-        if self.session and hasattr(self.session, "confirm"):
-            return self.session.confirm(prompt)
-        return True
 
     def ask_questions(self, questions: list[dict]) -> str:
         if self.session and hasattr(self.session, "ask_questions"):
@@ -124,9 +119,6 @@ class Registry:
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
-
-    def names(self) -> list[str]:
-        return list(self._tools)
 
     def specs(self, names: list[str] | None = None) -> list[ToolSpec]:
         wanted = set(names) if names is not None else set(self._tools)
