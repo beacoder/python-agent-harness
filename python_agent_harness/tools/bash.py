@@ -15,21 +15,12 @@ message is delivered.  A session cancel (Ctrl-C) also kills the process.
 from __future__ import annotations
 
 import os
-import re
 import signal
 import subprocess
 import threading
 import time
 
 from .base import Tool, ToolContext
-
-
-def _split_tokens(command: str) -> list[str]:
-    return re.split(r"[ \t\n\r;&|<>()\"']+", command)
-
-
-class SafetyViolation(Exception):
-    pass
 
 
 def _kill_process(proc: subprocess.Popen) -> None:
