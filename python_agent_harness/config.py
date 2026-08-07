@@ -169,7 +169,7 @@ DEFAULT_SUBAGENT_PROMPT_FILE = PROMPTS_DIR / "subagent.txt"
 CONFIG_DIR = Path(
     os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
 ) / "python-agent-harness"
-CONFIG_FILE = CONFIG_DIR / "config.toml"
+CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULT_LLM: dict = {
     "base_url": "https://api.openai.com/v1",
@@ -183,34 +183,14 @@ DEFAULT_LLM: dict = {
 }
 
 CONFIG_TEMPLATE = """\
-# python-agent-harness configuration
-# Location: {path}
-# Precedence: code defaults < this file < OPENAI_* environment variables
-
-[llm]
-# Any OpenAI-compatible endpoint (DeepSeek, Moonshot/Kimi, GLM, Qwen, OpenAI, ...):
-base_url = "https://api.deepseek.com/v1"
-
-# Your API key. You can also keep it unset here and rely on
-# OPENAI_API_KEY, but the point of this file is to avoid env vars.
-# api_key = "sk-..."
-
-# Model name as your provider calls it, e.g. "deepseek-chat", "kimi-k2.7",
-# "glm-5.2", "qwen3", "gpt-5-mini".
-model = "deepseek-chat"
-
-# Provider display name used in saved sessions.
-# backend = "DeepSeek"
-
-# Reasoning effort for thinking models ("low" | "medium" | "high",
-# or whatever your provider accepts).  Omitted from the request when unset.
-reasoning_effort = "medium"
-
-# temperature = 0.0
-# max_tokens = 8192
-# timeout = 600.0
-
-# Optional: point to another config file via PYTHON_AGENT_HARNESS_CONFIG
+{{
+  "_comment": "python-agent-harness configuration. Location: {path}. Precedence: code defaults < this file < OPENAI_* environment variables.",
+  "llm": {{
+    "base_url": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat",
+    "reasoning_effort": "medium"
+  }}
+}}
 """
 
 _ENV_OVERRIDES = {
@@ -234,23 +214,22 @@ def _config_path(path: str | os.PathLike | None = None) -> Path:
 def load_llm_config(path: str | os.PathLike | None = None) -> dict:
     """Resolve LLM settings: code defaults < config file < environment.
 
-    The config file is TOML with an ``[llm]`` section (see
-    `CONFIG_TEMPLATE`).  Environment variables still win if set, so
-    existing setups keep working.
+    The config file is JSON with an ``llm`` object (see `CONFIG_TEMPLATE`).
+    Environment variables still win if set, so existing setups keep working.
     """
-    import tomllib
+    import json
 
     settings = dict(DEFAULT_LLM)
     cfg_path = _config_path(path)
     if cfg_path.exists():
         try:
             with open(cfg_path, "rb") as f:
-                data = tomllib.load(f)
+                data = json.load(f)
         except Exception as e:  # noqa: BLE001
             raise ValueError(f"cannot read config file {cfg_path}: {e}") from e
         llm = data.get("llm") or {}
         if not isinstance(llm, dict):
-            raise ValueError(f"config file {cfg_path}: [llm] must be a table")
+            raise ValueError(f"config file {cfg_path}: llm must be an object")
         for key in (
             "base_url", "api_key", "model", "backend",
             "temperature", "max_tokens", "timeout",
