@@ -19,7 +19,7 @@ import json
 from typing import Any
 
 from . import config
-from .compaction import insert_compact_frame, last_user_request, read_prompt_file
+from .compaction import last_user_request, read_prompt_file
 from .models import Message, ToolCall
 from .tokenizer import context_window_for, estimate_payload_tokens
 
@@ -337,10 +337,6 @@ class Supervisor:
         self.nudge_count = 0
 
     # -- helpers -----------------------------------------------------------
-    @property
-    def agentic(self) -> bool:
-        return bool(self.session.tools_enabled)
-
     @property
     def alive(self) -> bool:
         return self.session.alive
