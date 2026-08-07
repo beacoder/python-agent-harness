@@ -84,39 +84,46 @@ class TestTaskCompletionRules(unittest.TestCase):
             finally:
                 s.close()
 
-    def test_adopt_keeps_rules_before_command_prompt(self):
-        """init/review/custom commands: the command prompt is the agent
-        prompt; rules stay in front of it."""
-        from python_agent_harness.cli import _adopt
+    def test_slash_commands_keep_rules_before_command_prompt(self):
+        """/init and custom commands (TUI slash path): the command
+        prompt is the run's system prompt; rules stay in front of it."""
+        import io
 
-        class Stub:
-            project_dir = "/tmp"
+        from rich.console import Console
 
-        s = Stub()
-        _adopt(s, {"system_prompt": "COMMAND PROMPT"})
-        self.assertIn("Task Completion Rules", s.system_prompt)
-        self.assertLess(
-            s.system_prompt.index("Task Completion Rules"),
-            s.system_prompt.index("COMMAND PROMPT"),
+        from python_agent_harness.agent_session import AgentSession
+        from python_agent_harness.client import Client
+        from python_agent_harness.tools import default_registry
+        from python_agent_harness.tui import Tui
+
+        session = AgentSession(
+            project_dir="/tmp", client=Client(
+                base_url="http://127.0.0.1:1/v1", api_key="x", model="m",
+            ),
+            model="m", registry=default_registry(),
         )
+        tui = Tui(
+            session, Console(file=io.StringIO(), width=100, force_terminal=False)
+        )
+        captured = {}
 
-    def test_command_run_loop_system_includes_rules(self):
-        from python_agent_harness.commands import initialize_command
+        def fake_start(text, system=None, restore=None):
+            captured["system"] = system
 
-        with mock.patch("python_agent_harness.commands.run_agent_loop") as m:
-            with tempfile.TemporaryDirectory() as d:
-                cmd = initialize_command()
-                cmd.run(
-                    session_factory=lambda **kw: object(),
-                    project_dir=d,
-                    extra=None,
-                )
-            _, kwargs = m.call_args
-            self.assertIn("Task Completion Rules", kwargs["system"])
+        with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+            tui._handle_slash("/init")
+            self.assertIn("Task Completion Rules", captured["system"])
             self.assertLess(
-                kwargs["system"].index("Task Completion Rules"),
-                kwargs["system"].index("AGENTS.md"),
+                captured["system"].index("Task Completion Rules"),
+                captured["system"].index("AGENTS.md"),
             )
+            tui._handle_slash("/explain client.py")
+            self.assertIn("Task Completion Rules", captured["system"])
+            self.assertLess(
+                captured["system"].index("Task Completion Rules"),
+                captured["system"].index("You are a senior engineer"),
+            )
+        session.close()
 
     def test_agent_loop_falls_back_to_session_prompt(self):
         """A bare run_agent_loop without a system prompt still uses the

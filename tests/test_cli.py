@@ -91,20 +91,24 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         finally:
             session.close()
 
-    def test_explain_not_a_cli_subcommand(self):
-        """explain is a TUI slash command only — no CLI subcommand.
+    def test_custom_commands_not_cli_subcommands(self):
+        """Custom commands (e.g. explain) are TUI slash commands only —
+        no CLI subcommand is registered for any of them.
 
-        It must still resolve as a SessionCommand so the TUI /explain
+        They must still resolve as SessionCommands so the TUI /explain
         keeps working (via commands.find_command).
         """
-        from python_agent_harness.commands import find_command
+        from python_agent_harness.commands import (
+            find_command, load_custom_commands,
+        )
 
         parser = cli.build_parser()
         subparsers = next(
             a for a in parser._actions
             if a.__class__.__name__ == "_SubParsersAction"
         )
-        self.assertNotIn("explain", subparsers.choices)
+        for cmd in load_custom_commands():
+            self.assertNotIn(cmd.name, subparsers.choices)
         self.assertIn("run", subparsers.choices)
         self.assertNotIn("review", subparsers.choices)
         self.assertNotIn("init", subparsers.choices)
@@ -175,40 +179,6 @@ class TestCommandToolAvailability(unittest.TestCase):
             self.assertIsNotNone(s.registry.get("PlanExit"))
         finally:
             s.close()
-
-    def test_command_run_hides_planexit_for_init(self):
-        """SessionCommand.run hides PlanExit for the whole init run and
-        restores it afterwards (even when the run raises)."""
-        import unittest.mock as mock
-
-        from python_agent_harness.agent_session import AgentSession
-        from python_agent_harness.commands import initialize_command
-        from python_agent_harness.tools import default_registry
-
-        session = AgentSession(
-            project_dir="/tmp", client=object(), model="m",
-            registry=default_registry(),
-        )
-        session.switch_to_plan()  # registers PlanExit
-        try:
-            def _loop(*a, **kw):
-                # PlanExit stays hidden for the whole run (sub-agents
-                # share this registry, so they are covered too)
-                self.assertIsNone(session.registry.get("PlanExit"))
-                raise RuntimeError("boom")
-
-            with mock.patch(
-                "python_agent_harness.commands.run_agent_loop",
-                side_effect=_loop,
-            ):
-                with self.assertRaises(RuntimeError):
-                    initialize_command().run(
-                        lambda **kw: session, project_dir="/tmp"
-                    )
-            # restored even though the run raised
-            self.assertIsNotNone(session.registry.get("PlanExit"))
-        finally:
-            session.close()
 
 
 class TestCliSessionCommands(unittest.TestCase):

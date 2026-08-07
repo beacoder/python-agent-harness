@@ -3,10 +3,10 @@
 Commands:
   run [project]            interactive TUI agent session (default)
   config [--init]          show effective LLM config / write a template file
-  <custom>                 any prompt file in prompts/commands/
 
-init, review, sessions, restore (and summary/explain) are TUI slash
-commands only — see the TUI help for /init /review /sessions /restore.
+Custom commands (prompts/commands/*.txt) — like init, review,
+sessions, restore and summary/explain — are TUI slash commands only;
+they are NOT registered as CLI subcommands.
 
 Configuration (LLM etc.) is read from a JSON file, by default
 ~/.config/python-agent-harness/config.json; see `config --init`.
@@ -20,16 +20,8 @@ import sys
 
 from . import config
 from .client import Client
-from .commands import (
-    SessionCommand, find_command, load_custom_commands,
-)
 from .agent_session import AgentSession
 from .tools import default_registry
-
-
-# Commands available only as TUI slash commands (e.g. /explain) — they
-# are NOT registered as CLI subcommands.
-TUI_ONLY_COMMANDS = {"explain"}
 
 
 def make_session(
@@ -122,40 +114,6 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_custom(args: argparse.Namespace) -> int:
-    cmd = find_command(args.command_name)
-    if cmd is None:
-        print(f"unknown custom command: {args.command_name}", file=sys.stderr)
-        return 1
-    _run_command(cmd, args.project, args.extra, args.config)
-    return 0
-
-
-def _run_command(
-    cmd: SessionCommand,
-    project: str | None,
-    extra: str | None,
-    config_path: str | None = None,
-) -> None:
-    project_dir = project or os.getcwd()
-    session = make_session(project_dir, config_path=config_path)
-    cmd.run(lambda **kw: _adopt(session, kw), project_dir=project_dir, extra=extra)
-
-
-def _adopt(session: AgentSession, kw: dict) -> AgentSession:
-    # SessionCommand.run builds its own session kwargs; reuse ours.
-    # The command's prompt becomes the "actual agent prompt"; the
-    # project context + task-completion rules are kept in front of it.
-    if kw.get("system_prompt") is not None:
-        from .prompts import assemble_agent_prompt
-
-        session.system_prompt = assemble_agent_prompt(
-            session.project_dir, kw["system_prompt"],
-            context_path=getattr(session, "_configured_context_path", None),
-        )
-    return session
-
-
 def _add_config_arg(
     parser: argparse.ArgumentParser, suppress: bool = False
 ) -> None:
@@ -186,15 +144,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_config.add_argument("--force", action="store_true", help="overwrite an existing file")
     p_config.add_argument("--path", metavar="PATH", help="config file path")
     p_config.set_defaults(func=cmd_config)
-
-    for cmd in load_custom_commands():
-        if cmd.name in TUI_ONLY_COMMANDS:
-            continue  # TUI slash command only (e.g. /explain)
-        p = sub.add_parser(cmd.name, help=f"run custom command {cmd.name}")
-        _add_config_arg(p, suppress=True)
-        p.add_argument("project", nargs="?")
-        p.add_argument("extra", nargs="?", help="arguments for the command")
-        p.set_defaults(func=cmd_custom, command_name=cmd.name)
     return parser
 
 
@@ -205,8 +154,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(args)
     if args.command == "config":
         return cmd_config(args)
-    if hasattr(args, "func"):
-        return args.func(args)
     parser.print_help()
     return 1
 

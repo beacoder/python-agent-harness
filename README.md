@@ -129,7 +129,9 @@ TUI slash commands: `/plan` `/build` `/init` `/review` `/explain`
 `/restore` `/clear` `/exit` — `/explain [project] [target]` explains
 code and `/summary` appends a conversation summary (both TUI-only);
 `/sessions` lists saved sessions and `/restore [path|title|--latest]`
-restores one (`/restore` matches sessions by title substring).
+restores one (`/restore` matches sessions by title substring). Custom
+commands from `prompts/commands/*.txt` are TUI slash commands too
+(TUI-only — no CLI subcommand is registered for them).
 
 Input editing: type your message, press **Enter** for a new line, and
 **Esc then Enter** (or **Alt+Enter**) to submit. **Up/Down** recall

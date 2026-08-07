@@ -1,8 +1,10 @@
-"""Session commands: init, review, summary, custom commands.
+"""Session commands: init, review, custom commands (TUI slash commands).
 
-Ported from gptel-agent-harness-commands.el.  Each command builds a
-fresh session (buffer) with a prompt file as the system prompt and a
-kickoff message, then runs the agent loop.
+Ported from gptel-agent-harness-commands.el.  Commands run inside the
+current TUI session (tui._run_slash_command): the command's prompt
+file becomes the run's system prompt, the project context and
+task-completion rules stay in front of it, and the kickoff message is
+the run's user text.
 
 Tool availability per command:
 - init/review: all tools EXCEPT PlanExit (they are one-shot runs that
@@ -18,9 +20,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-from .agent import run_agent_loop
 from .prompts import read_prompt_file
-from .models import Message
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 COMMANDS_DIR = PROMPTS_DIR / "commands"
@@ -75,8 +75,8 @@ class SessionCommand:
     ) -> tuple[str, str, str]:
         """Resolve (cwd, system_prompt, kickoff) without creating a session.
 
-        Shared by the CLI (which builds a fresh session) and the TUI
-        slash commands (which run inside the current session).
+        Used by the TUI slash commands, which run inside the current
+        session.
         """
         cwd = project_dir or _project_root(__import__("os").getcwd())
         prompt = _substitute(read_prompt_file(self.prompt_file), cwd, extra)
@@ -84,35 +84,6 @@ class SessionCommand:
         if "${path}" in kickoff:
             kickoff = kickoff.replace("${path}", cwd)
         return cwd, prompt, kickoff
-
-    def run(
-        self,
-        session_factory,
-        project_dir: str | None = None,
-        extra: str | None = None,
-    ) -> None:
-        """Run the command: create a session and start the agent loop."""
-        cwd, prompt, kickoff = self.prepare(project_dir, extra)
-        session = session_factory(
-            project_dir=cwd, system_prompt=prompt, kickoff=kickoff
-        )
-        # the command prompt is the "actual agent prompt"; the project
-        # context and task-completion rules are kept in front of it
-        from .prompts import assemble_agent_prompt
-
-        context_path = getattr(session, "_configured_context_path", None)
-        system = assemble_agent_prompt(cwd, prompt, context_path=context_path)
-        restore_planexit = hide_planexit(session) if not self.allow_planexit else None
-        try:
-            run_agent_loop(
-                session,
-                messages=[Message(role="user", content=kickoff)],
-                top_level=True,
-                system=system,
-            )
-        finally:
-            if restore_planexit:
-                restore_planexit()
 
 
 def initialize_command() -> SessionCommand:
