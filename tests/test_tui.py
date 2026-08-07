@@ -483,6 +483,41 @@ class TestTui(unittest.TestCase):
         self.assertIn("/tmp/fakeproj", captured["text"])
         self.assertIsNone(captured["restore"])
 
+    def test_slash_init_hides_planexit_in_plan_mode(self):
+        """/init runs with every tool except PlanExit: the tool is
+        hidden for the run (sub-agents share the session registry, so
+        they are covered too) and restored when the run finishes."""
+        tui, _ = make_tui()
+        tui.session.switch_to_plan()
+        self.assertIsNotNone(tui.session.registry.get("PlanExit"))
+
+        captured = {}
+
+        def fake_start(text, system=None, restore=None):
+            captured["restore"] = restore
+            self.assertIsNone(tui.session.registry.get("PlanExit"))
+            restore()  # simulate the run finishing
+
+        with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+            tui._handle_slash("/init")
+        self.assertIsNotNone(captured["restore"])
+        self.assertIsNotNone(tui.session.registry.get("PlanExit"))
+
+    def test_slash_command_keeps_planexit_for_custom(self):
+        """Custom commands (/explain) may use all tools, incl. PlanExit."""
+        tui, _ = make_tui()
+        tui.session.switch_to_plan()
+        captured = {}
+
+        def fake_start(text, system=None, restore=None):
+            captured["restore"] = restore
+            self.assertIsNotNone(tui.session.registry.get("PlanExit"))
+
+        with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+            tui._handle_slash("/explain client.py")
+        self.assertIsNone(captured["restore"])
+        self.assertIsNotNone(tui.session.registry.get("PlanExit"))
+
     def test_explain_requires_target(self):
         tui, buf = make_tui()
         with mock.patch.object(tui, "_start_agent") as start:

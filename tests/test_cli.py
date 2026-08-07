@@ -112,6 +112,102 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         self.assertEqual(cmd.name, "explain")
 
 
+class TestCommandToolAvailability(unittest.TestCase):
+    """Tool availability per command type.
+
+    - init/review: all tools except PlanExit (allow_planexit=False)
+    - custom commands: all tools, incl. PlanExit (allow_planexit=True)
+    - compact/summary: no tools (chat_sync without tools — covered by
+      agent_session/client; nothing to configure here)
+    """
+
+    def test_init_and_review_forbid_planexit(self):
+        from python_agent_harness.commands import (
+            initialize_command, review_command,
+        )
+
+        self.assertFalse(initialize_command().allow_planexit)
+        self.assertFalse(review_command().allow_planexit)
+
+    def test_custom_commands_allow_planexit(self):
+        from python_agent_harness.commands import (
+            find_command, load_custom_commands,
+        )
+
+        customs = load_custom_commands()
+        self.assertTrue(customs)  # explain.txt etc. bundled
+        for c in customs:
+            self.assertTrue(c.allow_planexit, c.name)
+        self.assertTrue(find_command("explain").allow_planexit)
+
+    def test_hide_planexit_noop_without_registry(self):
+        """Sessions without a registry (or without PlanExit) are untouched."""
+        from python_agent_harness.commands import hide_planexit
+
+        self.assertIsNone(hide_planexit(object()))
+
+        class NoPlanExit:
+            registry = None
+
+        self.assertIsNone(hide_planexit(NoPlanExit()))
+
+    def test_hide_planexit_removes_and_restores(self):
+        from python_agent_harness.agent_session import AgentSession
+        from python_agent_harness.commands import hide_planexit
+        from python_agent_harness.tools import default_registry
+
+        s = AgentSession(
+            project_dir="/tmp", client=object(), model="m",
+            registry=default_registry(),
+        )
+        try:
+            s.switch_to_plan()  # registers PlanExit
+            self.assertIsNotNone(s.registry.get("PlanExit"))
+
+            restore = hide_planexit(s)
+            self.assertIsNotNone(restore)
+            self.assertIsNone(s.registry.get("PlanExit"))
+
+            restore()
+            self.assertIsNotNone(s.registry.get("PlanExit"))
+        finally:
+            s.close()
+
+    def test_command_run_hides_planexit_for_init(self):
+        """SessionCommand.run hides PlanExit for the whole init run and
+        restores it afterwards (even when the run raises)."""
+        import unittest.mock as mock
+
+        from python_agent_harness.agent_session import AgentSession
+        from python_agent_harness.commands import initialize_command
+        from python_agent_harness.tools import default_registry
+
+        session = AgentSession(
+            project_dir="/tmp", client=object(), model="m",
+            registry=default_registry(),
+        )
+        session.switch_to_plan()  # registers PlanExit
+        try:
+            def _loop(*a, **kw):
+                # PlanExit stays hidden for the whole run (sub-agents
+                # share this registry, so they are covered too)
+                self.assertIsNone(session.registry.get("PlanExit"))
+                raise RuntimeError("boom")
+
+            with mock.patch(
+                "python_agent_harness.commands.run_agent_loop",
+                side_effect=_loop,
+            ):
+                with self.assertRaises(RuntimeError):
+                    initialize_command().run(
+                        lambda **kw: session, project_dir="/tmp"
+                    )
+            # restored even though the run raised
+            self.assertIsNotNone(session.registry.get("PlanExit"))
+        finally:
+            session.close()
+
+
 def _load(path, project_dir=None, with_context=False):
     from python_agent_harness.prompts import load_agent_prompt, load_context_files
     from python_agent_harness.agent_session import find_context_dir, find_skill_dir

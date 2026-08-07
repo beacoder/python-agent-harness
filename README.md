@@ -13,12 +13,17 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
   automatic compaction at 70% usage that summarizes the conversation and
   resumes with the last user request.
 - **Tools** — Agent (sub-agents), TodoWrite, Glob (git-aware), Grep
-  (rg → git → grep), Read, Insert, Edit (incl. unified diffs), Write, Mkdir,
-  Bash, Skill, Question, PlanExit — all OpenAI-compatible tool schemas.
+  (git grep → rg → grep), Read, Insert, Edit (incl. unified diffs), Write,
+  Mkdir, Bash, Skill, Question, and PlanExit (registered while in plan
+  mode) — all OpenAI-compatible tool schemas.
 - **Default agent prompts** — the main agent and sub-agents each get a
   distinct default system prompt bundled with the package
   (`prompts/agent.txt`, `prompts/subagent.txt`), with YAML frontmatter
-  stripped. Override the main prompt per-run with `run --system`.
+  stripped and the `{{SKILLS}}` placeholder filled from the discovered
+  skill directory. The main prompt is prefixed with the project context
+  files and the task-completion rules; sub-agents get only their own
+  prompt. `/init` `/review` `/explain` and custom commands
+  (`prompts/commands/*.txt`) run with their own prompt for that run.
 - **Tool cache** — per-file mtime / per-directory TTL validity, write-through
   invalidation on edits, and per-epoch deduplication
   (`[Cached: Read ... — same as earlier call, see above]`).
@@ -32,11 +37,16 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
 - **Sessions** — auto-saved after every response to
   `~/.local/share/python-agent-harness/sessions/`, LLM-generated titles
   (one-shot per session, fired when the agent loop finishes; the file is
-  renamed to `<title>_<TS>.md`), `restore` / `restore-latest` /
-  `sessions` commands.
+  renamed to `<title>_<TS>.md`), `restore` (with `--latest`) /
+  `sessions` CLI commands.
 - **Commands** — `init` (create/update AGENTS.md), `review` (uncommitted
-  changes / commit / branch / PR), `summary`, and custom commands from
-  `prompts/commands/*.txt`.
+  changes / commit / branch / PR), and custom commands from
+  `prompts/commands/*.txt`; `summary` and `explain` are TUI slash
+  commands only.  Tool availability: `init`/`review` may use **all
+  tools except PlanExit** (the PlanExit tool is hidden for the run,
+  including for spawned sub-agents); custom commands may use all tools
+  including PlanExit; `compact`/`summary` run with **no tools** (a
+  one-shot `chat_sync` call, like session-title generation).
 - **Editing input** — `prompt_toolkit`-backed multi-line editor with
   persistent history (Up/Down recall), Enter for a newline, Esc+Enter
   (or Alt+Enter) to submit, and **Tab completion** (Tab to complete,
@@ -49,6 +59,11 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
   `~/wor`, `docs/`) completes as a path the same way — `~` against
   `$HOME`, otherwise relative to the project dir — so `~/wor` + Tab
   becomes `~/workspace/`.
+- **TUI** — rich live interface with a pinned status bar (mode, context
+  usage, spinner), streaming assistant output, tool-result previews, a
+  pinned Todos panel (sub-agent lists shown with a `sub:` label), and
+  numbered-choice questions for Bash approval / Question tool /
+  PlanExit confirmations.
 - **Diff rendering** — Edit/Write tool calls capture a unified diff of
   the file change and render it inline (red/green) in the TUI, so file
   edits are visible without leaving the app.
@@ -79,6 +94,10 @@ Edit `~/.config/python-agent-harness/config.json`:
     "api_key": "sk-...",
     "model": "deepseek-chat",
     "reasoning_effort": "medium"
+  },
+  "paths": {
+    "context_path": null,
+    "skill_path": null
   }
 }
 ```
@@ -86,11 +105,18 @@ Edit `~/.config/python-agent-harness/config.json`:
 `reasoning_effort` is passed to the API as-is (omitted when unset), so you
 can use whatever your provider accepts ("low"/"medium"/"high" for OpenAI
 and compatible providers). Other optional keys: `backend`, `temperature`,
-`max_tokens`, `timeout`.
+`max_tokens`, `timeout`. The `paths` object (`context_path`,
+`skill_path`) overrides the context/skill directory discovery — defaults
+are `<project>/contexts` or `~/.emacs.d/contexts` for context files, and
+`<project>/skills` or `~/.emacs.d/skills` for skills.
 
 Precedence: code defaults < config file < `OPENAI_*` environment variables
 (env still wins if you set them, but nothing is required).  Use a custom
 file with `--config PATH` (also settable via `PYTHON_AGENT_HARNESS_CONFIG`).
+
+LLM request/response bodies are logged as JSON to
+`/tmp/python-agent-harness-<date>-<id>.json` (override the directory with
+`LLM_LOG_DIR`); the path is printed at TUI startup.
 
 ## Usage
 
@@ -103,9 +129,12 @@ python-agent-harness restore --latest    # restore newest session
 ```
 
 TUI slash commands: `/plan` `/build` `/init` `/review` `/explain`
-`/compact` `/undo` `/history` `/save` `/summary` `/clear` `/exit`
-(`/explain [project] [target]` explains code — TUI slash command only,
-not a CLI subcommand).
+`/compact` `/undo` `/history` `/save` `/summary` `/sessions`
+`/restore` `/clear` `/exit` — `/explain [project] [target]` explains
+code and `/summary` appends a conversation summary (both TUI-only);
+`/sessions` lists saved sessions and `/restore [path|title|--latest]`
+restores one (they are also CLI subcommands; in the TUI, `/restore`
+additionally matches sessions by title substring).
 
 Input editing: type your message, press **Enter** for a new line, and
 **Esc then Enter** (or **Alt+Enter**) to submit. **Up/Down** recall
@@ -121,6 +150,7 @@ clobber the next run's state (per-run cancellation identity).
 python_agent_harness/
 ├── agent.py        agent loop (supervision, nudges, compaction)
 ├── client.py       OpenAI-compatible streaming client (httpx)
+├── models.py       Message / ToolCall / ToolSpec data classes
 ├── token_estimator.py  CJK-aware token estimation + calibration
 ├── safety.py       path guards + bash policy tiers
 ├── undo.py         file snapshots / undo
@@ -129,6 +159,7 @@ python_agent_harness/
 ├── prompts.py      prompt loading + system prompt assembly
 ├── session_store.py  session persistence + titles
 ├── agent_session.py  AgentSession (wiring hub)
+├── subagent.py     sub-agent runner (error containment, plan reminder)
 ├── commands.py     init/review/custom command definitions
 ├── cli.py          argparse entry points
 ├── tui.py          rich + prompt_toolkit TUI
@@ -141,6 +172,8 @@ python_agent_harness/
 ```sh
 venv/bin/python -m unittest discover -s tests -v
 ```
+
+Python ≥ 3.11 is required (CI runs 3.11 / 3.12 / 3.13).
 
 ## Verification checklist (ported semantics)
 

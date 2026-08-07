@@ -3,12 +3,20 @@
 Ported from gptel-agent-harness-commands.el.  Each command builds a
 fresh session (buffer) with a prompt file as the system prompt and a
 kickoff message, then runs the agent loop.
+
+Tool availability per command:
+- init/review: all tools EXCEPT PlanExit (they are one-shot runs that
+  must not end in a plan/build handoff)
+- custom commands (prompts/commands/*.txt): all tools, incl. PlanExit
+- compact/summary: no tools at all (direct chat_sync calls, like the
+  session-title generation)
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any, Callable
 
 from .agent import run_agent_loop
 from .prompts import read_prompt_file
@@ -50,6 +58,7 @@ class SessionCommand:
     def __init__(
         self, name: str, prompt_file: str, kickoff: str,
         buffer_name: str, status: str, validate_dir: bool = False,
+        allow_planexit: bool = True,
     ) -> None:
         self.name = name
         self.prompt_file = prompt_file
@@ -57,6 +66,7 @@ class SessionCommand:
         self.buffer_name = buffer_name
         self.status = status
         self.validate_dir = validate_dir
+        self.allow_planexit = allow_planexit
 
     def prepare(
         self,
@@ -92,12 +102,17 @@ class SessionCommand:
 
         context_path = getattr(session, "_configured_context_path", None)
         system = assemble_agent_prompt(cwd, prompt, context_path=context_path)
-        run_agent_loop(
-            session,
-            messages=[Message(role="user", content=kickoff)],
-            top_level=True,
-            system=system,
-        )
+        restore_planexit = hide_planexit(session) if not self.allow_planexit else None
+        try:
+            run_agent_loop(
+                session,
+                messages=[Message(role="user", content=kickoff)],
+                top_level=True,
+                system=system,
+            )
+        finally:
+            if restore_planexit:
+                restore_planexit()
 
 
 def initialize_command() -> SessionCommand:
@@ -108,6 +123,7 @@ def initialize_command() -> SessionCommand:
         buffer_name="*gptel-agent-init:*",
         status=" Initializing...",
         validate_dir=True,
+        allow_planexit=False,
     )
 
 
@@ -118,7 +134,33 @@ def review_command() -> SessionCommand:
         kickoff="Review the requested code changes.",
         buffer_name="*gptel-agent-review*",
         status=" Reviewing...",
+        allow_planexit=False,
     )
+
+
+def hide_planexit(session: Any) -> Callable[[], None] | None:
+    """Remove the PlanExit tool from SESSION's registry for a command run.
+
+    Used by init/review (``allow_planexit=False``), which may use every
+    tool except PlanExit: the run must not end in a plan/build handoff.
+    Custom commands keep PlanExit and skip this.  Returns a callable
+    that restores the previous registration state (the tool is
+    stateless, so a fresh instance is equivalent), or None when there
+    was nothing to hide (PlanExit not registered — e.g. a build-mode
+    session, or a session without a registry).  Call the returned
+    callable when the run finishes, including on cancellation or error.
+    """
+    registry = getattr(session, "registry", None)
+    if registry is None or registry.get("PlanExit") is None:
+        return None
+    registry.unregister("PlanExit")
+
+    def restore() -> None:
+        from .tools import PlanExit
+
+        registry.register(PlanExit())
+
+    return restore
 
 
 def custom_name(file: str) -> str:

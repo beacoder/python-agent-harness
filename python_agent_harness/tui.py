@@ -934,6 +934,22 @@ class Tui:
             restore = _restore
         else:
             restore = None
+        if not cmd.allow_planexit:
+            # init/review: all tools except PlanExit — hide it for the
+            # run (sub-agents share the session registry, so they are
+            # covered too) and put it back when the run finishes.
+            from .commands import hide_planexit
+
+            planexit_restore = hide_planexit(self.session)
+            if planexit_restore is not None:
+                prev_restore = restore
+
+                def _restore() -> None:
+                    if prev_restore is not None:
+                        prev_restore()
+                    planexit_restore()
+
+                restore = _restore
         self.console.print(f"[cyan]/{name}: {kickoff.strip()}[/cyan]")
         self._start_agent(kickoff, system=system, restore=restore)
 
