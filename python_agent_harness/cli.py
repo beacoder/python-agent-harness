@@ -28,7 +28,6 @@ from .commands import (
     SessionCommand, find_command, load_custom_commands,
 )
 from .harness import AgentSession
-from .models import Message
 from .session import SessionStore
 from .tools import default_registry
 
@@ -51,6 +50,7 @@ def make_session(
     falls back to no system prompt if its file is unavailable.
     """
     settings = config.load_llm_config(config_path)
+    paths = config.load_paths_config(config_path)
     model = model or settings["model"]
     client = Client(
         base_url=settings["base_url"],
@@ -62,10 +62,11 @@ def make_session(
     from .harness import find_skill_dir
 
     abs_project = os.path.abspath(project_dir)
-    skill_dir = find_skill_dir(abs_project)
+    skill_dir = find_skill_dir(abs_project, paths.get("skill_path"))
     system_prompt = assemble_agent_prompt(
         abs_project,
         load_agent_prompt(config.DEFAULT_AGENT_PROMPT_FILE, skill_dir=skill_dir),
+        context_path=paths.get("context_path"),
     )
     # sub-agents get ONLY their own system prompt — no parent project
     # context and no task-completion rules injected
@@ -83,6 +84,8 @@ def make_session(
         max_tokens=settings["max_tokens"],
         reasoning_effort=settings["reasoning_effort"],
         registry=default_registry(),
+        context_path=paths.get("context_path"),
+        skill_path=paths.get("skill_path"),
     )
 
 
@@ -108,6 +111,7 @@ def cmd_config(args: argparse.Namespace) -> int:
         print(f"wrote config template: {path}")
         return 0
     settings = config.load_llm_config(args.path)
+    paths = config.load_paths_config(args.path)
     print(f"config file: {path}")
     if not path.exists():
         print(f"(file does not exist yet — run `python-agent-harness config --init` to create it)")
@@ -118,6 +122,8 @@ def cmd_config(args: argparse.Namespace) -> int:
     print(f"max_tokens: {settings['max_tokens']}")
     print(f"reasoning_effort: {settings['reasoning_effort']}")
     print(f"timeout: {settings['timeout']}")
+    print(f"context_path: {paths['context_path'] or '(auto-discover)'}")
+    print(f"skill_path: {paths['skill_path'] or '(auto-discover)'}")
     return 0
 
 
@@ -159,7 +165,8 @@ def _adopt(session: AgentSession, kw: dict) -> AgentSession:
         from .compaction import assemble_agent_prompt
 
         session.system_prompt = assemble_agent_prompt(
-            session.project_dir, kw["system_prompt"]
+            session.project_dir, kw["system_prompt"],
+            context_path=getattr(session, "_configured_context_path", None),
         )
     return session
 
