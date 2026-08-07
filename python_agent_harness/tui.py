@@ -29,10 +29,11 @@ from rich.text import Text
 
 from . import config
 from .agent import run_agent_loop
-from .commands import SessionCommand, find_command
+from .commands import find_command
 from .diffrender import render_diff
 from .harness import AgentSession
 from .models import Message
+from .session import SessionStore, title_from_filename
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -404,10 +405,12 @@ class Tui:
             Panel(
                 "python-agent-harness — agent execution harness\n"
                 "Commands: /plan /build /init /review /explain /compact "
-                "/undo /history /save /summary /help /exit\n"
+                "/undo /history /save /summary /sessions /restore /help /exit\n"
                 "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
                 "/review [project] [commit|branch|PR] review code changes\n"
                 "/explain [project] [target]          explain code\n"
+                "/sessions                            list saved sessions\n"
+                "/restore [path | title | --latest]   restore a saved session\n"
                 "Ctrl-C cancels the current execution (the app stays open); "
                 "Ctrl-D or /exit quits.\n"
                 "Type a message — Enter for a new line, Esc then Enter "
@@ -648,6 +651,10 @@ class Tui:
             self._run_summary()
         elif cmd in ("/init", "/review", "/explain"):
             self._run_slash_command(cmd[1:], arg)
+        elif cmd == "/sessions":
+            self._run_sessions()
+        elif cmd == "/restore":
+            self._run_restore(arg)
         elif cmd == "/clear":
             self.conversation_history = []
             self.session.last_messages = []
@@ -655,10 +662,12 @@ class Tui:
         elif cmd == "/help":
             self.console.print(
                 "/plan /build /init /review /explain /compact /undo /history "
-                "/save /summary /clear /exit\n"
+                "/save /summary /sessions /restore /clear /exit\n"
                 "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
                 "/review [project] [commit|branch|PR] review code changes\n"
                 "/explain [project] [target]          explain code\n"
+                "/sessions                            list saved sessions\n"
+                "/restore [path | title | --latest]   restore a saved session\n"
                 "Ctrl-C cancels the current execution (app stays open); "
                 "Ctrl-D or /exit quits."
             )
@@ -738,7 +747,9 @@ class Tui:
         # the command's prompt (the "actual agent prompt" for this run)
         from .compaction import assemble_agent_prompt
 
-        system = assemble_agent_prompt(cwd, prompt)
+        system = assemble_agent_prompt(
+            cwd, prompt, context_path=self.session._configured_context_path
+        )
         prev_project = self.session.project_dir
         if cwd != prev_project:
             self.session.project_dir = cwd
@@ -773,3 +784,137 @@ class Tui:
         """Append a summary of the conversation (tools disabled)."""
         msg = self.session.summarize_conversation()
         self.console.print(msg)
+
+    def _run_sessions(self) -> None:
+        """List saved sessions with metadata."""
+        files = SessionStore.list_sessions()
+        if not files:
+            self.console.print("[dim]no saved sessions[/dim]")
+            return
+        for f in files:
+            try:
+                text = open(f, encoding="utf-8").read()
+            except OSError:
+                continue
+            meta = SessionStore.parse_metadata(text)
+            basename = os.path.basename(f)
+            model = meta.get("gptel-model", "?")
+            project = meta.get("python-agent-harness--project-dir", "?")
+            self.console.print(
+                f"  {basename:50s}  model={model:20s}  project={project}"
+            )
+
+    def _run_restore(self, arg: str) -> None:
+        """Restore a saved session into the current TUI.
+
+        Usage: /restore <path>  or  /restore --latest  or  /restore <title>
+        Loads the conversation history so the user can continue from
+        where they left off.  When the argument is not a file path,
+        it is matched as a substring against session filenames/titles
+        (case-insensitive).
+        """
+        path: str | None = None
+        if not arg or arg == "--latest":
+            path = SessionStore.latest_session()
+        elif os.path.isfile(arg):
+            path = arg
+        else:
+            # Try title-based matching: find sessions whose filename
+            # contains the argument as a case-insensitive substring
+            path = self._find_session_by_title(arg)
+        if not path:
+            self.console.print(
+                "[yellow]no session found "
+                "(use /restore <path>, /restore <title>, or /restore --latest)[/yellow]"
+            )
+            return
+        if not os.path.isfile(path):
+            self.console.print(f"[red]file not found: {path}[/red]")
+            return
+            return
+        try:
+            text = open(path, encoding="utf-8").read()
+        except OSError as e:
+            self.console.print(f"[red]cannot read {path}: {e}[/red]")
+            return
+        meta = SessionStore.parse_metadata(text)
+        body = SessionStore.strip_metadata(text)
+        # Rebuild conversation history from the saved markdown format
+        messages = self._parse_saved_body(body)
+        # Update the session store to point at the restored file
+        self.session.store.file_path = path
+        title = title_from_filename(path)
+        if title:
+            self.session.store.title = title
+        # Replace conversation history
+        self.conversation_history = messages
+        self.session.last_messages = list(messages)
+        self._history_dirty = True
+        model = meta.get("gptel-model", "?")
+        project = meta.get("python-agent-harness--project-dir", "?")
+        self.console.print(
+            f"[green]restored:[/green] {os.path.basename(path)} "
+            f"(model={model}, project={project}, {len(messages)} messages)"
+        )
+
+    @staticmethod
+    def _parse_saved_body(body: str) -> list[Message]:
+        """Parse a saved session body back into Message objects.
+
+        The save format is markdown with **role**: content blocks
+        separated by blank lines.
+        """
+        messages: list[Message] = []
+        current_role: str | None = None
+        current_lines: list[str] = []
+
+        for line in body.splitlines():
+            # Check for a role header: **user**: ... or **assistant**: ...
+            if line.startswith("**") and "**: " in line:
+                prefix, _, rest = line.partition("**: ")
+                role = prefix.strip("*").strip()
+                if role in ("user", "assistant", "system", "tool"):
+                    # Save the previous block
+                    if current_role is not None:
+                        content = "\n".join(current_lines).strip()
+                        if content:
+                            messages.append(Message(role=current_role, content=content))
+                    current_role = role
+                    current_lines = [rest]
+                    continue
+            current_lines.append(line)
+
+        # Don't forget the last block
+        if current_role is not None:
+            content = "\n".join(current_lines).strip()
+            if content:
+                messages.append(Message(role=current_role, content=content))
+
+        return messages
+
+    @staticmethod
+    def _find_session_by_title(query: str) -> str | None:
+        """Find a session file by title substring (case-insensitive).
+
+        Matches against the full filename, the filename without .md,
+        and the derived title.  Returns the most recent match, or None.
+        """
+        query_lower = query.lower()
+        # Strip .md from query if present, for cleaner substring matching
+        query_stem = query_lower[:-3] if query_lower.endswith(".md") else query_lower
+        files = SessionStore.list_sessions()  # already sorted by mtime desc
+        for f in files:
+            basename = os.path.basename(f)
+            basename_lower = basename.lower()
+            # Exact basename match (with or without .md)
+            if basename_lower == query_lower or basename_lower == query_lower + ".md":
+                return f
+            # Substring match against filename (minus .md)
+            name_part = basename[:-3] if basename.endswith(".md") else basename
+            if query_stem in name_part.lower():
+                return f
+            # Match against derived title (dashes → spaces)
+            title = title_from_filename(f)
+            if title and query_stem in title.lower():
+                return f
+        return None
