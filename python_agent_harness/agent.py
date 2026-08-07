@@ -241,11 +241,15 @@ class AgentLoop:
             if self._is_cancelled():
                 return None
             self._inject_pending_prompts()
-            self._update_context_ratio()
-            if self._need_compaction():
-                session.log(f"compacting context {session.context_ratio:.1%}")
-                if self.compact():
-                    continue
+            if self.top_level:
+                # sub-agents must not touch the shared context accounting:
+                # their payload (fresh context) is structurally different,
+                # so their ratio/usage would skew the parent's
+                self._update_context_ratio()
+                if self._need_compaction():
+                    session.log(f"compacting context {session.context_ratio:.1%}")
+                    if self.compact():
+                        continue
 
             def safe_delta(text: str) -> None:
                 if not self._is_cancelled() and session.on_delta is not None:
@@ -280,8 +284,8 @@ class AgentLoop:
                 if not assistant.tool_calls and self.top_level:
                     session.last_messages = list(self.messages)
 
-            session.calibrator.update(usage.input_tokens)
             if self.top_level:
+                session.calibrator.update(usage.input_tokens)
                 session.remember_user_text(self.messages)
                 session.auto_save(self.messages, self.system)
 

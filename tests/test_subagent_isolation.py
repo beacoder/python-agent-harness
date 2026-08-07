@@ -153,6 +153,17 @@ class TestSubagentIsolation(unittest.TestCase):
         self.assertNotIn("Task Completion Rules", sp)
         self.assertNotIn("PARENT PROMPT", sp)
 
+    def test_subagent_does_not_touch_shared_context_accounting(self):
+        """The sub-agent's rounds must not update the shared context
+        ratio or calibration factor: its payload (fresh context) is
+        structurally different, so its usage would skew the parent's
+        compaction decisions."""
+        s = make_session(RecClient([]))
+        s.run_subagent("subagent", "explore", "find stuff")
+        self.assertIsNone(s.context_ratio)
+        self.assertEqual(s.calibrator.factor, 1.0)
+        self.assertIsNone(s.calibrator.last_raw_estimate)
+
 
 if __name__ == "__main__":
     unittest.main()
