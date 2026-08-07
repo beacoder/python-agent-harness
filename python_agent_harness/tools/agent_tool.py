@@ -9,9 +9,6 @@ never a crash.
 
 from __future__ import annotations
 
-import json
-import threading
-
 from .base import Tool, ToolContext
 
 DESCRIPTION = (
