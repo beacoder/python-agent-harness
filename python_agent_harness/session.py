@@ -18,7 +18,6 @@ import time
 from pathlib import Path
 
 from . import config
-from .models import SessionInfo
 
 
 def session_dir() -> Path:
