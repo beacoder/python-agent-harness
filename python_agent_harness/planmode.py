@@ -10,7 +10,7 @@ Ported from gptel-agent-harness.el's build/plan mode section.
 - Queued prompts are injected before the last user message (appended
   when the last message is a tool result) and consumed exactly once.
 - Sub-agent requests in plan mode get the plan-mode reminder once per
-  sub-FSM.
+  sub-agent loop.
 """
 
 from __future__ import annotations
