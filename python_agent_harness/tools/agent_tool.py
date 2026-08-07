@@ -1,9 +1,10 @@
 """Agent tool: spawn sub-agents for delegated work.
 
-Sub-agents run the same agent loop with a fresh FSM; their backend/model
-can be overridden (see config).  Results flow back to the parent as a
-single tool result string.  Errors are contained: an unexpected sub-agent
-response becomes an error string fed to the parent, never a crash.
+Sub-agents run the same agent loop with a fresh loop instance; their
+backend/model can be overridden (see config).  Results flow back to the
+parent as a single tool result string.  Errors are contained: an
+unexpected sub-agent response becomes an error string fed to the parent,
+never a crash.
 """
 
 from __future__ import annotations
