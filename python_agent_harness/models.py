@@ -66,28 +66,6 @@ class Message:
             d["name"] = self.name
         return d
 
-    @classmethod
-    def from_api(cls, raw: dict[str, Any]) -> "Message":
-        role = raw.get("role", "assistant")
-        content = raw.get("content")
-        tool_calls = None
-        if raw.get("tool_calls"):
-            tool_calls = [
-                ToolCall(
-                    id=tc.get("id", ""),
-                    name=tc.get("function", {}).get("name", ""),
-                    arguments=tc.get("function", {}).get("arguments", "{}"),
-                )
-                for tc in raw["tool_calls"]
-            ]
-        return cls(
-            role=role,
-            content=content,
-            tool_calls=tool_calls,
-            tool_call_id=raw.get("tool_call_id"),
-            reasoning=raw.get("reasoning_content"),
-        )
-
     def text(self) -> str:
         """Plain text of the message; empty when no text parts exist."""
         if isinstance(self.content, str):
@@ -129,18 +107,3 @@ class ToolSpec:
 class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
-
-
-@dataclass
-class SessionInfo:
-    """Metadata saved with a session file."""
-
-    project_dir: str | None = None
-    model: str | None = None
-    backend: str | None = None
-    system_prompt: str | None = None
-    temperature: float | None = None
-    max_tokens: int | None = None
-    tool_names: list[str] = field(default_factory=list)
-    title: str | None = None
-    file_path: str | None = None
