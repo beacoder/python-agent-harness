@@ -12,8 +12,8 @@ Commands:
   restore <file>           restore a saved session
   restore-latest           restore the newest session
 
-Configuration (LLM etc.) is read from a TOML file, by default
-~/.config/python-agent-harness/config.toml; see `config --init`.
+Configuration (LLM etc.) is read from a JSON file, by default
+~/.config/python-agent-harness/config.json; see `config --init`.
 """
 
 from __future__ import annotations
