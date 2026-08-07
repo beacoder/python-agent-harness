@@ -25,6 +25,9 @@ def unified_diff(
     """Return a unified diff string between OLD_CONTENT and NEW_CONTENT.
 
     Empty string when the two are identical (nothing to show).
+    Lines at EOF without a trailing newline get a git-style
+    ``\\ No newline at end of file`` marker so the diff round-trips
+    (the Edit tool's diff mode parses markers and applies them).
     """
     if old_content == new_content:
         return ""
@@ -36,9 +39,18 @@ def unified_diff(
         fromfile=f"a/{path}",
         tofile=f"b/{path}",
         n=context_lines,
-        lineterm="",
+        lineterm="\n",
     )
-    return "\n".join(diff)
+    out: list[str] = []
+    for line in diff:
+        out.append(line)
+        if line[:1] in ("-", "+", " ") and not line.endswith("\n"):
+            # a content line at EOF without a trailing newline: difflib
+            # emits it bare, which would corrupt the joined text; mark
+            # it like git does so the diff round-trips (the Edit tool's
+            # diff mode parses markers and applies them)
+            out.append("\n\\ No newline at end of file\n")
+    return "".join(out)
 
 
 def render_diff(diff_text: str, max_lines: int = MAX_DIFF_LINES) -> Group:

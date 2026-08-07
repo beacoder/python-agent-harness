@@ -17,6 +17,7 @@ Bash refusal tiers (checked in this order):
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -32,12 +33,36 @@ class SafetyViolation(Exception):
 # Path guards
 # ---------------------------------------------------------------------------
 
-def path_forbidden(path: str) -> str | None:
-    """Return the first matching forbidden-path regexp, or None."""
+def _canonical(path: str) -> str:
+    """Expand ~ and resolve //, /./, /../ and symlinks (best effort).
+
+    ``os.path.realpath`` normalizes the path so syntactic tricks
+    (``//mnt/x``, ``/tmp/../mnt/x``, a symlink pointing into a
+    forbidden tree) cannot evade the forbidden-path patterns.
+    """
     expanded = _expand(path)
-    for pattern in config.FORBIDDEN_PATHS:
-        if re.search(pattern, expanded):
-            return pattern
+    try:
+        return os.path.realpath(expanded)
+    except (OSError, ValueError):
+        return os.path.normpath(expanded)
+
+
+def path_forbidden(path: str) -> str | None:
+    """Return the first matching forbidden-path regexp, or None.
+
+    The path is matched as given AND canonicalized; the trailing-
+    separator form is checked too so the bare directory itself
+    (``/mnt``) is caught by patterns like ``^\\s*/mnt/``.
+    """
+    if not path:
+        # empty tokens (e.g. from a command starting with a quote) must
+        # not resolve to the process cwd and false-positive
+        return None
+    canonical = _canonical(path)
+    for cand in (path, canonical, canonical + os.sep):
+        for pattern in config.FORBIDDEN_PATHS:
+            if re.search(pattern, cand):
+                return pattern
     return None
 
 
@@ -75,6 +100,35 @@ def _split_tokens(command: str) -> list[str]:
 # Plan-mode read-only
 # ---------------------------------------------------------------------------
 
+_GIT_VALUE_OPTIONS = {
+    "-c", "-C", "--git-dir", "--git-common-dir", "--work-tree",
+    "--namespace", "--config-env", "--exec-path",
+}
+
+
+def _git_subcommand(tokens: list[str]) -> str | None:
+    """Return the git subcommand, skipping global options and their values.
+
+    Handles both ``-C path`` (separate value) and ``--git-dir=path``
+    (inline) forms, so ``git -C /tmp/x push`` and
+    ``git --git-dir=/tmp/x push`` resolve to ``push`` instead of
+    slipping past the mutating-subcommand check.
+    """
+    i = 1
+    while i < len(tokens):
+        tok = tokens[i]
+        if not tok.startswith("-"):
+            return tok.lower()
+        if "=" in tok:
+            i += 1
+            continue
+        if tok in _GIT_VALUE_OPTIONS:
+            i += 2  # option + its value
+            continue
+        i += 1
+    return None
+
+
 def bash_mutating_p(command: str) -> bool:
     """True if COMMAND mutates state (downcased analysis)."""
     lowered = command.lower()
@@ -87,7 +141,8 @@ def bash_mutating_p(command: str) -> bool:
             return True
     tokens = shlex.split(command)
     if tokens and tokens[0].lower() == "git":
-        if len(tokens) > 1 and tokens[1].lower() in config.GIT_MUTATING_SUBCOMMANDS:
+        sub = _git_subcommand(tokens)
+        if sub and sub in config.GIT_MUTATING_SUBCOMMANDS:
             return True
     return False
 

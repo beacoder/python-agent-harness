@@ -80,7 +80,7 @@ class GlobTool(Tool):
         "properties": {
             "pattern": {"type": "string", "description": "Glob pattern, e.g. *.py"},
             "path": {"type": "string", "description": "Directory to search in (default: cwd)"},
-            "depth": {"type": "integer", "description": "Maximum directory depth"},
+            "depth": {"type": "integer", "description": "Maximum directory depth (0 or omitted = no limit)"},
         },
         "required": ["pattern"],
     }
@@ -126,7 +126,7 @@ class GlobTool(Tool):
         if shutil.which("tree"):
             cmd = ["tree", "-l", "-f", "-i", "-I", ".git",
                    "--sort=mtime", "--ignore-case", "--prune", "-P", pattern, base]
-            if depth is not None:
+            if depth is not None and depth > 0:
                 cmd += ["-L", str(depth)]
             try:
                 proc = subprocess.run(
@@ -157,7 +157,9 @@ def _git_glob_results(
     raw: str, git_root: str, base: str, depth: int | None, pattern: str
 ) -> str:
     lines = [l for l in raw.split("\0") if l]
-    if depth is not None:
+    # depth <= 0 means "no limit" (matches `tree -L 0`), so an explicit
+    # 0 never produces a confusingly empty result
+    if depth is not None and depth > 0:
         base_depth = 0
         rel_base = os.path.relpath(base, git_root)
         if rel_base != ".":
@@ -416,6 +418,16 @@ def _parse_unified_diff(diff: str) -> list[_Hunk]:
             continue
         if current is None:
             continue  # ignore stray lines before the first hunk header
+        if raw.startswith("\\"):
+            # "\ No newline at end of file" marker: the preceding
+            # content line has no trailing newline.  When the diff is
+            # echoed back by the model, that line carries a newline in
+            # the text (line separators), so strip it for the strict
+            # source-line comparison below.
+            if current.ops and current.ops[-1][1].endswith("\n"):
+                op, text = current.ops[-1]
+                current.ops[-1] = (op, text[:-1])
+            continue
         if raw.startswith("+"):
             current.ops.append(("+", raw[1:]))
         elif raw.startswith("-"):

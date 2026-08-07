@@ -41,7 +41,7 @@ def title_from_filename(session_file: str) -> str | None:
     base = os.path.basename(session_file)
     if base.endswith(".md"):
         base = base[:-3]
-    m = re.match(r"(.+)_[0-9]{12}$", base)
+    m = re.match(r"(.+)_[0-9]{12}(?:-\d+)?$", base)
     if not m:
         return None
     title = m.group(1).replace("-", " ")
@@ -71,13 +71,27 @@ class SessionStore:
         self._first_user_msg: str | None = None
 
     # -- file naming ----------------------------------------------------------
+    @staticmethod
+    def _unique_path(prefix: str) -> str:
+        """A session file path that does not already exist.
+
+        Same-second collisions (same project name, or two sessions given
+        the same title) get a numeric suffix instead of silently
+        overwriting an existing session file.
+        """
+        path = session_dir() / f"{prefix}.md"
+        n = 1
+        while path.exists():
+            path = session_dir() / f"{prefix}-{n}.md"
+            n += 1
+        return str(path)
+
     def session_file(self) -> str | None:
         if self.file_path:
             return self.file_path
         proj_name = os.path.basename(os.path.normpath(self.project_dir))
         stamp = time.strftime("%y%m%d%H%M%S")
-        path = session_dir() / f"{proj_name}_{stamp}.md"
-        self.file_path = str(path)
+        self.file_path = self._unique_path(f"{proj_name}_{stamp}")
         return self.file_path
 
     def remember_first_user_message(self, text: str) -> None:
@@ -120,13 +134,13 @@ class SessionStore:
         return path
 
     def apply_title(self, title: str) -> None:
-        """Rename the session file to <title>_<TS>.md."""
+        """Rename the session file to <title>_<TS>.md (never overwriting)."""
         title = sanitize_title(title)
         if not title:
             return
         if self.file_path and os.path.exists(self.file_path):
             stamp = time.strftime("%y%m%d%H%M%S")
-            new_path = session_dir() / f"{title}_{stamp}.md"
+            new_path = self._unique_path(f"{title}_{stamp}")
             try:
                 os.replace(self.file_path, new_path)
                 self.file_path = str(new_path)

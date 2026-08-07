@@ -177,7 +177,11 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         print("no saved sessions")
         return 0
     for f in files:
-        meta = SessionStore.parse_metadata(open(f, encoding="utf-8").read())
+        try:
+            meta = SessionStore.parse_metadata(open(f, encoding="utf-8").read())
+        except OSError as e:
+            print(f"{os.path.basename(f):60s} (unreadable: {e})")
+            continue
         print(
             f"{os.path.basename(f):60s} "
             f"model={meta.get('gptel-model', '?'):20s} "
@@ -196,7 +200,11 @@ def cmd_restore(args: argparse.Namespace) -> int:
     if not path:
         print("no session file given", file=sys.stderr)
         return 1
-    text = open(path, encoding="utf-8").read()
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError as e:
+        print(f"cannot read {path}: {e}", file=sys.stderr)
+        return 1
     meta = Store.parse_metadata(text)
     body = Store.strip_metadata(text)
     project = meta.get("python-agent-harness--project-dir") or os.getcwd()

@@ -274,6 +274,7 @@ class Tui:
         self.agent_running = False
         self.status = " idle"
         self.run_seq = 0
+        self._restore: Callable[[], None] | None = None
         self.conversation_history: list[Message] = []
         self._data_event = threading.Event()
         self._history_cache: list[Any] | None = None
@@ -667,6 +668,7 @@ class Tui:
         self._history_dirty = True
         self.run_seq += 1
         seq = self.run_seq
+        self._restore = restore
         self.agent_running = True
         worker = threading.Thread(
             target=self._run_agent, args=(text, seq, system, restore), daemon=True
@@ -685,6 +687,12 @@ class Tui:
             # the input prompt immediately.
             cancelled = True
             self.session.cancel()
+            if self._restore is not None:
+                # release state the cancelled run borrowed (e.g. a slash
+                # command's project dir) now: the worker may finish late
+                # (stale) and its own finally must not touch it then
+                self._restore()
+                self._restore = None
             self.console.print(
                 "\n[dim]execution cancelled — add more messages or /exit[/dim]"
             )
@@ -784,16 +792,24 @@ class Tui:
             if seq == self.run_seq:
                 self._on_log(f"agent error: {e}")
         finally:
-            # the run is done: the final assistant message is now part of
-            # the conversation history, so drop the live stream buffer —
-            # otherwise the same text renders twice (stream row + history
-            # row) and eats the visible-row budget
-            with self.lock:
-                self.stream_text = ""
-            self._history_dirty = True
-            self._data_event.set()
-            if restore is not None:
-                restore()
+            # Only the current run may touch shared UI state: a stale
+            # worker from a cancelled run that finishes late must not
+            # wipe the next run's live stream or fire its restore
+            # callback (which could reset e.g. a borrowed project dir
+            # while the new run is mid-execution).  The restore for a
+            # cancelled run is released by the Ctrl-C handler instead.
+            if seq == self.run_seq:
+                # the run is done: the final assistant message is now
+                # part of the conversation history, so drop the live
+                # stream buffer — otherwise the same text renders twice
+                # (stream row + history row) and eats the visible-row
+                # budget
+                with self.lock:
+                    self.stream_text = ""
+                self._history_dirty = True
+                self._data_event.set()
+                if restore is not None:
+                    restore()
 
     # ------------------------------------------------------------------
     # slash commands
@@ -929,7 +945,10 @@ class Tui:
             self.session.project_dir = cwd
 
             def _restore() -> None:
-                self.session.project_dir = prev_project
+                # idempotent: only undo OUR borrow, never clobber a
+                # newer run's borrow (or a restore already performed)
+                if self.session.project_dir == cwd:
+                    self.session.project_dir = prev_project
 
             restore = _restore
         else:
@@ -943,8 +962,12 @@ class Tui:
             planexit_restore = hide_planexit(self.session)
             if planexit_restore is not None:
                 prev_restore = restore
+                state = {"done": False}
 
                 def _restore() -> None:
+                    if state["done"]:
+                        return
+                    state["done"] = True
                     if prev_restore is not None:
                         prev_restore()
                     planexit_restore()

@@ -208,6 +208,39 @@ class TestCommandToolAvailability(unittest.TestCase):
             session.close()
 
 
+class TestCliSessionCommands(unittest.TestCase):
+    def test_cmd_restore_unreadable_file(self):
+        """An unreadable session file must produce a clean error, not a
+        traceback."""
+        from types import SimpleNamespace
+
+        from python_agent_harness import cli
+
+        args = SimpleNamespace(file="/tmp", latest=False, config=None)
+        self.assertEqual(cli.cmd_restore(args), 1)
+
+    def test_cmd_sessions_skips_unreadable_files(self):
+        """A session entry that cannot be read (e.g. a directory named
+        *.md) is listed as unreadable instead of crashing."""
+        import os
+        import tempfile
+        from pathlib import Path
+
+        from python_agent_harness import cli, config
+
+        with tempfile.TemporaryDirectory() as d:
+            old_dir = config.SESSION_DIR
+            config.SESSION_DIR = Path(d)
+            try:
+                sessions = Path(d) / "python-agent-harness" / "sessions"
+                sessions.mkdir(parents=True)
+                (sessions / "broken.md").mkdir()  # dir masquerading as a session
+                (sessions / "good_260805120000.md").write_text("hello")
+                self.assertEqual(cli.cmd_sessions(None), 0)
+            finally:
+                config.SESSION_DIR = old_dir
+
+
 def _load(path, project_dir=None, with_context=False):
     from python_agent_harness.prompts import load_agent_prompt, load_context_files
     from python_agent_harness.agent_session import find_context_dir, find_skill_dir

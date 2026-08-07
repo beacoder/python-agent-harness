@@ -310,8 +310,9 @@ class TestTui(unittest.TestCase):
         self.assertTrue(tui._history_dirty)
 
     def test_stream_cleared_when_run_finishes(self):
-        """When the run completes the live stream buffer is dropped so the
-        final text isn't rendered twice (stream row + history row)."""
+        """When the current run completes the live stream buffer is
+        dropped so the final text isn't rendered twice (stream row +
+        history row)."""
         from types import SimpleNamespace
 
         tui, _ = make_tui()
@@ -319,8 +320,61 @@ class TestTui(unittest.TestCase):
         s = tui.session
         fake = SimpleNamespace(close=lambda: None)
         s.client = fake
-        tui._run_agent("hi", tui.run_seq + 1)  # run completes (no API key -> error path)
+        tui._run_agent("hi", tui.run_seq)  # current run completes (no API key -> error path)
         self.assertEqual(tui.stream_text, "")
+
+    def test_stale_worker_does_not_clobber_next_run(self):
+        """A worker from a cancelled run that finishes late must not
+        clear the next run's stream or fire its restore callback."""
+        from types import SimpleNamespace
+
+        tui, _ = make_tui()
+        s = tui.session
+        s.client = SimpleNamespace(close=lambda: None)
+        s.cancel_event.set()
+        s.cancel_generation += 1
+        tui.stream_text = "next run's stream"
+        restored: list[int] = []
+        tui.run_seq += 1  # a newer run has already started
+        tui._run_agent("old", tui.run_seq - 1, restore=lambda: restored.append(1))
+        self.assertEqual(tui.stream_text, "next run's stream")
+        self.assertEqual(restored, [])
+
+    def test_restore_idempotent(self):
+        """The slash-command restore may run more than once (cancel
+        path + worker finally) and must only undo its own borrow."""
+        tui, _ = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            def fake_start(text, system=None, restore=None):
+                restore()
+                restore()  # double invocation must be a no-op
+
+            with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+                tui._handle_slash(f"/init {d}")
+        self.assertEqual(tui.session.project_dir, "/tmp/fakeproj")
+
+    def test_cancel_releases_borrowed_project_dir(self):
+        """Cancelling a slash-command run releases the borrowed project
+        dir immediately (the stale worker's finally must not run it)."""
+        tui, _ = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            captured: dict = {}
+
+            def fake_start(text, system=None, restore=None):
+                captured["restore"] = restore
+                # simulate Ctrl-C: the main thread releases the borrow
+                tui._restore = restore
+                tui.session.cancel()
+                if tui._restore is not None:
+                    tui._restore()
+                    tui._restore = None
+
+            with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+                tui._handle_slash(f"/init {d}")
+        self.assertEqual(tui.session.project_dir, "/tmp/fakeproj")
+        # a second release (stale worker's finally, seq-guarded) no-ops
+        captured["restore"]()
+        self.assertEqual(tui.session.project_dir, "/tmp/fakeproj")
 
     def test_todos_panel_visible_after_midrun_update(self):
         """TodoWrite mid-run: session.todos is set while the history cache

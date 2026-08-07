@@ -14,6 +14,15 @@ class TestPathSafety(unittest.TestCase):
         self.assertIsNotNone(path_forbidden("/mnt/data"))
         self.assertIsNone(path_forbidden("/home/user/file.py"))
 
+    def test_forbidden_path_canonicalized(self):
+        """Syntactic bypasses (//, /../, symlinks) must not evade the
+        forbidden-path patterns; the bare directory is caught too."""
+        self.assertIsNotNone(path_forbidden("//mnt/data"))
+        self.assertIsNotNone(path_forbidden("/tmp/../mnt/data"))
+        self.assertIsNotNone(path_forbidden("/mnt"))  # bare dir via trailing sep
+        self.assertIsNone(path_forbidden("/mnt2/data"))
+        self.assertIsNone(path_forbidden("/home/user/file.py"))
+
     def test_check_path_raises(self):
         with self.assertRaises(SafetyViolation):
             check_path("/mnt/data", "Read")
@@ -22,6 +31,12 @@ class TestPathSafety(unittest.TestCase):
     def test_command_forbidden(self):
         self.assertIsNotNone(command_forbidden("cat /mnt/secret.txt"))
         self.assertIsNone(command_forbidden("ls /home"))
+
+    def test_command_forbidden_canonicalized(self):
+        self.assertIsNotNone(command_forbidden("ls //mnt/data"))
+        self.assertIsNotNone(command_forbidden("ls /tmp/../mnt/data"))
+        self.assertIsNotNone(command_forbidden("ls /mnt"))
+        self.assertIsNone(command_forbidden("ls /home/user"))
 
 
 class TestBashPolicy(unittest.TestCase):
@@ -40,6 +55,22 @@ class TestBashPolicy(unittest.TestCase):
         self.assertIsInstance(p.verdict("git add ."), str)
         self.assertIsInstance(p.verdict("echo hi > file.txt"), str)
         self.assertIsInstance(p.verdict("echo $(ls)"), str)
+
+    def test_plan_mode_git_option_flags_blocked(self):
+        """git global options (-C, --git-dir, -c ...) must not smuggle a
+        mutating subcommand past the plan-mode read-only gate."""
+        p = BashPolicy(plan_mode=True)
+        for cmd in (
+            "git -C /tmp/x push",
+            "git --git-dir=/tmp/x push",
+            "git -c user.name=x commit",
+            "git --work-tree /tmp/x reset --hard",
+            "git --namespace=foo rebase main",
+        ):
+            verdict = p.verdict(cmd)
+            self.assertIsInstance(verdict, str, cmd)
+        self.assertIsNone(p.verdict("git -C /tmp/x status"))
+        self.assertIsNone(p.verdict("git --git-dir=/tmp/x log -1"))
 
     def test_dangerous_confirm(self):
         p = BashPolicy(approval="confirm", confirm_allowed=True)
@@ -72,6 +103,14 @@ class TestBashPolicy(unittest.TestCase):
         self.assertFalse(bash_read_only_p("find . -delete"))
         self.assertFalse(bash_read_only_p("sort file -o out"))
         self.assertFalse(bash_read_only_p("ls | rm -rf x"))
+
+    def test_git_option_flags_no_mutating_bypass(self):
+        self.assertFalse(bash_read_only_p("git -C /tmp/x push"))
+        self.assertFalse(bash_read_only_p("git --git-dir=/tmp/x push"))
+        self.assertFalse(bash_read_only_p("git -c user.name=x commit"))
+        self.assertFalse(bash_read_only_p("git --work-tree /tmp/x rebase main"))
+        self.assertTrue(bash_read_only_p("git -C /tmp/x status"))
+        self.assertTrue(bash_read_only_p("git --git-dir=/tmp/x log -1"))
 
 
 class TestUndo(unittest.TestCase):

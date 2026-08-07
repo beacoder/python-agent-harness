@@ -77,6 +77,46 @@ class TestApplyDiff(unittest.TestCase):
         with self.assertRaises(ValueError):
             _apply_diff("a\n", "not a diff")
 
+    def test_diff_with_no_newline_marker(self):
+        """Diffs for files without a trailing newline use the
+        '\\ No newline at end of file' marker (git-style); applying them
+        must work, whether the marker line follows a bare line (as
+        generated) or a newline-terminated one (as echoed by a model)."""
+        from python_agent_harness.diffrender import unified_diff
+
+        content = "a\nb"
+        generated = unified_diff(content, "a\nc", "/x/x.txt")
+        self.assertIn("\\ No newline at end of file", generated)
+        self.assertEqual(_apply_diff(content, generated), "a\nc")
+
+        git_style = (
+            "--- a/x.txt\n"
+            "+++ b/x.txt\n"
+            "@@ -1,2 +1,2 @@\n"
+            " a\n"
+            "-b\n"
+            "\\ No newline at end of file\n"
+            "+c\n"
+            "\\ No newline at end of file\n"
+        )
+        self.assertEqual(_apply_diff(content, git_style), "a\nc")
+
+    def test_glob_depth_zero_is_unlimited(self):
+        """depth=0 must mean 'no limit' (like `tree -L 0`), never an
+        empty result."""
+        from python_agent_harness.tools.filesystem import _git_glob_results
+
+        raw = "a.py\0sub/b.py\0sub/deep/c.py\0"
+        out0 = _git_glob_results(raw, "/repo", "/repo", 0, "*.py")
+        self.assertIn("sub/deep/c.py", out0)
+        self.assertIn("a.py", out0)
+        out1 = _git_glob_results(raw, "/repo", "/repo", 1, "*.py")
+        self.assertIn("a.py", out1)
+        self.assertNotIn("sub/b.py", out1)
+        self.assertNotIn("sub/deep/c.py", out1)
+        out_none = _git_glob_results(raw, "/repo", "/repo", None, "*.py")
+        self.assertIn("sub/deep/c.py", out_none)
+
 
 class TestEditTool(unittest.TestCase):
     def test_old_str_replace(self):
