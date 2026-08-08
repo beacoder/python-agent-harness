@@ -151,6 +151,9 @@ TEMPERATURE = 0.0
 
 # ---- sub-agents ---------------------------------------------------------------
 SUBAGENT_MAX_ROUNDS = 60
+# Max sub-agents that may run CONCURRENTLY in one tool round (Agent calls
+# issued together are executed in parallel; excess calls queue).
+PARALLEL_SUBAGENT_MAX = 4
 # Tools a sub-agent must NOT see or call: it runs autonomously as a
 # one-shot task inside the parent's tool round, so it cannot spawn
 # further sub-agents (Agent), ask the user questions (Question), nor

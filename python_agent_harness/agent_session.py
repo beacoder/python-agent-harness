@@ -101,7 +101,15 @@ class AgentSession:
         self.bash_policy = BashPolicy()
         self.tool_ctx = ToolContext(self)
         self._tool_diffs: dict[str, str] = {}
-        self._active_call_id: str | None = None
+        # thread-local: parallel sub-agents each execute tools in their
+        # own pool thread; the "currently executing call" that Edit/Write
+        # attach their diff to must be per-thread, or concurrent
+        # sub-agents would clobber each other's diff slot
+        self._active_call = threading.local()
+        # serializes the interactive Bash approval prompt: parallel
+        # sub-agents may hit CONFIRM simultaneously, but the TUI can only
+        # ask one question at a time
+        self._bash_lock = threading.Lock()
         self.store = SessionStore(
             project_dir=project_dir,
             model=model,
@@ -195,19 +203,20 @@ class AgentSession:
                 except SafetyViolation as e:
                     return str(e)
 
-        self._active_call_id = call_id
+        self._active_call.call_id = call_id
         try:
             result = self.registry.execute(name, args, self.tool_ctx)
         finally:
-            self._active_call_id = None
+            self._active_call.call_id = None
 
         self.notify("tool")
         return result
 
     def record_diff(self, diff_text: str) -> None:
         """Attach a unified diff to the tool call currently executing."""
-        if self._active_call_id and diff_text:
-            self._tool_diffs[self._active_call_id] = diff_text
+        call_id = getattr(self._active_call, "call_id", None)
+        if call_id and diff_text:
+            self._tool_diffs[call_id] = diff_text
 
     def take_diff(self, call_id: str) -> str | None:
         """Pop and return the diff recorded for CALL_ID, if any."""
@@ -242,24 +251,31 @@ class AgentSession:
         check_path(path, tool_name)
 
     def verify_bash(self, command: str) -> str | None:
-        """Return an error string to deliver, or None to run."""
-        self.bash_policy.plan_mode = self.plan_mode.is_plan
-        verdict = self.bash_policy.verdict(command)
-        if verdict != "CONFIRM":
-            return verdict
-        if self.bash_approval_fn:
-            run, answer = self.bash_approval_fn(command)
-        else:
-            run, answer = self._ask_via_tui(command)
-        if answer == "allow":
-            self.bash_policy.record(command, "allow")
-            return None
-        if answer == "deny":
-            self.bash_policy.record(command, "deny")
-            return "Error: Bash command rejected by user approval (denied for this session)."
-        if run:
-            return None
-        return "Error: Bash command rejected by user approval."
+        """Return an error string to deliver, or None to run.
+
+        The interactive approval prompt is serialized: parallel
+        sub-agents may reach CONFIRM simultaneously, but the user can
+        only answer one question at a time.  Command *execution* stays
+        parallel — the lock is released before the process starts.
+        """
+        with self._bash_lock:
+            self.bash_policy.plan_mode = self.plan_mode.is_plan
+            verdict = self.bash_policy.verdict(command)
+            if verdict != "CONFIRM":
+                return verdict
+            if self.bash_approval_fn:
+                run, answer = self.bash_approval_fn(command)
+            else:
+                run, answer = self._ask_via_tui(command)
+            if answer == "allow":
+                self.bash_policy.record(command, "allow")
+                return None
+            if answer == "deny":
+                self.bash_policy.record(command, "deny")
+                return "Error: Bash command rejected by user approval (denied for this session)."
+            if run:
+                return None
+            return "Error: Bash command rejected by user approval."
 
     def _ask_via_tui(self, command: str) -> tuple[bool, str]:
         prompt = (

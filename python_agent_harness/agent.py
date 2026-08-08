@@ -202,11 +202,65 @@ class AgentLoop:
             args = {}
         return self.session.execute_tool(call.name, args, call_id=call.id)
 
+    def _deliver_tool_result(self, p: ToolCall, result: str) -> None:
+        """Append one tool result message for call P (parent thread only)."""
+        p.result = result
+        if hasattr(self.session, "take_diff"):
+            p.diff = self.session.take_diff(p.id)
+        self.messages.append(
+            Message(
+                role="tool",
+                content=result,
+                tool_call_id=p.id,
+                name=p.name,
+            )
+        )
+        if self.top_level and not self._is_cancelled():
+            # only the top-level loop mirrors its messages onto the
+            # shared session: a sub-agent runs inside the parent's
+            # tool round and must never clobber the parent's
+            # conversation history (the TUI renders from it)
+            self.session.last_messages = list(self.messages)
+
+    def _run_subagents_parallel(
+        self, calls: list[ToolCall], results: dict[str, str]
+    ) -> None:
+        """Run several Agent calls concurrently, filling RESULTS.
+
+        Each sub-agent is fully isolated (its own agent loop, message
+        list, client stream, and thread-local diff slot), so Agent calls
+        issued in the same round execute in parallel.  Delivery happens
+        later, in original tool-call order, by the parent thread.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(
+            max_workers=min(len(calls), config.PARALLEL_SUBAGENT_MAX),
+            thread_name_prefix="subagent",
+        ) as pool:
+            futures = {pool.submit(self._execute_tool_call, p): p for p in calls}
+            for fut in as_completed(futures):
+                p = futures[fut]
+                try:
+                    results[p.id] = sanitize_tool_result(fut.result())
+                except Exception as e:  # noqa: BLE001 - containment boundary
+                    results[p.id] = (
+                        f"Error: Task {p.name!r} crashed in a sub-agent "
+                        f"thread — {e}"
+                    )
+
     def _run_tool_round(self) -> None:
         """Execute all pending tool calls; deliver results as messages.
 
         The assistant message carrying the tool calls was already
         appended by the main loop; here we add the per-call results.
+
+        Agent calls (sub-agent spawns) run CONCURRENTLY in a thread
+        pool — sub-agents are isolated by design, so several Agent calls
+        in one round execute in parallel.  All other tools stay
+        sequential: they are fast and mutate shared session state
+        (undo, diff slots).  Results are delivered in the original
+        tool-call order regardless of execution order.
         """
         pending = list(self.pending)
         if not pending:
@@ -217,30 +271,27 @@ class AgentLoop:
             # worker must never mirror its partial history over the next
             # run's `session.last_messages`.
             return
+        agent_calls = [p for p in pending if p.name == "Agent"]
+        results: dict[str, str] = {}
         for p in pending:
+            if p.name == "Agent":
+                continue
             if self._is_cancelled():
                 # cancelled mid-round: stop running further tools; the
                 # results already delivered stay local to this (dead) run
                 self.pending = []
                 return
-            result = sanitize_tool_result(self._execute_tool_call(p))
-            p.result = result
-            if hasattr(self.session, "take_diff"):
-                p.diff = self.session.take_diff(p.id)
-            self.messages.append(
-                Message(
-                    role="tool",
-                    content=result,
-                    tool_call_id=p.id,
-                    name=p.name,
-                )
-            )
-            if self.top_level and not self._is_cancelled():
-                # only the top-level loop mirrors its messages onto the
-                # shared session: a sub-agent runs inside the parent's
-                # tool round and must never clobber the parent's
-                # conversation history (the TUI renders from it)
-                self.session.last_messages = list(self.messages)
+            results[p.id] = sanitize_tool_result(self._execute_tool_call(p))
+        if agent_calls:
+            self._run_subagents_parallel(agent_calls, results)
+            if self._is_cancelled():
+                self.pending = []
+                return
+        for p in pending:
+            if self._is_cancelled():
+                self.pending = []
+                return
+            self._deliver_tool_result(p, results[p.id])
         self.pending = []
         self.session.notify("tools")
 

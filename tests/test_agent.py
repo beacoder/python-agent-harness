@@ -3,6 +3,8 @@
 import json
 import os
 import sys
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -83,6 +85,57 @@ class RecordingSession(AgentSession):
         return f"result of {name}"
 
 
+class ParallelSubagentSession(RecordingSession):
+    """Session whose run_subagent blocks (DURATION seconds, or until
+    cancel when DURATION is None) while tracking peak concurrency."""
+
+    def __init__(self, duration=0.4):
+        super().__init__()
+        self.duration = duration
+        self.active = 0
+        self.max_active = 0
+        self._lock = threading.Lock()
+        self.started = threading.Event()
+
+    def execute_tool(self, name, args, call_id=None):
+        if name == "Agent":
+            return self.run_subagent(
+                args.get("subagent_type", "subagent"),
+                args.get("description", "task"),
+                args.get("prompt", ""),
+            )
+        return super().execute_tool(name, args, call_id=call_id)
+
+    def run_subagent(self, subagent_type, description, prompt):
+        with self._lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        self.started.set()
+        try:
+            if self.duration is None:
+                deadline = time.monotonic() + 30
+                while not self.cancel_event.is_set() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+            else:
+                time.sleep(self.duration)
+            return f"done:{description}"
+        finally:
+            with self._lock:
+                self.active -= 1
+
+
+def agent_call(call_id, description, prompt="do it"):
+    return ToolCall(
+        id=call_id,
+        name="Agent",
+        arguments=json.dumps({
+            "subagent_type": "subagent",
+            "description": description,
+            "prompt": prompt,
+        }),
+    )
+
+
 class TestAgentLoop(unittest.TestCase):
     def test_simple_turn(self):
         session = RecordingSession()
@@ -107,6 +160,87 @@ class TestAgentLoop(unittest.TestCase):
         self.assertTrue(any(
             m.role == "tool" and m.text() == "file content" for m in loop.messages
         ))
+
+    def test_multiple_agent_calls_run_concurrently(self):
+        """Several Agent calls in one round execute in parallel: peak
+        concurrency exceeds 1, and results are delivered in the original
+        tool-call order."""
+        session = ParallelSubagentSession(duration=0.4)
+        session.tools_enabled = False
+        session.client.script = [
+            ("", [
+                agent_call("1", "task one"),
+                agent_call("2", "task two"),
+                agent_call("3", "task three"),
+            ]),
+            "all done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="delegate")])
+        start = time.monotonic()
+        result = loop.run()
+        elapsed = time.monotonic() - start
+        self.assertEqual(result, "all done")
+        # parallel: all three ran at the same time
+        self.assertGreaterEqual(session.max_active, 2)
+        # ...and finished in roughly one task duration, not three
+        self.assertLess(elapsed, 1.0)
+        # results delivered in original call order
+        tool_rows = [m.text() for m in loop.messages if m.role == "tool"]
+        self.assertEqual(
+            tool_rows,
+            ["done:task one", "done:task two", "done:task three"],
+        )
+
+    def test_mixed_round_sequential_tools_then_parallel_agents(self):
+        """Non-Agent tools stay sequential; Agent calls in the same round
+        still run concurrently and all results are delivered."""
+        session = ParallelSubagentSession(duration=0.3)
+        session.tools_enabled = False
+        session.client.script = [
+            ("", [
+                agent_call("1", "alpha"),
+                ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/x.py"}'),
+                agent_call("3", "beta"),
+            ]),
+            "done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        result = loop.run()
+        self.assertEqual(result, "done")
+        self.assertGreaterEqual(session.max_active, 2)
+        by_id = {m.tool_call_id: m.text() for m in loop.messages if m.role == "tool"}
+        self.assertEqual(by_id["1"], "done:alpha")
+        self.assertEqual(by_id["2"], "file content")
+        self.assertEqual(by_id["3"], "done:beta")
+        # delivered in original order
+        self.assertEqual(
+            [m.tool_call_id for m in loop.messages if m.role == "tool"],
+            ["1", "2", "3"],
+        )
+
+    def test_cancel_during_parallel_subagents(self):
+        """Ctrl-C while sub-agents run in parallel: the round stops, the
+        run returns None, and no exception escapes the thread pool."""
+        session = ParallelSubagentSession(duration=None)
+        session.tools_enabled = False
+        session.client.script = [
+            ("", [agent_call("1", "alpha"), agent_call("2", "beta")]),
+        ]
+        result = {}
+        worker = threading.Thread(
+            target=lambda: result.update(
+                r=AgentLoop(
+                    session, messages=[Message(role="user", content="delegate")]
+                ).run()
+            )
+        )
+        worker.start()
+        self.assertTrue(session.started.wait(timeout=5))
+        time.sleep(0.2)  # let both sub-agents spin up
+        session.cancel()
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(result.get("r"))
 
     def test_nudge_redirect(self):
         session = RecordingSession()

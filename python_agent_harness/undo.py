@@ -12,6 +12,7 @@ import os
 import random
 import shutil
 import string
+import threading
 import time
 from dataclasses import dataclass
 
@@ -34,9 +35,16 @@ class UndoStack:
             temp_dir(), "python-agent-harness-undo"
         )
         self.entries: list[UndoEntry] = []
+        # parallel sub-agents (and the top-level round) snapshot files
+        # concurrently: the entries list must be serialized
+        self._lock = threading.Lock()
 
     def snapshot(self, path: str, tool: str) -> None:
         """Snapshot PATH before a write; records absent files separately."""
+        with self._lock:
+            self._snapshot_locked(path, tool)
+
+    def _snapshot_locked(self, path: str, tool: str) -> None:
         path = os.path.abspath(path)
         if os.path.isfile(path):
             os.makedirs(self.backup_dir, exist_ok=True)
@@ -62,13 +70,18 @@ class UndoStack:
 
     def record_absent(self, path: str, tool: str) -> None:
         """Record a file that did not exist before a Write."""
-        path = os.path.abspath(path)
-        if os.path.exists(path) or any(e.path == path for e in self.entries):
-            return
-        self.entries.append(UndoEntry(path, None, False, tool, time.time()))
+        with self._lock:
+            path = os.path.abspath(path)
+            if os.path.exists(path) or any(e.path == path for e in self.entries):
+                return
+            self.entries.append(UndoEntry(path, None, False, tool, time.time()))
 
     def undo_last(self) -> tuple[bool, str]:
         """Restore the newest entry. Returns (ok, message)."""
+        with self._lock:
+            return self._undo_last_locked()
+
+    def _undo_last_locked(self) -> tuple[bool, str]:
         if not self.entries:
             return False, "Nothing to undo."
         entry = self.entries[-1]
@@ -95,11 +108,12 @@ class UndoStack:
             return False, f"Error: remove failed — {e}"
 
     def history(self) -> list[str]:
-        out = []
-        for e in reversed(self.entries):
-            stamp = time.strftime("%H:%M:%S", time.localtime(e.time))
-            out.append(f"{stamp} {e.tool} {e.path}")
-        return out
+        with self._lock:
+            out = []
+            for e in reversed(self.entries):
+                stamp = time.strftime("%H:%M:%S", time.localtime(e.time))
+                out.append(f"{stamp} {e.tool} {e.path}")
+            return out
 
 
 def temp_dir() -> str:
