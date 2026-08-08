@@ -1,7 +1,7 @@
-"""AgentSession: the runtime hub wiring tools, safety, cache, plan mode.
+"""AgentSession: the runtime hub wiring tools, safety, plan mode.
 
 The session implements the ToolContext-facing API (path guards, bash
-verdicts, snapshots, cache invalidation, sub-agents, questions) and the
+verdicts, snapshots, sub-agents, questions) and the
 agent-loop-facing API (client, calibrator, plan mode, auto-save,
 notifications).  The TUI layer subclasses it to provide interactive
 confirmations.
@@ -14,7 +14,6 @@ import threading
 from typing import Any, Callable
 
 from . import config
-from .cache import ToolCache
 from .client import Client
 from .models import AgentMode
 from .planmode import PlanMode
@@ -94,7 +93,6 @@ class AgentSession:
         self._configured_skill_path = skill_path
 
         self.registry = registry or Registry()
-        self.cache = ToolCache()
         self.calibrator = TokenCalibrator()
         self.plan_mode = PlanMode(project_dir)
         self.undo = UndoStack()
@@ -182,19 +180,12 @@ class AgentSession:
     def execute_tool(
         self, name: str, args: dict[str, Any], call_id: str | None = None
     ) -> str:
-        """Execute a tool with cache + safety integration.
+        """Execute a tool with safety integration.
 
         ``call_id`` (when given) lets Edit/Write attach a unified diff
         for the TUI to render; retrieve it afterwards with
         ``take_diff(call_id)``.
         """
-        # cache path for read/glob/grep
-        cached = self._cache_get(name, args)
-        if cached is not None:
-            return cached
-        if name in ("Read", "Glob", "Grep"):
-            self.cache.misses += 1
-
         # plan-mode guard: only the plan file is writable
         if self.plan_mode.is_plan and name in ("Write", "Edit", "Insert", "Mkdir", "Bash"):
             blocked = self._plan_blocked(name, args)
@@ -215,13 +206,6 @@ class AgentSession:
         finally:
             self._active_call_id = None
 
-        # cache store + write-through invalidation
-        if self.cache.cacheable_p(result):
-            self._cache_store(name, args, result)
-        if name in ("Write", "Edit", "Insert"):
-            path = self._tool_path(name, args)
-            if path:
-                self.cache.invalidate_path(path)
         self.notify("tool")
         return result
 
@@ -255,34 +239,6 @@ class AgentSession:
         if name == "Mkdir":
             return os.path.abspath(os.path.join(str(args.get("parent", "")), str(args.get("name", ""))))
         return None
-
-    # ------------------------------------------------------------------
-    # cache integration
-    # ------------------------------------------------------------------
-    def _cache_get(self, name: str, args: dict[str, Any]) -> str | None:
-        key, path = self._cache_key(name, args)
-        if key is None:
-            return None
-        return self.cache.get(key, path)
-
-    def _cache_store(self, name: str, args: dict[str, Any], result: str) -> None:
-        key, path = self._cache_key(name, args)
-        if key is None:
-            return
-        self.cache.store(key, result, path)
-        self.cache.mark_seen(key)
-
-    def _cache_key(self, name: str, args: dict[str, Any]) -> tuple[tuple | None, str | None]:
-        if name == "Read":
-            path = os.path.abspath(str(args.get("file_path", "")))
-            return (("read", path, args.get("start_line"), args.get("end_line")), path)
-        if name == "Glob":
-            base = os.path.abspath(str(args.get("path") or self.project_dir))
-            return (("glob", str(args.get("pattern")), base, args.get("depth")), base)
-        if name == "Grep":
-            path = os.path.abspath(str(args.get("path", "")))
-            return (("grep", str(args.get("regex")), path, args.get("glob"), args.get("context_lines")), path)
-        return None, None
 
     # ------------------------------------------------------------------
     # ToolContext-facing API
@@ -333,9 +289,6 @@ class AgentSession:
 
     def record_absent(self, path: str, tool: str) -> None:
         self.undo.record_absent(path, tool)
-
-    def invalidate_cache(self, path: str) -> None:
-        self.cache.invalidate_path(path)
 
     def update_todos(self, todos: list[dict]) -> None:
         """Store TODOS into the currently active scope.
@@ -565,8 +518,8 @@ class AgentSession:
         Mirrors gptel-agent-harness-commands-compact-buffer: the whole
         conversation is sent as the user message with the compact prompt
         as system (tools/stream disabled); on success the conversation is
-        replaced by the summary frame + the last real user request, the
-        cache epoch is reset, and the session file is refreshed.
+        replaced by the summary frame + the last real user request, and
+        the session file is refreshed.
         """
         from .prompts import last_user_request, read_prompt_file
         from .models import Message as Msg
@@ -593,7 +546,6 @@ class AgentSession:
             summary = resp.text()
             if not summary:
                 return False, "Compaction failed: empty summary."
-            self.cache.reset_epoch()
             frame = config.COMPACT_HEADER + summary + config.COMPACT_SEPARATOR
             self.last_messages = [
                 Msg(role="system", content=frame.strip()),

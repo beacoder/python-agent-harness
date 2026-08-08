@@ -14,7 +14,7 @@ class ToolContext:
     """Runtime context handed to tools.
 
     Tools may call back into the session for approvals, user questions,
-    plan-mode checks, safety guards, and cache access.  All methods
+    plan-mode checks, safety guards, and snapshots.  All methods
     proxy to the session when present; defaults are safe no-ops.
     """
 
@@ -52,10 +52,6 @@ class ToolContext:
     def record_absent(self, path: str, tool: str) -> None:
         if self.session and hasattr(self.session, "record_absent"):
             self.session.record_absent(path, tool)
-
-    def invalidate_cache(self, path: str) -> None:
-        if self.session and hasattr(self.session, "invalidate_cache"):
-            self.session.invalidate_cache(path)
 
     def record_diff(self, diff_text: str) -> None:
         """Attach a unified diff to the currently-executing tool call."""

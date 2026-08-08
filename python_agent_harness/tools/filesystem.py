@@ -326,7 +326,6 @@ class Write(Tool):
                 f.write(args["content"])
         except OSError as e:
             return f"Error: {e}"
-        ctx.invalidate_cache(path)
         if not existed:
             ctx.record_absent(path, "Write")
         diff_text = unified_diff(old_content, args["content"], path)
@@ -381,7 +380,6 @@ class Edit(Tool):
                 f.write(new)
         except OSError as e:
             return f"Error: {e}"
-        ctx.invalidate_cache(path)
         diff_text = unified_diff(content, new, path)
         if diff_text:
             ctx.record_diff(diff_text)
@@ -530,5 +528,4 @@ class Insert(Tool):
                 f.write("".join(lines))
         except OSError as e:
             return f"Error: {e}"
-        ctx.invalidate_cache(path)
         return f"Successfully inserted text at line {ln} in {path}"

@@ -24,9 +24,6 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
   files and the task-completion rules; sub-agents get only their own
   prompt. `/init` `/review` `/explain` and custom commands
   (`prompts/commands/*.txt`) run with their own prompt for that run.
-- **Tool cache** — per-file mtime / per-directory TTL validity, write-through
-  invalidation on edits, and per-epoch deduplication
-  (`[Cached: Read ... — same as earlier call, see above]`).
 - **Plan / Build modes** — plan mode is read-only except the per-session
   plan file; PlanExit switches back to build with an "execute the plan"
   prompt; sub-agents in plan mode receive the read-only reminder.
@@ -155,7 +152,6 @@ python_agent_harness/
 ├── token_estimator.py  CJK-aware token estimation + calibration
 ├── safety.py       path guards + bash policy tiers
 ├── undo.py         file snapshots / undo
-├── cache.py        tool-result cache + dedup
 ├── planmode.py     build/plan mode + plan file lifecycle
 ├── prompts.py      prompt loading + system prompt assembly
 ├── session_store.py  session persistence + titles
@@ -180,10 +176,9 @@ Python ≥ 3.11 is required (CI runs 3.11 / 3.12 / 3.13).
 
 - [x] Nudge supervision with fail-closed dead-session budget
 - [x] Tool-result sanitization (None → error placeholder)
-- [x] Compaction: frame, epoch reset, resume last request
+- [x] Compaction: frame, resume last request
 - [x] Plan mode: read-only + plan-file writes only
 - [x] Bash tiers: catastrophic → plan gate → destructive → dangerous → run
-- [x] Cache dedup messages and write-through invalidation
 - [x] Session metadata round-trip and title sanitization
 - [x] One-shot LLM title generation after the agent loop finishes
 - [x] Ctrl-C cancel: stale workers can't clobber the next run's history

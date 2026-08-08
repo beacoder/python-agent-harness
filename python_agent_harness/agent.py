@@ -167,7 +167,6 @@ class AgentLoop:
             summary = resp.text()
             if not summary:
                 return False
-            self.session.cache.reset_epoch()
             frame = config.COMPACT_HEADER + summary + config.COMPACT_SEPARATOR
             self.messages = [
                 Message(role="system", content=frame.strip()),

@@ -104,11 +104,6 @@ BASH_ARG_DENYLIST: list[tuple[str, set[str]]] = [
 
 UNDO_DEPTH = 50
 
-# ---- cache -----------------------------------------------------------------
-CACHE_ENABLED = True
-CACHE_TTL = 60
-CACHE_MAX_ENTRIES = 200
-
 # ---- sessions ---------------------------------------------------------------
 SESSION_DIR = Path(
     os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")

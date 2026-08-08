@@ -15,7 +15,6 @@ class FakeSession:
 
     def __init__(self) -> None:
         self.snapshots: list[tuple[str, str]] = []
-        self.invalidated: list[str] = []
         self.recorded_diffs: list[str] = []
 
     @property
@@ -30,9 +29,6 @@ class FakeSession:
 
     def record_absent(self, path: str, tool: str) -> None:
         pass
-
-    def invalidate_cache(self, path: str) -> None:
-        self.invalidated.append(path)
 
     def record_diff(self, diff_text: str) -> None:
         self.recorded_diffs.append(diff_text)
