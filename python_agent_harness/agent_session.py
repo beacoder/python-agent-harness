@@ -106,10 +106,11 @@ class AgentSession:
         # attach their diff to must be per-thread, or concurrent
         # sub-agents would clobber each other's diff slot
         self._active_call = threading.local()
-        # serializes the interactive Bash approval prompt: parallel
-        # sub-agents may hit CONFIRM simultaneously, but the TUI can only
-        # ask one question at a time
-        self._bash_lock = threading.Lock()
+        # serializes interactive prompts (Question tool, PlanExit
+        # confirmation, dangerous-Bash approval): parallel tool rounds
+        # may hit them simultaneously, but the TUI can only ask one
+        # question at a time
+        self._interactive_lock = threading.Lock()
         self.store = SessionStore(
             project_dir=project_dir,
             model=model,
@@ -160,14 +161,16 @@ class AgentSession:
             self.log_fn(msg)
 
     def confirm(self, prompt: str) -> bool:
-        if self.confirm_fn:
-            return self.confirm_fn(prompt)
-        return True
+        with self._interactive_lock:
+            if self.confirm_fn:
+                return self.confirm_fn(prompt)
+            return True
 
     def ask_questions(self, questions: list[dict]) -> str:
-        if self.ask_fn:
-            return self.ask_fn(questions)
-        return "Unanswered"
+        with self._interactive_lock:
+            if self.ask_fn:
+                return self.ask_fn(questions)
+            return "Unanswered"
 
     # ------------------------------------------------------------------
     # tools
@@ -253,12 +256,12 @@ class AgentSession:
     def verify_bash(self, command: str) -> str | None:
         """Return an error string to deliver, or None to run.
 
-        The interactive approval prompt is serialized: parallel
-        sub-agents may reach CONFIRM simultaneously, but the user can
-        only answer one question at a time.  Command *execution* stays
+        The interactive approval prompt is serialized: parallel tool
+        rounds may reach CONFIRM simultaneously, but the user can only
+        answer one question at a time.  Command *execution* stays
         parallel — the lock is released before the process starts.
         """
-        with self._bash_lock:
+        with self._interactive_lock:
             self.bash_policy.plan_mode = self.plan_mode.is_plan
             verdict = self.bash_policy.verdict(command)
             if verdict != "CONFIRM":

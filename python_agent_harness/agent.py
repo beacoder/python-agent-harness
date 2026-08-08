@@ -9,6 +9,8 @@ Implements the gptel-agent-harness supervision semantics:
   to work while nudge budget remains (max 2), reset on tool calls
 - tool results are sanitized (None -> error placeholder, non-str -> str)
 - tool-call batches never strand the loop: failures become error results
+- every tool call in a round runs concurrently in a thread pool (results
+  delivered in original order); interactive prompts stay serialized
 - token calibration is updated from API-reported input tokens
 - sessions are auto-saved after each response
 - a cancelled run with no successor salvages its partial history
@@ -222,44 +224,56 @@ class AgentLoop:
             # conversation history (the TUI renders from it)
             self.session.last_messages = list(self.messages)
 
-    def _run_subagents_parallel(
+    def _run_tools_parallel(
         self, calls: list[ToolCall], results: dict[str, str]
     ) -> None:
-        """Run several Agent calls concurrently, filling RESULTS.
+        """Run CALLS concurrently in a thread pool, filling RESULTS.
 
-        Each sub-agent is fully isolated (its own agent loop, message
-        list, client stream, and thread-local diff slot), so Agent calls
-        issued in the same round execute in parallel.  Delivery happens
-        later, in original tool-call order, by the parent thread.
+        Each call executes in its own worker thread: the session's
+        shared state is concurrency-safe (thread-local diff slots,
+        locked undo stack, serialized interactive prompts), so every
+        tool issued in the same round — Agent calls included, whose
+        sub-agents are isolated by design — runs in parallel.  Delivery
+        happens later, in original tool-call order, by the parent
+        thread.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        def run_one(p: ToolCall) -> str:
+            # A cancel landing while the task is still QUEUED must skip
+            # it (tools have side effects): the sequential loop used to
+            # check before every call, so keep that guarantee — a
+            # task already RUNNING cannot be stopped, but one that has
+            # not started yet must not run after Ctrl-C.
+            if self._is_cancelled():
+                return "Error: tool call cancelled (user aborted the run)."
+            return self._execute_tool_call(p)
+
         with ThreadPoolExecutor(
-            max_workers=min(len(calls), config.PARALLEL_SUBAGENT_MAX),
-            thread_name_prefix="subagent",
+            max_workers=min(len(calls), config.PARALLEL_TOOL_MAX),
+            thread_name_prefix="tool",
         ) as pool:
-            futures = {pool.submit(self._execute_tool_call, p): p for p in calls}
+            futures = {pool.submit(run_one, p): p for p in calls}
             for fut in as_completed(futures):
                 p = futures[fut]
                 try:
                     results[p.id] = sanitize_tool_result(fut.result())
                 except Exception as e:  # noqa: BLE001 - containment boundary
                     results[p.id] = (
-                        f"Error: Task {p.name!r} crashed in a sub-agent "
+                        f"Error: tool {p.name!r} crashed in a worker "
                         f"thread — {e}"
                     )
 
     def _run_tool_round(self) -> None:
-        """Execute all pending tool calls; deliver results as messages.
+        """Execute all pending tool calls concurrently; deliver results.
 
         The assistant message carrying the tool calls was already
         appended by the main loop; here we add the per-call results.
 
-        Agent calls (sub-agent spawns) run CONCURRENTLY in a thread
-        pool — sub-agents are isolated by design, so several Agent calls
-        in one round execute in parallel.  All other tools stay
-        sequential: they are fast and mutate shared session state
-        (undo, diff slots).  Results are delivered in the original
+        All tools issued in the round run CONCURRENTLY in a thread
+        pool — the session's shared state is concurrency-safe
+        (thread-local diff slots, locked undo stack, serialized
+        interactive prompts).  Results are delivered in the original
         tool-call order regardless of execution order.
         """
         pending = list(self.pending)
@@ -271,22 +285,14 @@ class AgentLoop:
             # worker must never mirror its partial history over the next
             # run's `session.last_messages`.
             return
-        agent_calls = [p for p in pending if p.name == "Agent"]
         results: dict[str, str] = {}
-        for p in pending:
-            if p.name == "Agent":
-                continue
-            if self._is_cancelled():
-                # cancelled mid-round: stop running further tools; the
-                # results already delivered stay local to this (dead) run
-                self.pending = []
-                return
-            results[p.id] = sanitize_tool_result(self._execute_tool_call(p))
-        if agent_calls:
-            self._run_subagents_parallel(agent_calls, results)
-            if self._is_cancelled():
-                self.pending = []
-                return
+        self._run_tools_parallel(pending, results)
+        if self._is_cancelled():
+            # cancelled mid-round: tools already submitted may have run
+            # (their side effects are done), but the results stay local
+            # to this (dead) run
+            self.pending = []
+            return
         for p in pending:
             if self._is_cancelled():
                 self.pending = []

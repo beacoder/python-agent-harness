@@ -204,6 +204,70 @@ class TestSubagentIsolation(unittest.TestCase):
         # spawned an additional nested loop's chat call
         self.assertEqual(len(client.sent), 2)
 
+    def test_parallel_tool_round_inside_subagent_loop(self):
+        """A sub-agent's OWN multi-tool round runs through the same
+        parallel executor as the parent's: sibling tools execute
+        concurrently, a hallucinated parent-only call is refused inline
+        while its siblings still run, results arrive in original order,
+        and nothing leaks into the parent's shared history."""
+        import threading
+        import time
+
+        from python_agent_harness.agent import AgentLoop
+
+        class BlockingSession(AgentSession):
+            def __init__(self, client, duration=0.3):
+                super().__init__(
+                    project_dir="/tmp/fakeproj", client=client, model="m",
+                    registry=default_registry(),
+                )
+                self.duration = duration
+                self.active = 0
+                self.max_active = 0
+                self._lock = threading.Lock()
+
+            def execute_tool(self, name, args, call_id=None):
+                with self._lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                try:
+                    time.sleep(self.duration)
+                    return f"result of {name}"
+                finally:
+                    with self._lock:
+                        self.active -= 1
+
+        client = RecClient([
+            ("", [
+                ToolCall(id="s1", name="Agent", arguments=AGENT_CALL),
+                ToolCall(id="s2", name="Read", arguments='{"file_path": "/tmp/x.py"}'),
+                ToolCall(id="s3", name="Bash", arguments='{"command": "echo hi"}'),
+            ]),
+            "sub done",
+        ])
+        s = BlockingSession(client)
+        loop = AgentLoop(
+            s,
+            messages=[Message(role="user", content="find stuff")],
+            top_level=False,
+            system="SUB",
+        )
+        result = loop.run()
+        self.assertEqual(result, "sub done")
+        # the two healthy tools ran CONCURRENTLY (the refused Agent call
+        # returned inline, so the pool still held two sleeping calls)
+        self.assertGreaterEqual(s.max_active, 2)
+        # refused call first (original order), siblings after it
+        tool_rows = [(m.tool_call_id, m.text()) for m in loop.messages if m.role == "tool"]
+        self.assertEqual(
+            [t[0] for t in tool_rows], ["s1", "s2", "s3"],
+        )
+        self.assertIn("not available to sub-agents", tool_rows[0][1])
+        self.assertEqual(tool_rows[1][1], "result of Read")
+        self.assertEqual(tool_rows[2][1], "result of Bash")
+        # a sub-agent never mirrors its history onto the shared session
+        self.assertEqual(s.last_messages, [])
+
 
 if __name__ == "__main__":
     unittest.main()

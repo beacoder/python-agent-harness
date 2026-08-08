@@ -6,8 +6,8 @@ parent as a single tool result string.  Errors are contained: an
 unexpected sub-agent response becomes an error string fed to the parent,
 never a crash.
 
-Multiple Agent calls issued in the same round run CONCURRENTLY — each
-sub-agent is fully isolated (own loop, own history, own stream), so
+Every tool call in a round — Agent calls included — runs CONCURRENTLY:
+each sub-agent is fully isolated (own loop, own history, own stream), so
 independent tasks can be delegated in parallel.
 """
 
@@ -20,8 +20,9 @@ DESCRIPTION = (
     "autonomously. Sub-agents run independently and return results in one "
     "message. Use for open-ended searches, complex research, or when "
     "uncertain about finding results in the first few tries.\n\n"
-    "Multiple Agent calls issued in the same round run concurrently, so "
-    "delegate independent tasks in parallel for efficiency."
+    "Tool calls issued in the same round — including multiple Agent "
+    "calls — run concurrently, so delegate independent tasks in parallel "
+    "for efficiency."
 )
 
 PARAMETERS = {

@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -85,31 +86,25 @@ class RecordingSession(AgentSession):
         return f"result of {name}"
 
 
-class ParallelSubagentSession(RecordingSession):
-    """Session whose run_subagent blocks (DURATION seconds, or until
-    cancel when DURATION is None) while tracking peak concurrency."""
+class ParallelToolSession(RecordingSession):
+    """Session whose tool calls block (DURATION seconds, or until cancel
+    when DURATION is None) while tracking peak concurrency across ALL
+    tools."""
 
     def __init__(self, duration=0.4):
         super().__init__()
         self.duration = duration
         self.active = 0
         self.max_active = 0
+        self.executed_count = 0
         self._lock = threading.Lock()
         self.started = threading.Event()
 
     def execute_tool(self, name, args, call_id=None):
-        if name == "Agent":
-            return self.run_subagent(
-                args.get("subagent_type", "subagent"),
-                args.get("description", "task"),
-                args.get("prompt", ""),
-            )
-        return super().execute_tool(name, args, call_id=call_id)
-
-    def run_subagent(self, subagent_type, description, prompt):
         with self._lock:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
+            self.executed_count += 1
         self.started.set()
         try:
             if self.duration is None:
@@ -118,7 +113,36 @@ class ParallelSubagentSession(RecordingSession):
                     time.sleep(0.02)
             else:
                 time.sleep(self.duration)
-            return f"done:{description}"
+            if name == "Agent":
+                return f"done:{args.get('description', 'task')}"
+            return f"result of {name}"
+        finally:
+            with self._lock:
+                self.active -= 1
+
+
+class SerialPromptSession(RecordingSession):
+    """Session whose interactive prompt handlers (Question / PlanExit
+    confirm / dangerous-Bash approval) each block DURATION seconds while
+    tracking peak concurrency — to verify the session serializes them."""
+
+    def __init__(self, duration=0.3):
+        super().__init__()
+        self.duration = duration
+        self.active = 0
+        self.max_active = 0
+        self._lock = threading.Lock()
+        self.ask_fn = self._prompt
+        self.confirm_fn = self._prompt
+        self.bash_approval_fn = lambda cmd: (self._prompt(cmd), "run")
+
+    def _prompt(self, prompt):
+        with self._lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep(self.duration)
+            return "yes"
         finally:
             with self._lock:
                 self.active -= 1
@@ -161,17 +185,17 @@ class TestAgentLoop(unittest.TestCase):
             m.role == "tool" and m.text() == "file content" for m in loop.messages
         ))
 
-    def test_multiple_agent_calls_run_concurrently(self):
-        """Several Agent calls in one round execute in parallel: peak
-        concurrency exceeds 1, and results are delivered in the original
-        tool-call order."""
-        session = ParallelSubagentSession(duration=0.4)
+    def test_multiple_tool_calls_run_concurrently(self):
+        """Several tool calls in one round — Agent and plain tools alike
+        — execute in parallel: peak concurrency exceeds 1, and results
+        are delivered in the original tool-call order."""
+        session = ParallelToolSession(duration=0.4)
         session.tools_enabled = False
         session.client.script = [
             ("", [
                 agent_call("1", "task one"),
-                agent_call("2", "task two"),
-                agent_call("3", "task three"),
+                ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/x.py"}'),
+                ToolCall(id="3", name="Bash", arguments='{"command": "echo hi"}'),
             ]),
             "all done",
         ]
@@ -188,13 +212,13 @@ class TestAgentLoop(unittest.TestCase):
         tool_rows = [m.text() for m in loop.messages if m.role == "tool"]
         self.assertEqual(
             tool_rows,
-            ["done:task one", "done:task two", "done:task three"],
+            ["done:task one", "result of Read", "result of Bash"],
         )
 
-    def test_mixed_round_sequential_tools_then_parallel_agents(self):
-        """Non-Agent tools stay sequential; Agent calls in the same round
-        still run concurrently and all results are delivered."""
-        session = ParallelSubagentSession(duration=0.3)
+    def test_mixed_round_all_tools_run_concurrently(self):
+        """Every tool in a round — Agent and plain tools alike — runs
+        concurrently, and all results are delivered in original order."""
+        session = ParallelToolSession(duration=0.3)
         session.tools_enabled = False
         session.client.script = [
             ("", [
@@ -210,7 +234,7 @@ class TestAgentLoop(unittest.TestCase):
         self.assertGreaterEqual(session.max_active, 2)
         by_id = {m.tool_call_id: m.text() for m in loop.messages if m.role == "tool"}
         self.assertEqual(by_id["1"], "done:alpha")
-        self.assertEqual(by_id["2"], "file content")
+        self.assertEqual(by_id["2"], "result of Read")
         self.assertEqual(by_id["3"], "done:beta")
         # delivered in original order
         self.assertEqual(
@@ -221,7 +245,7 @@ class TestAgentLoop(unittest.TestCase):
     def test_cancel_during_parallel_subagents(self):
         """Ctrl-C while sub-agents run in parallel: the round stops, the
         run returns None, and no exception escapes the thread pool."""
-        session = ParallelSubagentSession(duration=None)
+        session = ParallelToolSession(duration=None)
         session.tools_enabled = False
         session.client.script = [
             ("", [agent_call("1", "alpha"), agent_call("2", "beta")]),
@@ -241,6 +265,315 @@ class TestAgentLoop(unittest.TestCase):
         worker.join(timeout=5)
         self.assertFalse(worker.is_alive())
         self.assertIsNone(result.get("r"))
+
+    def test_cancelled_queued_tool_does_not_run(self):
+        """A tool still QUEUED when Ctrl-C lands must never execute: with
+        a single pool worker, call 1 blocks, the cancel arrives while it
+        runs, and the queued call 2 is skipped by the per-task pre-check
+        (deterministic counterpart of the salvage tests' 2-3 range)."""
+        session = ParallelToolSession(duration=None)
+        session.tools_enabled = False
+        session.client.script = [
+            ("", [
+                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
+            ]),
+        ]
+        result = {}
+        with mock.patch("python_agent_harness.config.PARALLEL_TOOL_MAX", 1):
+            worker = threading.Thread(
+                target=lambda: result.update(
+                    r=AgentLoop(
+                        session, messages=[Message(role="user", content="read")]
+                    ).run()
+                )
+            )
+            worker.start()
+            self.assertTrue(session.started.wait(timeout=5))
+            time.sleep(0.2)  # worker 1 is now blocked; call 2 is queued
+            session.cancel()
+            worker.join(timeout=10)
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(result.get("r"))
+        # only the already-running call executed; the queued call was
+        # skipped after Ctrl-C and never reached execute_tool
+        self.assertEqual(session.executed_count, 1)
+        self.assertEqual(session.max_active, 1)
+
+    def test_pool_caps_concurrency_but_runs_all_calls(self):
+        """More tool calls than PARALLEL_TOOL_MAX still ALL execute (the
+        excess queue), and peak concurrency never exceeds the cap."""
+        session = ParallelToolSession(duration=0.15)
+        session.tools_enabled = False
+        calls = [
+            ToolCall(id=str(i), name="Read", arguments='{"file_path": "/tmp/x.py"}')
+            for i in range(1, 9)
+        ]
+        session.client.script = [("", calls), "done"]
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        with mock.patch("python_agent_harness.config.PARALLEL_TOOL_MAX", 4):
+            start = time.monotonic()
+            result = loop.run()
+            elapsed = time.monotonic() - start
+        self.assertEqual(result, "done")
+        # all 8 calls ran, capped at 4 concurrent workers
+        self.assertEqual(session.executed_count, 8)
+        self.assertLessEqual(session.max_active, 4)
+        # ...yet finished in ~2 batches, not 8 sequential durations
+        self.assertLess(elapsed, 0.8)
+        # results delivered in original order
+        self.assertEqual(
+            [m.tool_call_id for m in loop.messages if m.role == "tool"],
+            [str(i) for i in range(1, 9)],
+        )
+
+    def test_malformed_tool_arguments_do_not_break_round(self):
+        """A tool call whose arguments are not valid JSON (or parse to a
+        non-object) must not break the round: the arguments degrade to
+        {} (an error result for the tool), sibling calls still run, and
+        all results are delivered."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.client.script = [
+            ("", [
+                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                ToolCall(id="2", name="Bash", arguments="not-json{{{"),
+                ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
+                ToolCall(id="4", name="Read", arguments="[1, 2, 3]"),
+            ]),
+            "done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        result = loop.run()
+        self.assertEqual(result, "done")
+        # the malformed calls degraded to empty args (never the raw
+        # string / raw list); the healthy siblings ran with theirs intact
+        read_args = [args for name, args in session.executed if name == "Read"]
+        bash_args = [args for name, args in session.executed if name == "Bash"]
+        self.assertEqual(
+            sorted(str(a["file_path"]) for a in read_args if a),
+            ["/tmp/a.py", "/tmp/c.py"],
+        )
+        self.assertEqual([a for a in read_args if not a], [{}])
+        self.assertEqual(bash_args, [{}])
+        # all four results delivered in original order
+        self.assertEqual(
+            [m.tool_call_id for m in loop.messages if m.role == "tool"],
+            ["1", "2", "3", "4"],
+        )
+        by_id = {m.tool_call_id: m.text() for m in loop.messages if m.role == "tool"}
+        self.assertEqual(by_id["1"], "file content")
+        self.assertEqual(by_id["3"], "file content")
+        self.assertEqual(by_id["4"], "file content")
+
+    def test_parallel_round_contains_tool_crash(self):
+        """A tool that raises inside a parallel round must not kill the
+        round: sibling tools still run, the crash becomes an error
+        result, and all results are delivered in original order."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        orig_execute = RecordingSession.execute_tool
+
+        def exploding_execute(name, args, call_id=None):
+            if name == "Grep":
+                raise RuntimeError("boom")
+            return orig_execute(session, name, args, call_id=call_id)
+
+        session.execute_tool = exploding_execute
+        session.client.script = [
+            ("", [
+                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                ToolCall(id="2", name="Bash", arguments='{"command": "echo hi"}'),
+                ToolCall(id="3", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
+            ]),
+            "all done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        self.assertEqual(loop.run(), "all done")
+        # the two healthy tools ran; the crash was contained
+        self.assertEqual(sorted(n for n, _ in session.executed), ["Bash", "Read"])
+        tool_rows = [(m.tool_call_id, m.text()) for m in loop.messages if m.role == "tool"]
+        self.assertEqual(tool_rows[0], ("1", "file content"))
+        self.assertEqual(tool_rows[1], ("2", "bash output"))
+        self.assertEqual(tool_rows[2][0], "3")
+        self.assertIn("crashed in a worker thread", tool_rows[2][1])
+        self.assertIn("boom", tool_rows[2][1])
+
+    def test_interactive_prompts_serialized_under_parallel_rounds(self):
+        """Interactive prompts (Question tool, PlanExit confirmation,
+        dangerous-Bash approval) must be strictly serialized: concurrent
+        calls never present more than one prompt at a time."""
+        session = SerialPromptSession(duration=0.3)
+        threads = [
+            threading.Thread(target=lambda: session.ask_questions([{"question": "q1"}])),
+            threading.Thread(target=lambda: session.confirm("switch?")),
+            threading.Thread(target=lambda: session.verify_bash("chmod -R 755 /tmp/x")),
+            threading.Thread(target=lambda: session.ask_questions([{"question": "q2"}])),
+        ]
+        start = time.monotonic()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        elapsed = time.monotonic() - start
+        # 4 prompts x 0.3s, one at a time
+        self.assertEqual(session.max_active, 1)
+        self.assertGreaterEqual(elapsed, 0.8)
+
+    def test_parallel_edits_attach_diffs_to_their_own_call(self):
+        """Two real Edit calls running in parallel must attach each
+        unified diff to ITS OWN tool call: the thread-local diff slot
+        (not a shared one) is what keeps concurrent file mutations from
+        cross-attributing diffs in the TUI."""
+        import tempfile as _tf
+
+        with _tf.TemporaryDirectory(prefix="pah-parallel-diff-") as tmpdir:
+            fa = os.path.join(tmpdir, "a.py")
+            fb = os.path.join(tmpdir, "b.py")
+            with open(fa, "w") as f:
+                f.write("x = 1\n")
+            with open(fb, "w") as f:
+                f.write("y = 2\n")
+            session = RecordingSession(project_dir=tmpdir)
+            session.tools_enabled = False
+            # run the REAL Edit implementation (RecordingSession normally
+            # returns canned results)
+            def real_execute(name, args, call_id=None):
+                return AgentSession.execute_tool(session, name, args, call_id=call_id)
+
+            session.execute_tool = real_execute
+            loop = AgentLoop(session, messages=[Message(role="user", content="edit")])
+            calls = [
+                ToolCall(id="e1", name="Edit", arguments=json.dumps(
+                    {"path": fa, "old_str": "x = 1", "new_str": "x = 42"})),
+                ToolCall(id="e2", name="Edit", arguments=json.dumps(
+                    {"path": fb, "old_str": "y = 2", "new_str": "y = 43"})),
+            ]
+            loop.pending = list(calls)
+            loop._run_tool_round()
+            # both files really changed
+            with open(fa) as f:
+                self.assertEqual(f.read(), "x = 42\n")
+            with open(fb) as f:
+                self.assertEqual(f.read(), "y = 43\n")
+            # each call carries its own file's diff — not the other's
+            self.assertIn("a.py", calls[0].diff)
+            self.assertIn("x = 42", calls[0].diff)
+            self.assertNotIn("b.py", calls[0].diff)
+            self.assertIn("b.py", calls[1].diff)
+            self.assertIn("y = 43", calls[1].diff)
+            self.assertNotIn("a.py", calls[1].diff)
+            # results delivered in original order
+            self.assertEqual(
+                [m.tool_call_id for m in loop.messages if m.role == "tool"],
+                ["e1", "e2"],
+            )
+
+    def test_none_result_becomes_placeholder_in_parallel_round(self):
+        """A tool returning None inside a parallel round must yield the
+        NIL placeholder (never a crash or a missing tool row), while
+        sibling results are delivered normally."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        orig_execute = RecordingSession.execute_tool
+
+        def none_execute(name, args, call_id=None):
+            if name == "Bash":
+                return None
+            return orig_execute(session, name, args, call_id=call_id)
+
+        session.execute_tool = none_execute
+        session.client.script = [
+            ("", [
+                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                ToolCall(id="2", name="Bash", arguments='{"command": "echo hi"}'),
+                ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
+            ]),
+            "done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        self.assertEqual(loop.run(), "done")
+        by_id = {m.tool_call_id: m.text() for m in loop.messages if m.role == "tool"}
+        self.assertEqual(by_id["1"], "file content")
+        self.assertIn("produced no result", by_id["2"])
+        self.assertEqual(by_id["3"], "file content")
+        self.assertEqual(
+            [m.tool_call_id for m in loop.messages if m.role == "tool"],
+            ["1", "2", "3"],
+        )
+
+    def test_plan_mode_blocks_writes_in_parallel_round(self):
+        """A parallel round under plan mode: mutating tools are blocked
+        by the read-only guard while read-only tools run — every result
+        is still delivered in original order, and no forbidden write
+        lands."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.plan_mode = PlanMode("/tmp/fakeproj")
+        session.plan_mode.set_mode(session.plan_mode.mode.PLAN, {
+            "plan": "P1", "plan-mode": "P2", "build-switch": "B",
+        })
+
+        def real_execute(name, args, call_id=None):
+            return AgentSession.execute_tool(session, name, args, call_id=call_id)
+
+        session.execute_tool = real_execute
+        with tempfile.TemporaryDirectory(prefix="pah-plan-") as tmpdir:
+            blocked_path = os.path.join(tmpdir, "blocked.txt")
+            readable = os.path.join(tmpdir, "readable.txt")
+            with open(readable, "w") as f:
+                f.write("readable content\n")
+            session.client.script = [
+                ("", [
+                    ToolCall(id="1", name="Write", arguments=json.dumps(
+                        {"path": tmpdir,
+                         "filename": "blocked.txt",
+                         "content": "should not land"})),
+                    ToolCall(id="2", name="Read", arguments=json.dumps(
+                        {"file_path": readable})),
+                ]),
+                "done",
+            ]
+            loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+            self.assertEqual(loop.run(), "done")
+            # the Write was blocked by plan mode; the Read still ran
+            self.assertFalse(os.path.exists(blocked_path))
+            by_id = {m.tool_call_id: m.text() for m in loop.messages if m.role == "tool"}
+            self.assertIn("blocked by plan mode", by_id["1"])
+            self.assertEqual(by_id["2"], "readable content\n")
+        self.assertEqual(
+            [m.tool_call_id for m in loop.messages if m.role == "tool"],
+            ["1", "2"],
+        )
+
+    def test_real_bash_commands_run_in_parallel(self):
+        """Two REAL Bash invocations in one round complete in ~one sleep
+        duration, not two: the serialization lock covers only the
+        approval prompt, never command execution."""
+        with tempfile.TemporaryDirectory(prefix="pah-bash-") as tmpdir:
+            session = RecordingSession(project_dir=tmpdir)
+            session.tools_enabled = False
+
+            def real_execute(name, args, call_id=None):
+                return AgentSession.execute_tool(session, name, args, call_id=call_id)
+
+            session.execute_tool = real_execute
+            loop = AgentLoop(session, messages=[Message(role="user", content="run")])
+            calls = [
+                ToolCall(id="b1", name="Bash", arguments=json.dumps(
+                    {"command": "sleep 0.5 && echo one"})),
+                ToolCall(id="b2", name="Bash", arguments=json.dumps(
+                    {"command": "sleep 0.5 && echo two"})),
+            ]
+            loop.pending = list(calls)
+            start = time.monotonic()
+            loop._run_tool_round()
+            elapsed = time.monotonic() - start
+            by_id = {m.tool_call_id: m.text().strip() for m in loop.messages if m.role == "tool"}
+            self.assertEqual(by_id["b1"], "one")
+            self.assertEqual(by_id["b2"], "two")
+            # ~0.5s if the subprocesses ran concurrently, ~1.0s if serialized
+            self.assertLess(elapsed, 0.9)
 
     def test_nudge_redirect(self):
         session = RecordingSession()
@@ -693,10 +1026,16 @@ class TestAgentLoop(unittest.TestCase):
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="read all")])
         self.assertIsNone(loop.run())
-        # the second round's tool 3 never ran (cancel stops the round)
-        self.assertEqual(len(session.executed), 2)
+        # tool 1 (round 1) and tool 2 (which triggered the cancel) ran;
+        # tool 3 may or may not have started before the cancel landed
+        # (queued tools are skipped after Ctrl-C) — but its result was
+        # never delivered to the conversation
+        self.assertGreaterEqual(len(session.executed), 2)
+        self.assertLessEqual(len(session.executed), 3)
+        self.assertFalse(any(m.role == "tool" and m.tool_call_id in ("2", "3")
+                             for m in loop.messages))
         # the completed round survives; the dangling second round
-        # (tool call 3 unanswered) is cut from the shared history
+        # (tool calls 2+3 unanswered) is cut from the shared history
         roles = [m.role for m in session.last_messages]
         self.assertEqual(roles, ["user", "assistant", "tool"])
         self.assertEqual(session.last_messages[-1].text(), "file content")
@@ -726,10 +1065,14 @@ class TestAgentLoop(unittest.TestCase):
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="read all")])
         self.assertIsNone(loop.run())
-        # tool 3 never ran: the cancelled run stops mid-round
-        self.assertEqual(len(session.executed), 2)
+        # tool 1 and tool 2 (which triggered the cancel) ran; tool 3 may
+        # or may not have started before the cancel landed — but no
+        # results were delivered to the conversation
+        self.assertGreaterEqual(len(session.executed), 2)
+        self.assertLessEqual(len(session.executed), 3)
+        self.assertFalse(any(m.role == "tool" for m in loop.messages))
         # the salvaged history is a valid prefix (user message only —
-        # the round's lone tool result can't stand without its peers)
+        # the round's tool results can't stand without the full set)
         self.assertEqual([m.role for m in session.last_messages], ["user"])
         self.assertEqual(session.last_messages[0].text(), "read all")
 
