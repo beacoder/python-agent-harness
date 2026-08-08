@@ -148,6 +148,62 @@ class SerialPromptSession(RecordingSession):
                 self.active -= 1
 
 
+class StaggeredSession(RecordingSession):
+    """Session with per-tool durations that records the real execution
+    completion order — so a test can prove the round delivers results
+    in ORIGINAL call order even when execution finishes in a different
+    order."""
+
+    def __init__(self, durations):
+        super().__init__()
+        self.durations = durations
+        self.active = 0
+        self.max_active = 0
+        self.completed = []
+        self._lock = threading.Lock()
+
+    def execute_tool(self, name, args, call_id=None):
+        with self._lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep(self.durations[name])
+            return f"result of {name}"
+        finally:
+            with self._lock:
+                self.active -= 1
+                self.completed.append(name)
+
+
+class RealParallelSession(RecordingSession):
+    """Session that runs REAL sub-agents (the Agent tool delegates to
+    the real AgentSession.execute_tool) while every other tool blocks
+    DURATION seconds, tracking concurrency across the parent round and
+    the sub-agent's own round alike (a sub-agent shares this session)."""
+
+    def __init__(self, duration=0.4):
+        super().__init__()
+        self.duration = duration
+        self.active = 0
+        self.max_active = 0
+        self.executed_names = []
+        self._lock = threading.Lock()
+
+    def execute_tool(self, name, args, call_id=None):
+        if name == "Agent":
+            return AgentSession.execute_tool(self, name, args, call_id=call_id)
+        with self._lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.executed_names.append(name)
+        try:
+            time.sleep(self.duration)
+            return f"result of {name}"
+        finally:
+            with self._lock:
+                self.active -= 1
+
+
 def agent_call(call_id, description, prompt="do it"):
     return ToolCall(
         id=call_id,
@@ -1161,6 +1217,221 @@ class TestAgentLoop(unittest.TestCase):
         loop1 = AgentLoop(session, messages=[Message(role="user", content="q1")])
         self.assertIsNone(loop1.run())
         self.assertEqual(deltas, [])
+
+
+class TestParallelToolRounds(unittest.TestCase):
+    def test_cancel_before_round_skips_all_tools(self):
+        """Ctrl-C landing BEFORE a tool round starts must skip every
+        queued tool (tools have side effects): the round-level guard
+        refuses to submit anything, mirroring the sequential loop's
+        per-call pre-check — no tool executes, no result is delivered."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.cancel()
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        loop.pending = [
+            ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+            ToolCall(id="2", name="Bash", arguments='{"command": "echo hi"}'),
+        ]
+        loop._run_tool_round()
+        self.assertEqual(session.executed, [])
+        self.assertFalse(any(m.role == "tool" for m in loop.messages))
+
+    def test_empty_pending_round_is_noop(self):
+        """A round with nothing pending must return without touching
+        the conversation or executing anything."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        loop.pending = []
+        loop._run_tool_round()
+        self.assertEqual(session.executed, [])
+        self.assertEqual(len(loop.messages), 1)
+        self.assertEqual(loop.pending, [])
+
+    def test_results_delivered_in_order_regardless_of_completion(self):
+        """Results must be delivered in ORIGINAL tool-call order even
+        when execution completes in a different order: here the slowest
+        call (Read) is issued first and the fastest (Bash) last, so the
+        recorded completion order is the reverse of the delivery
+        order — pinning the ordering guarantee deterministically."""
+        session = StaggeredSession({"Read": 0.5, "Bash": 0.05, "Grep": 0.1})
+        session.tools_enabled = False
+        session.client.script = [
+            ("", [
+                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                ToolCall(id="2", name="Bash", arguments='{"command": "echo hi"}'),
+                ToolCall(id="3", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
+            ]),
+            "done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        start = time.monotonic()
+        result = loop.run()
+        elapsed = time.monotonic() - start
+        self.assertEqual(result, "done")
+        # the calls really overlapped (this is the deterministic proof;
+        # the elapsed check below is only a smoke test for the batch
+        # completing in ~one Read duration, 0.5s, not the 0.65s serial
+        # sum — with a generous margin for slow CI machines)
+        self.assertGreaterEqual(session.max_active, 2)
+        # ...and finished fastest-first — NOT in call order (Read is
+        # the slowest call, yet it is delivered first)
+        self.assertEqual(session.completed, ["Bash", "Grep", "Read"])
+        self.assertLess(elapsed, 0.75)
+        # delivery follows the original call order regardless
+        self.assertEqual(
+            [m.tool_call_id for m in loop.messages if m.role == "tool"],
+            ["1", "2", "3"],
+        )
+        by_id = {m.tool_call_id: m.text() for m in loop.messages if m.role == "tool"}
+        self.assertEqual(by_id["1"], "result of Read")
+        self.assertEqual(by_id["2"], "result of Bash")
+        self.assertEqual(by_id["3"], "result of Grep")
+
+    def test_pool_cap_one_still_runs_every_call(self):
+        """With PARALLEL_TOOL_MAX=1 the round degrades to a serialized
+        pool: EVERY call still executes (nothing is dropped), peak
+        concurrency stays 1, the round takes ~the sum of the durations,
+        and results still arrive in original order."""
+        session = ParallelToolSession(duration=0.15)
+        session.tools_enabled = False
+        calls = [
+            ToolCall(id=str(i), name="Read", arguments='{"file_path": "/tmp/x.py"}')
+            for i in range(1, 4)
+        ]
+        session.client.script = [("", calls), "done"]
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        with mock.patch("python_agent_harness.config.PARALLEL_TOOL_MAX", 1):
+            start = time.monotonic()
+            result = loop.run()
+            elapsed = time.monotonic() - start
+        self.assertEqual(result, "done")
+        self.assertEqual(session.executed_count, 3)
+        self.assertEqual(session.max_active, 1)
+        # ~3 x 0.15s serialized, not a single 0.15s batch
+        self.assertGreaterEqual(elapsed, 0.4)
+        self.assertEqual(
+            [m.tool_call_id for m in loop.messages if m.role == "tool"],
+            ["1", "2", "3"],
+        )
+
+    def test_cancel_during_delivery_discards_partial_round(self):
+        """Ctrl-C landing while results are being DELIVERED (after the
+        pool already finished) must stop the delivery loop: the tools'
+        side effects are done, but already-delivered results stay local
+        to the dead run, and the salvaged shared history cuts the
+        dangling round — no tool call is left without its response."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.client.script = [
+            ("", [
+                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
+                ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
+            ]),
+        ]
+        calls = {"n": 0}
+        orig_deliver = AgentLoop._deliver_tool_result
+
+        def cancelling_deliver(self, p, result):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                session.cancel()  # Ctrl-C during the 2nd delivery
+            return orig_deliver(self, p, result)
+
+        loop = AgentLoop(session, messages=[Message(role="user", content="read all")])
+        with mock.patch.object(AgentLoop, "_deliver_tool_result", cancelling_deliver):
+            self.assertIsNone(loop.run())
+        # all three tools ran (side effects are done), but only two
+        # results were delivered before the cancel landed
+        self.assertEqual(len(session.executed), 3)
+        self.assertEqual(
+            [m.tool_call_id for m in loop.messages if m.role == "tool"],
+            ["1", "2"],
+        )
+        # the salvaged history cuts the dangling round entirely: only
+        # the user message survives (the round's results cannot stand
+        # without the full set)
+        self.assertEqual([m.role for m in session.last_messages], ["user"])
+        self.assertEqual(session.last_messages[0].text(), "read all")
+
+    def test_real_subagent_parallel_round_runs_inside_parent_round(self):
+        """A REAL Agent call in a parallel round spawns a sub-agent
+        whose own tool round executes through the same shared session
+        CONCURRENTLY with the parent's sibling tools: parent Glob +
+        sub-agent Bash + sub-agent Read all overlap (peak concurrency
+        3), results arrive in original order, and the sub-agent's
+        internals never leak into the parent's shared history."""
+        session = RealParallelSession(duration=0.4)
+        session.tools_enabled = False
+        session.client.script = [
+            ("", [
+                agent_call("1", "sub task", "sub prompt"),
+                ToolCall(id="2", name="Glob", arguments='{"pattern": "*.py"}'),
+            ]),
+            ("", [
+                ToolCall(id="s1", name="Bash", arguments='{"command": "echo hi"}'),
+                ToolCall(id="s2", name="Read", arguments='{"file_path": "/tmp/x.py"}'),
+            ]),
+            "sub done",
+            "parent done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="delegate")])
+        result = loop.run()
+        self.assertEqual(result, "parent done")
+        # the sub-agent's two tools overlapped with the parent's Glob:
+        # all three were in flight at once
+        self.assertGreaterEqual(session.max_active, 3)
+        self.assertEqual(sorted(session.executed_names), ["Bash", "Glob", "Read"])
+        # the parent round delivered in original order; the Agent result
+        # is the sub-agent's return string
+        tool_rows = [(m.tool_call_id, m.text()) for m in loop.messages if m.role == "tool"]
+        self.assertEqual([t[0] for t in tool_rows], ["1", "2"])
+        self.assertEqual(tool_rows[0][1], "sub done")
+        self.assertEqual(tool_rows[1][1], "result of Glob")
+        # the sub-agent's internal conversation never reached the
+        # parent's shared history
+        texts = [m.text() for m in session.last_messages]
+        self.assertFalse(any("sub prompt" in t for t in texts))
+
+    def test_salvage_cuts_open_round_variants(self):
+        """_salvage_messages must cut any round that is not fully
+        closed — a second tool-call message while one is open, an
+        assistant text reply mid-round, or a stray tool result — back
+        to the last complete round (the defensive branches protecting
+        the parallel-round cancellation recovery)."""
+        a1 = Message(role="assistant", content="", tool_calls=[
+            ToolCall(id="1", name="Read", arguments="{}")])
+        a2 = Message(role="assistant", content="", tool_calls=[
+            ToolCall(id="2", name="Read", arguments="{}")])
+        t1 = Message(role="tool", content="r1", tool_call_id="1", name="Read")
+        session = RecordingSession()
+        # a second tool-call message while a round is open → cut back to
+        # the last COMPLETE round (before the open one)
+        loop = AgentLoop(session, messages=[
+            Message(role="user", content="u"), a1, t1, a2,
+            Message(role="assistant", content="", tool_calls=[
+                ToolCall(id="3", name="Read", arguments="{}")]),
+        ])
+        self.assertEqual(
+            [m.role for m in loop._salvage_messages()],
+            ["user", "assistant", "tool"],
+        )
+        # an assistant TEXT reply while a round is open → cut to the
+        # last complete prefix (the user message only)
+        loop = AgentLoop(session, messages=[
+            Message(role="user", content="u"), a1,
+            Message(role="assistant", content="text"),
+        ])
+        self.assertEqual([m.role for m in loop._salvage_messages()], ["user"])
+        # a USER message while a round is open → cut to the last
+        # complete prefix (the user message only)
+        loop = AgentLoop(session, messages=[
+            Message(role="user", content="u"), a1,
+            Message(role="user", content="interrupt"),
+        ])
+        self.assertEqual([m.role for m in loop._salvage_messages()], ["user"])
 
 
 class FakeSupervisorSession:

@@ -32,8 +32,7 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
   prompt; sub-agents in plan mode receive the read-only reminder.
 - **Safety** — forbidden paths (default `/mnt/`), catastrophic/destructive/
   dangerous bash pattern tiers, per-session allow/deny memory, 300s command
-  timeout, plan-mode read-only bash whitelist, and file snapshots with
-  `/undo` `/history`.
+  timeout, and a plan-mode read-only bash whitelist.
 - **Sessions** — auto-saved after every response to
   `~/.local/share/python-agent-harness/sessions/`, LLM-generated titles
   (one-shot per session, fired when the agent loop finishes; the file is
@@ -132,7 +131,7 @@ python-agent-harness run [project-dir]   # interactive TUI agent
 ```
 
 TUI slash commands: `/plan` `/build` `/init` `/review` `/explain`
-`/compact` `/undo` `/history` `/save` `/summary` `/sessions`
+`/compact` `/save` `/summary` `/sessions`
 `/restore` `/clear` `/exit` — `/explain [project] [target]` explains
 code and `/summary` appends a conversation summary (both TUI-only);
 `/sessions` lists saved sessions and `/restore [path|title|--latest]`
@@ -157,7 +156,6 @@ python_agent_harness/
 ├── models.py       Message / ToolCall / ToolSpec data classes
 ├── token_estimator.py  CJK-aware token estimation + calibration
 ├── safety.py       path guards + bash policy tiers
-├── undo.py         file snapshots / undo
 ├── planmode.py     build/plan mode + plan file lifecycle
 ├── prompts.py      prompt loading + system prompt assembly
 ├── session_store.py  session persistence + titles

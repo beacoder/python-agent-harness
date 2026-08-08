@@ -230,7 +230,7 @@ def _make_prompt_session(
 
 SLASH_COMMANDS = [
     "/plan", "/build", "/init", "/review", "/explain", "/compact",
-    "/undo", "/history", "/save", "/summary", "/sessions",
+    "/save", "/summary", "/sessions",
     "/restore", "/clear", "/exit",
 ]
 
@@ -712,7 +712,7 @@ class Tui:
             Panel(
                 "python-agent-harness — agent execution harness\n"
                 "Commands: /plan /build /init /review /explain /compact "
-                "/undo /history /save /summary /sessions /restore /help /exit\n"
+                "/save /summary /sessions /restore /help /exit\n"
                 "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
                 "/review [project] [commit|branch|PR] review code changes\n"
                 "/explain [project] [target]          explain code\n"
@@ -1010,12 +1010,6 @@ class Tui:
             self.console.print("[green]Build mode.[/green]")
         elif cmd == "/compact":
             self._run_compact()
-        elif cmd == "/undo":
-            ok, msg = self.session.undo.undo_last()
-            self.console.print(msg)
-        elif cmd == "/history":
-            for h in self.session.undo.history():
-                self.console.print(h)
         elif cmd == "/save":
             path = self.session.store.save(self._conversation_text())
             self.console.print(f"saved: {path}")
@@ -1038,7 +1032,7 @@ class Tui:
             self.console.print("[yellow]Conversation history cleared.[/yellow]")
         elif cmd == "/help":
             self.console.print(
-                "/plan /build /init /review /explain /compact /undo /history "
+                "/plan /build /init /review /explain /compact "
                 "/save /summary /sessions /restore /clear /exit\n"
                 "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
                 "/review [project] [commit|branch|PR] review code changes\n"

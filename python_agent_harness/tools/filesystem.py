@@ -437,14 +437,11 @@ class Write(Tool):
             except OSError:
                 old_content = ""
         try:
-            ctx.snapshot(path, "Write")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(args["content"])
         except OSError as e:
             return f"Error: {e}"
-        if not existed:
-            ctx.record_absent(path, "Write")
         diff_text = unified_diff(old_content, args["content"], path)
         if diff_text:
             ctx.record_diff(diff_text)
@@ -477,7 +474,6 @@ class Edit(Tool):
                 content = f.read()
         except OSError as e:
             return f"Error: cannot read {path}: {e}"
-        ctx.snapshot(path, "Edit")
         try:
             if args.get("diff"):
                 new = _apply_diff(content, args["new_str"])
@@ -631,7 +627,6 @@ class Insert(Tool):
                 lines = f.read().splitlines(keepends=True)
         except OSError as e:
             return f"Error: cannot read {path}: {e}"
-        ctx.snapshot(path, "Insert")
         ln = int(args["line_number"])
         new_str = args["new_str"]
         if not new_str.endswith("\n"):

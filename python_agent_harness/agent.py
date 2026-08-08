@@ -231,7 +231,7 @@ class AgentLoop:
 
         Each call executes in its own worker thread: the session's
         shared state is concurrency-safe (thread-local diff slots,
-        locked undo stack, serialized interactive prompts), so every
+        serialized interactive prompts), so every
         tool issued in the same round — Agent calls included, whose
         sub-agents are isolated by design — runs in parallel.  Delivery
         happens later, in original tool-call order, by the parent
@@ -272,9 +272,9 @@ class AgentLoop:
 
         All tools issued in the round run CONCURRENTLY in a thread
         pool — the session's shared state is concurrency-safe
-        (thread-local diff slots, locked undo stack, serialized
-        interactive prompts).  Results are delivered in the original
-        tool-call order regardless of execution order.
+        (thread-local diff slots, serialized interactive prompts).
+        Results are delivered in the original tool-call order
+        regardless of execution order.
         """
         pending = list(self.pending)
         if not pending:

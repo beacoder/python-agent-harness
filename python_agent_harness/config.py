@@ -102,8 +102,6 @@ BASH_ARG_DENYLIST: list[tuple[str, set[str]]] = [
     ("jq", {"-i", "--in-place"}),
 ]
 
-UNDO_DEPTH = 50
-
 # ---- sessions ---------------------------------------------------------------
 SESSION_DIR = Path(
     os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")

@@ -31,7 +31,6 @@ class FakeSession:
     """Minimal session double satisfying the ToolContext protocol."""
 
     def __init__(self) -> None:
-        self.snapshots: list[tuple[str, str]] = []
         self.recorded_diffs: list[str] = []
 
     @property
@@ -39,12 +38,6 @@ class FakeSession:
         return "/tmp"
 
     def guard_path(self, path: str, tool_name: str) -> None:
-        pass
-
-    def snapshot(self, path: str, tool: str) -> None:
-        self.snapshots.append((path, tool))
-
-    def record_absent(self, path: str, tool: str) -> None:
         pass
 
     def record_diff(self, diff_text: str) -> None:

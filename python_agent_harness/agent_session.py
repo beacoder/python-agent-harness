@@ -1,7 +1,7 @@
 """AgentSession: the runtime hub wiring tools, safety, plan mode.
 
 The session implements the ToolContext-facing API (path guards, bash
-verdicts, snapshots, sub-agents, questions) and the
+verdicts, sub-agents, questions) and the
 agent-loop-facing API (client, calibrator, plan mode, auto-save,
 notifications).  The TUI layer subclasses it to provide interactive
 confirmations.
@@ -22,7 +22,6 @@ from .session_store import SessionStore
 from .subagent import run_subagent
 from .token_estimator import TokenCalibrator
 from .tools import Registry, ToolContext
-from .undo import UndoStack
 
 
 def find_skill_dir(project_dir: str, configured: str | None = None) -> str | None:
@@ -97,7 +96,6 @@ class AgentSession:
         self.registry = registry or Registry()
         self.calibrator = TokenCalibrator()
         self.plan_mode = PlanMode(project_dir)
-        self.undo = UndoStack()
         self.bash_policy = BashPolicy()
         self.tool_ctx = ToolContext(self)
         self._tool_diffs: dict[str, str] = {}
@@ -297,12 +295,6 @@ class AgentSession:
         if answer.startswith("y") or "Yes" in answer:
             return True, "run"
         return False, "run"
-
-    def snapshot(self, path: str, tool: str) -> None:
-        self.undo.snapshot(path, tool)
-
-    def record_absent(self, path: str, tool: str) -> None:
-        self.undo.record_absent(path, tool)
 
     def update_todos(self, todos: list[dict]) -> None:
         """Store TODOS so the pinned TUI panel shows the current list."""

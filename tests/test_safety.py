@@ -1,12 +1,9 @@
-import os
-import tempfile
 import unittest
 
 from python_agent_harness.safety import (
     BashPolicy, SafetyViolation, bash_read_only_p, check_path,
     command_forbidden, path_forbidden,
 )
-from python_agent_harness.undo import UndoStack
 
 
 class TestPathSafety(unittest.TestCase):
@@ -95,53 +92,6 @@ class TestBashPolicy(unittest.TestCase):
         self.assertFalse(bash_read_only_p("find . -delete"))
         self.assertFalse(bash_read_only_p("sort file -o out"))
         self.assertFalse(bash_read_only_p("ls | rm -rf x"))
-
-
-class TestUndo(unittest.TestCase):
-    def test_undo_edit(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "f.txt")
-            with open(path, "w") as f:
-                f.write("original")
-            stack = UndoStack(backup_dir=os.path.join(d, "backups"))
-            stack.snapshot(path, "Edit")
-            with open(path, "w") as f:
-                f.write("changed")
-            ok, msg = stack.undo_last()
-            self.assertTrue(ok)
-            with open(path) as f:
-                self.assertEqual(f.read(), "original")
-
-    def test_undo_created_file(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "new.txt")
-            stack = UndoStack(backup_dir=os.path.join(d, "backups"))
-            stack.snapshot(path, "Write")
-            with open(path, "w") as f:
-                f.write("x")
-            ok, _ = stack.undo_last()
-            self.assertTrue(ok)
-            self.assertFalse(os.path.exists(path))
-
-    def test_undo_failure_keeps_entry(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "f.txt")
-            with open(path, "w") as f:
-                f.write("original")
-            stack = UndoStack(backup_dir=os.path.join(d, "backups"))
-            stack.snapshot(path, "Edit")
-            # delete the backup to force failure
-            os.remove(stack.entries[-1].backup)
-            ok, msg = stack.undo_last()
-            self.assertFalse(ok)
-            self.assertEqual(len(stack.entries), 0)  # missing backup drops entry
-
-    def test_history(self):
-        stack = UndoStack(backup_dir="/tmp/nonexistent-undo-test")
-        stack.record_absent("/tmp/nonexistent-undo-test-a.txt", "Write")
-        lines = stack.history()
-        self.assertEqual(len(lines), 1)
-        self.assertIn("Write", lines[0])
 
     def test_bash_cancel_kills_process(self):
         """A cancelled run must kill the whole process group quickly."""
