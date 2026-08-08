@@ -130,7 +130,11 @@ class AgentLoop:
             if self.session.plan_mode.is_plan and not self.harness_injected:
                 self.messages.insert(
                     len(self.messages),
-                    Message(role="user", content=self.session.plan_mode.plan_reminder()),
+                    Message(
+                        role="user",
+                        content=self.session.plan_mode.plan_reminder(),
+                        injected=True,
+                    ),
                 )
                 self.harness_injected = True
             return
@@ -147,7 +151,9 @@ class AgentLoop:
             if last.role == "user" and isinstance(last.content, str) and not last.tool_call_id:
                 insert_at = len(self.messages) - 1
         for i, text in enumerate(prompts):
-            self.messages.insert(insert_at + i, Message(role="user", content=text))
+            self.messages.insert(
+                insert_at + i, Message(role="user", content=text, injected=True)
+            )
 
     # ------------------------------------------------------------------
     # compaction
@@ -362,6 +368,11 @@ class AgentLoop:
                     # file — the next turn's save would overwrite it
                     # without ever containing it.
                     session.auto_save(salvaged, self.system)
+                    # Elisp parity: the title is generated on the first
+                    # save, not only on clean completion — an
+                    # interrupted session still gets a meaningful name
+                    # (one-shot; no-op when already titled/pending).
+                    session.generate_session_title()
                 else:
                     # Loop finished: give the session a meaningful title
                     # from the first real user message (one-shot; no-op
@@ -449,7 +460,7 @@ class AgentLoop:
                 pending=bool(self.pending),
             ):
                 self.messages.append(
-                    Message(role="user", content=config.NUDGE_MESSAGE)
+                    Message(role="user", content=config.NUDGE_MESSAGE, injected=True)
                 )
                 continue
             if self.error:

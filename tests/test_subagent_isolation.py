@@ -134,6 +134,34 @@ class TestSubagentIsolation(unittest.TestCase):
         ])
         self.assertEqual(s.store.first_user_message(), "real request")
 
+    def test_injected_prompts_not_used_as_title_source(self):
+        """Harness-injected messages (nudge, plan/build-switch reminders,
+        queued mode prompts) must never become the first-user message
+        used for session-title generation."""
+        s = make_session(RecClient([]))
+        s.remember_user_text([
+            Message(role="user", content="real request"),
+            Message(role="assistant", content="ok"),
+            Message(
+                role="user",
+                content="<system-reminder>\nYour operational mode has changed "
+                        "from plan to build.\n</system-reminder>",
+                injected=True,
+            ),
+        ])
+        self.assertEqual(s.store.first_user_message(), "real request")
+
+    def test_only_injected_messages_yield_no_title_source(self):
+        """When every user message is harness-injected there is no real
+        first-user message to title from."""
+        s = make_session(RecClient([]))
+        s.remember_user_text([
+            Message(role="user", content="plan reminder", injected=True),
+            Message(role="assistant", content="ok"),
+            Message(role="user", content="nudge", injected=True),
+        ])
+        self.assertIsNone(s.store.first_user_message())
+
     def test_subagent_does_not_touch_shared_context_accounting(self):
         """The sub-agent's rounds must not update the shared context
         ratio or calibration factor: its payload (fresh context) is

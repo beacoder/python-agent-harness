@@ -41,6 +41,7 @@ class Message:
     tool_call_id: str | None = None
     reasoning: str | None = None
     name: str | None = None
+    injected: bool = False  # harness-injected (nudge/plan/build-switch), not user input
 
     def to_api(self) -> dict[str, Any]:
         d: dict[str, Any] = {"role": self.role}

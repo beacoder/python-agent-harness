@@ -994,6 +994,38 @@ class TestAgentLoop(unittest.TestCase):
         AgentLoop(session, messages=[Message(role="user", content="hi there")]).run()
         self.assertEqual(len(session.client.chat_sync_calls), 1)
 
+    def test_title_strips_reasoning_and_uses_session_temperature(self):
+        """Reasoning content merged by the client must not leak into the
+        title (it would become the first 50 chars of the session name),
+        and the title request must use the session temperature."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.client.script = ["bye"]
+        session.client.chat_sync_calls = []
+
+        def chat_sync(messages, system=None, temperature=None,
+                      max_tokens=None, reasoning_effort=None):
+            session.client.chat_sync_calls.append(temperature)
+            return (
+                Message(
+                    role="assistant",
+                    content=("We need to generate a title for the conversation. "
+                             "Adding MCP support to agent harness"),
+                    reasoning="We need to generate a title for the conversation.",
+                ),
+                Usage(),
+            )
+
+        session.client.chat_sync = chat_sync
+        with mock.patch(
+            "python_agent_harness.prompts.read_prompt_file",
+            return_value="TITLE-PROMPT",
+        ):
+            loop = AgentLoop(session, messages=[Message(role="user", content="add mcp")])
+            loop.run()
+        self.assertEqual(session.store.title, "Adding-MCP-support-to-agent-harness")
+        self.assertEqual(session.client.chat_sync_calls, [session.temperature])
+
     def test_no_title_for_empty_first_message(self):
         session = RecordingSession()
         session.tools_enabled = False

@@ -387,12 +387,14 @@ class AgentSession:
     def remember_user_text(self, messages: list) -> None:
         """Remember the last real user message for session-title generation.
 
-        Skips harness-injected nudges so a title is never generated from
-        "Review the original user request and the Task Completion Rules…".
+        Skips harness-injected messages (nudges, plan/build-switch
+        reminders, queued mode prompts — flagged ``injected``) so a
+        title is never generated from "Review the original user request
+        and the Task Completion Rules…" or a mode-switch reminder.
         """
         nudge = config.NUDGE_MESSAGE
         for m in reversed(messages):
-            if m.role == "user" and m.text() != nudge:
+            if m.role == "user" and not m.injected and m.text() != nudge:
                 self.store.remember_first_user_message(m.text())
                 break
 
@@ -411,6 +413,13 @@ class AgentSession:
         Mirrors gptel-agent-harness--generate-session-title: one-shot per
         session (guarded by store.title / title_pending); on success the
         session file is renamed to <title>_<TS>.md.
+
+        Reasoning models answer with a reasoning preamble; the client
+        merges it ahead of the real answer, so it is stripped here or
+        the first 50 chars of the reasoning would become the session
+        name.  The session temperature is passed so the title request
+        matches the buffer settings (elisp parity) instead of the API
+        default.
         """
         store = self.store
         if store.title or store.title_pending:
@@ -425,9 +434,18 @@ class AgentSession:
 
             system = read_prompt_file("title.txt")
             resp, _ = self.client.chat_sync(
-                [Msg(role="user", content=first)], system=system
+                [Msg(role="user", content=first)],
+                system=system,
+                temperature=self.temperature,
             )
             title = resp.text()
+            if resp.reasoning:
+                r = resp.reasoning
+                if title.startswith(r):
+                    title = title[len(r):]
+                else:
+                    title = title.replace(r, "")
+                title = title.strip()
             if title:
                 store.apply_title(title)
                 if self.store.title:
