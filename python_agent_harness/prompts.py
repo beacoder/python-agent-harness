@@ -151,9 +151,11 @@ def load_context_files(context_dir: "Path | str | None") -> str | None:
 def load_task_completion_rules() -> str | None:
     """Load ``prompts/task-completion-rules.txt``, or None if unavailable.
 
-    These rules are injected automatically into every agent system
-    prompt (main agent, sub-agents, and session commands), so the model
-    never stops before the task is fully completed and verified.
+    These rules are injected automatically into the main agent and
+    session-command system prompts, so the model never stops before the
+    task is fully completed and verified.  Sub-agents are intentionally
+    excluded: they get ONLY their own prompt (subagent.txt) with no
+    extra context injected.
     """
     p = Path(__file__).parent / "prompts" / "task-completion-rules.txt"
     try:
@@ -177,8 +179,11 @@ def assemble_agent_prompt(
     context piece, immediately before the agent prompt, so they read as
     global ground rules rather than part of the task instructions.
 
-    ``include_context=False`` drops the project context files (used for
-    sub-agents, which get the rules but not the parent's context).
+    ``include_context=False`` drops the project context files (rules are
+    still included).  This function is NOT used for sub-agents: their
+    system prompt is their own prompt file (subagent.txt) only, with no
+    context files and no task-completion rules (see
+    ``cli.make_session`` and ``subagent._subagent_system_prompt``).
     ``context_path`` overrides the default context directory discovery.
     Returns None if every part is empty/missing.
     """

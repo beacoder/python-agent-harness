@@ -74,6 +74,23 @@ class TestSubagentPromptSelection(unittest.TestCase):
         self.assertEqual(session.client.systems, [default_sub])
         self.assertNotIn("MAIN AGENT PROMPT", session.client.systems[0])
 
+    def test_subagent_prompt_never_includes_rules_or_context(self):
+        """The sub-agent's system prompt is subagent.txt ONLY — no
+        task-completion rules and no project context, even when the
+        parent's system prompt carries both."""
+        parent = (
+            "Request context:\n\nIn file `/tmp/contexts/general-rules.md`:"
+            "\n```\nGENERAL CONTEXT\n```\n\n"
+            "Task Completion Rules\n\nMAIN AGENT PROMPT"
+        )
+        session = make_session(parent, None, self._tmp.name)
+        run_subagent(session, "task", "do something")
+        system = session.client.systems[0]
+        self.assertNotIn("Task Completion Rules", system)
+        self.assertNotIn("Request context:", system)
+        self.assertNotIn("GENERAL CONTEXT", system)
+        self.assertNotIn("MAIN AGENT PROMPT", system)
+
     def test_plan_mode_reminder_prepended_but_prompt_still_subagent(self):
         session = make_session("MAIN", "SUB", self._tmp.name)
         session.plan_mode.set_mode(session.plan_mode.mode.PLAN, {
