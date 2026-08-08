@@ -16,7 +16,7 @@ class FakeClient:
         self.n = 0
 
     def chat(self, messages, tools=None, system=None, temperature=None,
-             max_tokens=None, reasoning_effort=None, on_delta=None):
+             max_tokens=None, reasoning_effort=None, on_delta=None, stream=True):
         self.n += 1
         if self.n == 1:
             tc = ToolCall(

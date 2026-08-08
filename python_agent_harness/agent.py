@@ -348,6 +348,7 @@ class AgentLoop:
                     temperature=session.temperature,
                     max_tokens=session.max_tokens,
                     reasoning_effort=session.reasoning_effort,
+                    stream=session.stream,
                     # sub-agents must not stream into the parent's live
                     # stream row — their text is private until returned
                     on_delta=(safe_delta if self.top_level else None),

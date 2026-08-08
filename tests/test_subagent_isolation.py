@@ -23,7 +23,7 @@ class RecClient:
         self.sent_tools = []    # tool names sent per chat call
 
     def chat(self, messages, tools=None, system=None, temperature=None,
-             max_tokens=None, reasoning_effort=None, on_delta=None):
+             max_tokens=None, reasoning_effort=None, on_delta=None, stream=True):
         self.n += 1
         self.sent.append([m.to_api() for m in messages])
         self.sent_tools.append([t.name for t in tools] if tools else None)

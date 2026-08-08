@@ -32,6 +32,7 @@ class TestConfigFile(unittest.TestCase):
         self.assertEqual(settings["model"], config.DEFAULT_LLM["model"])
         self.assertIsNone(settings["api_key"])
         self.assertIsNone(settings["reasoning_effort"])
+        self.assertIs(settings["stream"], True)  # streaming is the default
 
     def test_file_overrides_defaults(self):
         with tempfile.TemporaryDirectory() as d:
@@ -76,6 +77,16 @@ class TestConfigFile(unittest.TestCase):
             self.assertEqual(settings["model"], "only-model")
             self.assertEqual(settings["base_url"], config.DEFAULT_LLM["base_url"])
             self.assertIsNone(settings["api_key"])
+            self.assertIs(settings["stream"], True)
+
+    def test_file_can_disable_streaming(self):
+        """stream: false in the config file switches to non-streaming."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"llm": {"stream": false}}', encoding="utf-8")
+            settings = config.load_llm_config(p)
+            self.assertIs(settings["stream"], False)
+            self.assertEqual(settings["model"], config.DEFAULT_LLM["model"])
 
     def test_env_still_wins(self):
         with tempfile.TemporaryDirectory() as d:
@@ -109,6 +120,7 @@ class TestConfigFile(unittest.TestCase):
         self.assertIn('"llm"', config.CONFIG_TEMPLATE)
         self.assertIn("base_url", config.CONFIG_TEMPLATE)
         self.assertIn("reasoning_effort", config.CONFIG_TEMPLATE)
+        self.assertIn('"stream"', config.CONFIG_TEMPLATE)
 
 
 class TestConfigCli(unittest.TestCase):
@@ -157,6 +169,16 @@ class TestConfigCli(unittest.TestCase):
         self.assertEqual(after.config, "/x.json")
         plain = parser.parse_args(["config"])
         self.assertIsNone(plain.config)
+
+    def test_no_stream_flag(self):
+        """--no-stream must be accepted on run and default to off."""
+        from python_agent_harness.cli import build_parser
+
+        parser = build_parser()
+        off = parser.parse_args(["run", "/tmp", "--no-stream"])
+        self.assertTrue(off.no_stream)
+        on = parser.parse_args(["run", "/tmp"])
+        self.assertFalse(on.no_stream)
 
 
 if __name__ == "__main__":

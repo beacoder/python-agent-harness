@@ -73,6 +73,7 @@ class AgentSession:
         temperature: float = config.TEMPERATURE,
         max_tokens: int = config.MAX_TOKENS,
         reasoning_effort: str | None = None,
+        stream: bool = True,
         tool_names: list[str] | None = None,
         registry: Registry | None = None,
         context_path: str | None = None,
@@ -87,6 +88,7 @@ class AgentSession:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
+        self.stream = stream
         self.tools_enabled = True
         self.alive = True
         self._configured_context_path = context_path

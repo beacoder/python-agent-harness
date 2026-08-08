@@ -91,6 +91,36 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         finally:
             session.close()
 
+    def test_stream_defaults_true(self):
+        """Streaming is the default unless the config file says otherwise."""
+        session = cli.make_session(self._tmp.name, config_path=self._config_path)
+        try:
+            self.assertIs(session.stream, True)
+        finally:
+            session.close()
+
+    def test_stream_false_from_config_file(self):
+        """A config file with stream=false must reach the session."""
+        cfg_path = Path(self._cfg_dir.name) / "config.toml"
+        cfg_path.write_text('{"llm": {"stream": false}}', encoding="utf-8")
+        session = cli.make_session(self._tmp.name, config_path=str(cfg_path))
+        try:
+            self.assertIs(session.stream, False)
+        finally:
+            session.close()
+
+    def test_stream_param_overrides_config_file(self):
+        """make_session's stream kwarg (--no-stream) beats the config file."""
+        cfg_path = Path(self._cfg_dir.name) / "config.toml"
+        cfg_path.write_text('{"llm": {"stream": true}}', encoding="utf-8")
+        session = cli.make_session(
+            self._tmp.name, config_path=str(cfg_path), stream=False
+        )
+        try:
+            self.assertIs(session.stream, False)
+        finally:
+            session.close()
+
     def test_custom_commands_not_cli_subcommands(self):
         """Custom commands (e.g. explain) are TUI slash commands only —
         no CLI subcommand is registered for any of them.

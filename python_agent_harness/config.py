@@ -184,6 +184,7 @@ DEFAULT_LLM: dict = {
     "max_tokens": MAX_TOKENS,
     "timeout": 600.0,
     "reasoning_effort": None,
+    "stream": True,
 }
 
 DEFAULT_PATHS: dict = {
@@ -197,7 +198,8 @@ CONFIG_TEMPLATE = """\
   "llm": {{
     "base_url": "https://api.deepseek.com/v1",
     "model": "deepseek-chat",
-    "reasoning_effort": "medium"
+    "reasoning_effort": "medium",
+    "stream": true
   }},
   "paths": {{
     "_comment": "Optional overrides for context and skill directories. Absolute paths or ~ expansion supported.",
@@ -247,7 +249,7 @@ def load_llm_config(path: str | os.PathLike | None = None) -> dict:
         for key in (
             "base_url", "api_key", "model", "backend",
             "temperature", "max_tokens", "timeout",
-            "reasoning_effort",
+            "reasoning_effort", "stream",
         ):
             if key in llm and llm[key] is not None:
                 settings[key] = llm[key]

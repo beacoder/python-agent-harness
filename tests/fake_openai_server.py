@@ -4,11 +4,27 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+# Overridable non-streaming response body; None -> default "sync reply".
+NON_STREAM_RESPONSE: dict | None = None
+# Queue of non-streaming response bodies consumed in order; when
+# exhausted, NON_STREAM_RESPONSE / the default reply is used.
+NON_STREAM_SEQUENCE: list[dict] = []
+# Every request body received, in order (for asserting payloads).
+REQUEST_BODIES: list[dict] = []
+
+
+def reset_state() -> None:
+    global NON_STREAM_RESPONSE
+    NON_STREAM_RESPONSE = None
+    NON_STREAM_SEQUENCE.clear()
+    REQUEST_BODIES.clear()
+
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
+        REQUEST_BODIES.append(body)
         stream = body.get("stream", False)
         if stream:
             chunks = [
@@ -24,6 +40,10 @@ class Handler(BaseHTTPRequestHandler):
                 {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 12, "completion_tokens": 3}},
             ]
             data = "".join("data: " + json.dumps(c) + "\n\n" for c in chunks) + "data: [DONE]\n\n"
+        elif NON_STREAM_SEQUENCE:
+            data = json.dumps(NON_STREAM_SEQUENCE.pop(0))
+        elif NON_STREAM_RESPONSE is not None:
+            data = json.dumps(NON_STREAM_RESPONSE)
         else:
             data = json.dumps({
                 "choices": [{"message": {"role": "assistant", "content": "sync reply"}}],

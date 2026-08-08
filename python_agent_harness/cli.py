@@ -28,6 +28,7 @@ def make_session(
     project_dir: str,
     config_path: str | None = None,
     model: str | None = None,
+    stream: bool | None = None,
 ) -> AgentSession:
     """Create an AgentSession from config file + env (no env required).
 
@@ -70,6 +71,7 @@ def make_session(
         temperature=settings["temperature"],
         max_tokens=settings["max_tokens"],
         reasoning_effort=settings["reasoning_effort"],
+        stream=settings["stream"] if stream is None else stream,
         registry=default_registry(),
         context_path=paths.get("context_path"),
         skill_path=paths.get("skill_path"),
@@ -80,7 +82,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     from .tui import Tui
 
     project_dir = args.project or os.getcwd()
-    session = make_session(project_dir, config_path=args.config)
+    session = make_session(
+        project_dir, config_path=args.config,
+        stream=False if getattr(args, "no_stream", False) else None,
+    )
     Tui(session).run()
     session.close()
     return 0
@@ -108,6 +113,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     print(f"temperature: {settings['temperature']}")
     print(f"max_tokens: {settings['max_tokens']}")
     print(f"reasoning_effort: {settings['reasoning_effort']}")
+    print(f"stream: {settings['stream']}")
     print(f"timeout: {settings['timeout']}")
     print(f"context_path: {paths['context_path'] or '(auto-discover)'}")
     print(f"skill_path: {paths['skill_path'] or '(auto-discover)'}")
@@ -135,6 +141,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_run = sub.add_parser("run", help="interactive TUI agent session")
     _add_config_arg(p_run, suppress=True)
+    p_run.add_argument(
+        "--no-stream", action="store_true",
+        help="disable streaming (one-shot responses; overrides config file)",
+    )
     p_run.add_argument("project", nargs="?", help="project directory (default: cwd)")
 
     p_config = sub.add_parser(

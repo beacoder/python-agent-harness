@@ -1,8 +1,12 @@
 """End-to-end agent loop tests with a fake client and fake session."""
 
+import json
 import os
+import sys
 import unittest
 from unittest import mock
+
+sys.path.insert(0, os.path.dirname(__file__))  # sibling fake server import
 
 from python_agent_harness.agent import AgentLoop, Supervisor, sanitize_tool_result
 from python_agent_harness.agent_session import AgentSession
@@ -21,11 +25,12 @@ class FakeClient:
         self.kwargs = []
 
     def chat(self, messages, tools=None, system=None, temperature=None,
-             max_tokens=None, reasoning_effort=None, on_delta=None):
+             max_tokens=None, reasoning_effort=None, on_delta=None, stream=True):
         self.calls.append([m.to_api() for m in messages])
         self.kwargs.append({
             "tools": tools, "system": system, "temperature": temperature,
             "max_tokens": max_tokens, "reasoning_effort": reasoning_effort,
+            "stream": stream,
         })
         if not self.script:
             return Message(role="assistant", content="done"), Usage()
@@ -183,6 +188,126 @@ class TestAgentLoop(unittest.TestCase):
         last_call = session.client.kwargs[-1]
         self.assertIsNone(last_call.get("reasoning_effort"))
 
+    def test_stream_defaults_true_on_session_and_client(self):
+        """Streaming is the default: the session opts in unless the
+        config file (or --no-stream) says otherwise, and the loop must
+        forward that to the client."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.client.script = ["ok"]
+        loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
+        loop.run()
+        self.assertIs(session.stream, True)
+        self.assertIs(session.client.kwargs[-1]["stream"], True)
+
+    def test_non_streaming_reaches_client(self):
+        """A session configured non-streaming must send stream=False to
+        the client and still complete the loop normally."""
+        session = RecordingSession()
+        session.stream = False
+        session.tools_enabled = False
+        session.client.script = ["ok"]
+        loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
+        result = loop.run()
+        self.assertEqual(result, "ok")
+        self.assertIs(session.client.kwargs[-1]["stream"], False)
+
+    def test_non_streaming_tool_round(self):
+        """Non-streaming mode must support full tool rounds (the client
+        parses tool_calls from the single response)."""
+        session = RecordingSession()
+        session.stream = False
+        with mock.patch("python_agent_harness.config.MAX_NUDGES", 1):
+            session.client.script = [
+                ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+                "final answer",
+                "final answer",
+            ]
+            loop = AgentLoop(session, messages=[Message(role="user", content="read it")])
+            result = loop.run()
+        self.assertEqual(result, "final answer")
+        self.assertEqual(session.executed[0][0], "Read")
+        self.assertTrue(any(
+            m.role == "tool" and m.text() == "file content" for m in loop.messages
+        ))
+        # every request in the run went out non-streaming
+        self.assertTrue(all(k["stream"] is False for k in session.client.kwargs))
+
+    def test_non_streaming_http_tool_round_end_to_end(self):
+        """Non-streaming through the REAL HTTP client: tool_calls parsed
+        from a single response drive a full tool round, the loop finishes
+        with the final answer, and every request went out stream=False."""
+        import tempfile
+        from pathlib import Path
+
+        import fake_openai_server
+        from fake_openai_server import serve
+
+        import python_agent_harness.config as cfg
+        from python_agent_harness.client import Client
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg.SESSION_DIR = Path(d)  # session store writes land in tmp
+            data_file = Path(d) / "data.txt"
+            data_file.write_text("hello data", encoding="utf-8")
+            fake_openai_server.reset_state()
+            try:
+                fake_openai_server.NON_STREAM_SEQUENCE = [
+                    {  # 1st request: a tool call, no text
+                        "choices": [{"message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call_1", "type": "function",
+                                "function": {"name": "Read", "arguments": json.dumps(
+                                    {"file_path": str(data_file)}
+                                )},
+                            }],
+                        }}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+                    },
+                    {  # 2nd request: the final answer
+                        "choices": [{"message": {
+                            "role": "assistant", "content": "http non-streaming done",
+                        }}],
+                        "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+                    },
+                ]
+                srv = serve()
+                host, port = srv.server_address
+                client = Client(
+                    base_url=f"http://{host}:{port}/v1", api_key="test", model="fake"
+                )
+                session = AgentSession(
+                    project_dir=d, client=client, model="fake",
+                    registry=default_registry(), stream=False,
+                )
+                # non-agentic: no completion nudges — the loop must terminate
+                # on the scripted final answer; the fake server still returns
+                # tool_calls, so the tool round runs regardless
+                session.tools_enabled = False
+                try:
+                    loop = AgentLoop(
+                        session, messages=[Message(role="user", content="read it")]
+                    )
+                    result = loop.run()
+                finally:
+                    client.close()
+                # snapshot the bodies before resetting shared server state
+                bodies = list(fake_openai_server.REQUEST_BODIES)
+            finally:
+                fake_openai_server.reset_state()  # don't leak server state
+            self.assertEqual(result, "http non-streaming done")
+            # the tool round really executed against the HTTP response
+            tool_rows = [m for m in loop.messages if m.role == "tool"]
+            self.assertEqual(len(tool_rows), 1)
+            self.assertIn("hello data", tool_rows[0].text())
+            # every request (loop chats + title generation) went out
+            # non-streaming with the stream flag set
+            self.assertTrue(bodies)
+            self.assertTrue(
+                all(b.get("stream") is False for b in bodies)
+            )
     def test_cancel_aborts_blocking_chat(self):
         """Ctrl-C during a blocking stream must stop the run, not error."""
         import threading

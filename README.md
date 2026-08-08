@@ -94,7 +94,8 @@ Edit `~/.config/python-agent-harness/config.json`:
     "base_url": "https://api.deepseek.com/v1",
     "api_key": "sk-...",
     "model": "deepseek-chat",
-    "reasoning_effort": "medium"
+    "reasoning_effort": "medium",
+    "stream": true
   },
   "paths": {
     "context_path": null,
@@ -106,7 +107,9 @@ Edit `~/.config/python-agent-harness/config.json`:
 `reasoning_effort` is passed to the API as-is (omitted when unset), so you
 can use whatever your provider accepts ("low"/"medium"/"high" for OpenAI
 and compatible providers). Other optional keys: `backend`, `temperature`,
-`max_tokens`, `timeout`. The `paths` object (`context_path`,
+`max_tokens`, `timeout`, `stream` (`true` by default; set `false` for
+non-streaming one-shot responses — `python-agent-harness run --no-stream`
+overrides it on the command line). The `paths` object (`context_path`,
 `skill_path`) overrides the context/skill directory discovery — defaults
 are `<project>/contexts` or `~/.emacs.d/contexts` for context files, and
 `<project>/skills` or `~/.emacs.d/skills` for skills.

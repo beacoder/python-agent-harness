@@ -1,7 +1,8 @@
-"""OpenAI-compatible streaming chat client built on httpx.
+"""OpenAI-compatible chat client built on httpx.
 
-Supports any backend speaking the chat-completions protocol
-(OpenAI, DeepSeek, Moonshot/Kimi, GLM/Zhipu, Qwen/DashScope, ...).
+Supports both streaming (default) and non-streaming requests against
+any backend speaking the chat-completions protocol (OpenAI, DeepSeek,
+Moonshot/Kimi, GLM/Zhipu, Qwen/DashScope, ...).
 """
 
 from __future__ import annotations
@@ -140,10 +141,10 @@ class Client:
             pass
 
     # -- request plumbing -------------------------------------------------
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, stream: bool = True) -> dict[str, str]:
         h = {
             "Content-Type": "application/json",
-            "Accept": "text/event-stream",
+            "Accept": "text/event-stream" if stream else "application/json",
         }
         if self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
@@ -180,7 +181,7 @@ class Client:
             payload["reasoning_effort"] = reasoning_effort
         return payload
 
-    # -- streaming chat ----------------------------------------------------
+    # -- chat --------------------------------------------------------------
     def chat(
         self,
         messages: list[Message],
@@ -191,70 +192,32 @@ class Client:
         reasoning_effort: str | None = None,
         on_delta: Callable[[str], None] | None = None,
         on_tool_call: Callable[[str, str, str], None] | None = None,
+        stream: bool = True,
     ) -> tuple[Message, Usage]:
-        """Send a chat request, stream deltas, return (assistant msg, usage).
+        """Send a chat request, return (assistant msg, usage).
 
-        on_delta is invoked with each text chunk as it arrives;
-        on_tool_call(name, id, json_fragment) with each tool-call fragment.
+        With ``stream`` True (default) the response is streamed: on_delta
+        is invoked with each text chunk as it arrives and on_tool_call
+        (name, id, json_fragment) with each tool-call fragment.  With
+        ``stream`` False a single non-streaming POST is used; both
+        callbacks fire once per text/tool-call with the complete values,
+        so callers (agent loop, TUI) behave identically either way.
         """
         payload = self._payload(
-            messages, tools, stream=True, temperature=temperature,
+            messages, tools, stream=stream, temperature=temperature,
             max_tokens=max_tokens, system=system,
             reasoning_effort=reasoning_effort,
         )
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        tc_index: dict[int, dict[str, Any]] = {}
         usage = Usage()
-
         try:
-            with self._http.stream(
-                "POST", self._url(), headers=self._headers(), json=payload
-            ) as resp:
-                if resp.status_code >= 400:
-                    body = resp.read().decode("utf-8", "replace")
-                    raise ApiError(
-                        f"API error {resp.status_code}: {body[:500]}"
-                    )
-                for chunk in _iter_sse(resp.iter_lines()):
-                    if not chunk:
-                        continue
-                    if chunk == "[DONE]":
-                        break
-                    try:
-                        data = json.loads(chunk)
-                    except json.JSONDecodeError:
-                        continue
-                    if data.get("usage"):
-                        u = data["usage"]
-                        usage.input_tokens = int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
-                        usage.output_tokens = int(u.get("completion_tokens") or u.get("output_tokens") or 0)
-                    choices = data.get("choices") or []
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta") or {}
-                    if isinstance(delta.get("content"), str) and delta["content"]:
-                        content_parts.append(delta["content"])
-                        if on_delta:
-                            on_delta(delta["content"])
-                    if delta.get("reasoning_content"):
-                        content_parts.append(delta["reasoning_content"])
-                        reasoning_parts.append(delta["reasoning_content"])
-                        if on_delta:
-                            on_delta(delta["reasoning_content"])
-                    for tc in delta.get("tool_calls") or []:
-                        idx = tc.get("index", 0)
-                        entry = tc_index.setdefault(
-                            idx,
-                            {"id": "", "name": "", "arguments": ""},
-                        )
-                        fn = tc.get("function") or {}
-                        entry["id"] += tc.get("id") or ""
-                        entry["name"] += fn.get("name") or ""
-                        frag = fn.get("arguments") or ""
-                        entry["arguments"] += frag
-                        if on_tool_call and frag:
-                            on_tool_call(entry["name"], entry["id"], frag)
+            if stream:
+                content_parts, reasoning_parts, tc_index = self._stream_response(
+                    payload, on_delta, on_tool_call, usage
+                )
+            else:
+                content_parts, reasoning_parts, tc_index = self._sync_response(
+                    payload, on_delta, on_tool_call, usage
+                )
         except httpx.HTTPError as e:
             raise ApiError(f"network error: {e}") from e
 
@@ -269,15 +232,154 @@ class Client:
                 )
                 for i in sorted(tc_index)
             ]
-        if content or tool_calls:
-            msg = Message(role="assistant", content=content, tool_calls=tool_calls,
-                          reasoning="".join(reasoning_parts) or None)
-            _log_llm_interaction(self.log_path, payload, msg, usage)
-            return msg, usage
-        msg = Message(role="assistant", content="",
-                      reasoning="".join(reasoning_parts) or None)
+        msg = Message(
+            role="assistant",
+            content=content,
+            tool_calls=tool_calls,
+            reasoning="".join(reasoning_parts) or None,
+        )
         _log_llm_interaction(self.log_path, payload, msg, usage)
         return msg, usage
+
+    def _stream_response(
+        self,
+        payload: dict[str, Any],
+        on_delta: Callable[[str], None] | None,
+        on_tool_call: Callable[[str, str, str], None] | None,
+        usage: Usage,
+    ) -> tuple[list[str], list[str], dict[int, dict[str, Any]]]:
+        """POST a streaming request and accumulate SSE deltas.
+
+        Returns (content parts, reasoning parts, tool-call index) with
+        the same shape as `_sync_response`, so `chat()` assembles the
+        final message identically for both modes.
+        """
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tc_index: dict[int, dict[str, Any]] = {}
+
+        with self._http.stream(
+            "POST", self._url(), headers=self._headers(stream=True), json=payload
+        ) as resp:
+            if resp.status_code >= 400:
+                body = resp.read().decode("utf-8", "replace")
+                raise ApiError(
+                    f"API error {resp.status_code}: {body[:500]}"
+                )
+            for chunk in _iter_sse(resp.iter_lines()):
+                if not chunk:
+                    continue
+                if chunk == "[DONE]":
+                    break
+                try:
+                    data = json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("usage"):
+                    u = data["usage"]
+                    usage.input_tokens = int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
+                    usage.output_tokens = int(u.get("completion_tokens") or u.get("output_tokens") or 0)
+                choices = data.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                if isinstance(delta.get("content"), str) and delta["content"]:
+                    content_parts.append(delta["content"])
+                    if on_delta:
+                        on_delta(delta["content"])
+                if delta.get("reasoning_content"):
+                    content_parts.append(delta["reasoning_content"])
+                    reasoning_parts.append(delta["reasoning_content"])
+                    if on_delta:
+                        on_delta(delta["reasoning_content"])
+                for tc in delta.get("tool_calls") or []:
+                    self._absorb_tool_call(
+                        tc_index, tc.get("index", 0), tc, on_tool_call
+                    )
+        return content_parts, reasoning_parts, tc_index
+
+    def _sync_response(
+        self,
+        payload: dict[str, Any],
+        on_delta: Callable[[str], None] | None,
+        on_tool_call: Callable[[str, str, str], None] | None,
+        usage: Usage,
+    ) -> tuple[list[str], list[str], dict[int, dict[str, Any]]]:
+        """POST a non-streaming request and parse the single response.
+
+        Returns the same shape as `_stream_response`; text deltas are
+        fired once with the complete values (reasoning first, mirroring
+        the streaming order), and tool-call arguments arrive as one
+        complete JSON string instead of fragments.
+        """
+        resp = self._http.post(
+            self._url(), headers=self._headers(stream=False), json=payload
+        )
+        if resp.status_code >= 400:
+            raise ApiError(
+                f"API error {resp.status_code}: {resp.text[:500]}"
+            )
+        data = resp.json()
+        u = data.get("usage")
+        if u:
+            usage.input_tokens = int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
+            usage.output_tokens = int(u.get("completion_tokens") or u.get("output_tokens") or 0)
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tc_index: dict[int, dict[str, Any]] = {}
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message") or {}
+        reasoning = msg.get("reasoning_content") or ""
+        content = msg.get("content") or ""
+        # some backends return content as a list of parts (multimodal);
+        # normalize to plain text like Message.text() does, so the
+        # assembled parts stay strings
+        if isinstance(content, list):
+            content = "".join(
+                p.get("text", "") if isinstance(p, dict)
+                else (p if isinstance(p, str) else "")
+                for p in content
+            )
+        if not isinstance(reasoning, str):
+            reasoning = ""
+        # mirror the streaming order: reasoning first, then the answer
+        if reasoning:
+            reasoning_parts.append(reasoning)
+            content_parts.append(reasoning)
+            if on_delta:
+                on_delta(reasoning)
+        if content:
+            content_parts.append(content)
+            if on_delta:
+                on_delta(content)
+        for i, tc in enumerate(msg.get("tool_calls") or []):
+            # honor an explicit index when present (some backends mirror
+            # the streaming shape); position is the fallback
+            self._absorb_tool_call(tc_index, tc.get("index", i), tc, on_tool_call)
+        return content_parts, reasoning_parts, tc_index
+
+    @staticmethod
+    def _absorb_tool_call(
+        tc_index: dict[int, dict[str, Any]],
+        idx: int,
+        tc: dict[str, Any],
+        on_tool_call: Callable[[str, str, str], None] | None,
+    ) -> None:
+        """Accumulate one tool-call chunk (a streaming delta fragment or
+        a complete non-streaming call) into the index at ``idx``."""
+        entry = tc_index.setdefault(
+            idx,
+            {"id": "", "name": "", "arguments": ""},
+        )
+        fn = tc.get("function") or {}
+        entry["id"] += tc.get("id") or ""
+        entry["name"] += fn.get("name") or ""
+        frag = fn.get("arguments") or ""
+        if isinstance(frag, dict):
+            frag = json.dumps(frag, ensure_ascii=False)
+        entry["arguments"] += frag
+        if on_tool_call and frag:
+            on_tool_call(entry["name"], entry["id"], frag)
 
     # -- non-streaming chat -------------------------------------------------
     def chat_sync(
@@ -289,33 +391,15 @@ class Client:
         reasoning_effort: str | None = None,
     ) -> tuple[Message, Usage]:
         """Non-streaming request; used for compaction, titles, summary."""
-        payload = self._payload(
-            messages, None, stream=False, temperature=temperature,
-            max_tokens=max_tokens, system=system,
+        return self.chat(
+            messages,
+            tools=None,
+            system=system,
+            temperature=temperature,
+            max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
+            stream=False,
         )
-        try:
-            resp = self._http.post(
-                self._url(), headers=self._headers(), json=payload
-            )
-            if resp.status_code >= 400:
-                raise ApiError(
-                    f"API error {resp.status_code}: {resp.text[:500]}"
-                )
-            data = resp.json()
-        except httpx.HTTPError as e:
-            raise ApiError(f"network error: {e}") from e
-        usage = Usage()
-        u = data.get("usage")
-        if u:
-            usage.input_tokens = int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
-            usage.output_tokens = int(u.get("completion_tokens") or u.get("output_tokens") or 0)
-        choice = (data.get("choices") or [{}])[0]
-        msg = choice.get("message") or {}
-        content = msg.get("content") or ""
-        result = Message(role="assistant", content=content)
-        _log_llm_interaction(self.log_path, payload, result, usage)
-        return result, usage
 
 
 def _default_api_key() -> str | None:
