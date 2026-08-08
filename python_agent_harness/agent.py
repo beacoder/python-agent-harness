@@ -11,6 +11,9 @@ Implements the gptel-agent-harness supervision semantics:
 - tool-call batches never strand the loop: failures become error results
 - token calibration is updated from API-reported input tokens
 - sessions are auto-saved after each response
+- a cancelled run with no successor salvages its partial history
+  (truncated to the last complete tool round) instead of losing it;
+  a stale worker superseded by a newer run never touches shared state
 """
 
 from __future__ import annotations
@@ -54,24 +57,45 @@ class AgentLoop:
         self.error: str | None = None
         self.harness_injected: bool = False
         self.supervisor = Supervisor(session)
-        # Cancellation identity for this run, captured at run() start:
-        # cancel() bumps the session generation, so a stale worker from
-        # a cancelled run stays cancelled even after the next run clears
-        # the shared event (and must not touch shared state).
-        self._cancel_gen = 0
+        # Cancellation identity for this run: cancel() bumps the session
+        # generation, so a stale worker from a cancelled run stays
+        # cancelled even after the next run clears the shared event (and
+        # must not touch shared state).  Captured at construction — the
+        # worker thread starts right after, and a run superseded between
+        # construction and start must not adopt the new generation.
+        self._cancel_gen = session.cancel_generation
+        # Run identity for this run: a newer top-level run bumps
+        # `session.run_generation`, marking this worker stale —
+        # superseded, so it must never touch shared state.  Distinct
+        # from cancellation: a cancelled run with no successor still
+        # owns the session and may salvage its partial history.
+        self._run_gen = session.run_generation
 
     def _is_cancelled(self) -> bool:
-        """Whether THIS run was cancelled (event set or generation moved).
+        """Whether THIS run must stop (cancelled or superseded).
 
         The plain event is not enough: `_start_agent` clears it before
         every run, so a worker from a cancelled run that finishes late
         (e.g. after a long tool call) would otherwise see it cleared and
-        clobber the new run's `session.last_messages`.
+        clobber the new run's `session.last_messages`.  A superseded
+        worker (a newer run bumped `run_generation`) is dead too: it
+        must stop working and must not touch shared state.
         """
         return (
             self.session.cancel_event.is_set()
             or self.session.cancel_generation != self._cancel_gen
+            or self.session.run_generation != self._run_gen
         )
+
+    def _is_stale(self) -> bool:
+        """Whether a newer top-level run owns the session.
+
+        Distinct from cancelled: a cancelled run with no successor still
+        owns the session and may salvage its partial history; a stale
+        worker must never touch shared state (its partial history would
+        clobber the new run's).
+        """
+        return self.session.run_generation != self._run_gen
 
     # ------------------------------------------------------------------
     # context management
@@ -221,25 +245,73 @@ class AgentLoop:
         self.pending = []
         self.session.notify("tools")
 
+    def _salvage_messages(self) -> list[Message]:
+        """Longest valid prefix of ``self.messages`` for the shared history.
+
+        A cancelled run may end mid-tool-round: the assistant message
+        carrying the tool calls is present but some (or all) results are
+        missing.  Committing that as-is would hand the next turn an
+        invalid request (a tool call without its response), so cut back
+        to the last complete round — the model redoes the dangling work
+        on the next turn.
+        """
+        msgs = self.messages
+        open_round: int | None = None
+        pending: dict[str, bool] = {}
+        for i, m in enumerate(msgs):
+            if m.role == "assistant":
+                if m.tool_calls:
+                    if open_round is not None:
+                        return msgs[:open_round]
+                    open_round = i
+                    pending = {tc.id: False for tc in m.tool_calls}
+                elif open_round is not None:
+                    return msgs[:open_round]
+            elif m.role == "tool":
+                if m.tool_call_id in pending:
+                    pending[m.tool_call_id] = True
+                    if all(pending.values()):
+                        open_round = None
+                        pending = {}
+            elif open_round is not None:
+                return msgs[:open_round]
+        if open_round is not None:
+            return msgs[:open_round]
+        return msgs
+
     # ------------------------------------------------------------------
     # main loop
     # ------------------------------------------------------------------
     def run(self) -> str | None:
         """Run the loop; returns the final assistant text (or None)."""
         session = self.session
-        self._cancel_gen = session.cancel_generation
         rounds = 0
         try:
             return self._run(rounds)
         finally:
-            # A cancelled run must not clobber state for the next run,
-            # and a sub-agent must never overwrite the parent's history.
-            if not self._is_cancelled() and self.top_level:
-                session.last_messages = list(self.messages)
-                # Loop finished: give the session a meaningful title from
-                # the first real user message (one-shot; no-op when the
-                # title already exists or generation is in flight)
-                session.generate_session_title()
+            # A stale worker (a newer run has started) must never touch
+            # shared state, and a sub-agent must never overwrite the
+            # parent's history.  A merely cancelled run still owns the
+            # session, though: commit its partial history (truncated to
+            # the last complete tool round) so the interrupted turn is
+            # not lost — the next turn resumes from it instead of
+            # re-asking.
+            if not self._is_stale() and self.top_level:
+                salvaged = self._salvage_messages()
+                session.last_messages = list(salvaged)
+                if self._is_cancelled():
+                    # Persist the partial turn now: auto-save only runs
+                    # after successful responses, so without this the
+                    # interrupted turn would never reach the session
+                    # file — the next turn's save would overwrite it
+                    # without ever containing it.
+                    session.auto_save(salvaged, self.system)
+                else:
+                    # Loop finished: give the session a meaningful title
+                    # from the first real user message (one-shot; no-op
+                    # when the title already exists or generation is in
+                    # flight)
+                    session.generate_session_title()
 
     def _run(self, rounds: int) -> str | None:
         session = self.session

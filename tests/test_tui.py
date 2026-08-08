@@ -319,12 +319,75 @@ class TestTui(unittest.TestCase):
         s.client = SimpleNamespace(close=lambda: None)
         s.cancel_event.set()
         s.cancel_generation += 1
+        s.run_generation += 1  # a newer run has already started
         tui.stream_text = "next run's stream"
         restored: list[int] = []
         tui.run_seq += 1  # a newer run has already started
         tui._run_agent("old", tui.run_seq - 1, restore=lambda: restored.append(1))
         self.assertEqual(tui.stream_text, "next run's stream")
         self.assertEqual(restored, [])
+
+    def test_cancelled_current_run_adopts_history(self):
+        """A cancelled run with no successor is still current: the TUI
+        adopts its salvaged partial history so the interrupted turn is
+        not lost (staleness is judged by seq, not the cancel event)."""
+        from types import SimpleNamespace
+
+        tui, _ = make_tui()
+        s = tui.session
+        s.client = SimpleNamespace(close=lambda: None)
+        s.cancel_event.set()
+        s.cancel_generation += 1
+        # what the agent loop's finally salvaged before the worker died
+        s.last_messages = [
+            Message(role="user", content="q2"),
+            Message(role="assistant", content="partial answer"),
+        ]
+        with mock.patch(
+            "python_agent_harness.tui.run_agent_loop", return_value=None
+        ):
+            tui._run_agent("q2", tui.run_seq)
+        self.assertEqual(
+            [m.text() for m in tui.conversation_history],
+            ["q2", "partial answer"],
+        )
+
+    def test_clear_bumps_run_generation(self):
+        """/clear replaces the conversation epoch: an in-flight worker
+        from a cancelled run must be marked stale, or its salvaged
+        history would resurrect what /clear just wiped."""
+        tui, _ = make_tui()
+        gen = tui.session.run_generation
+        tui._handle_slash("/clear")
+        self.assertEqual(tui.session.run_generation, gen + 1)
+        self.assertEqual(tui.conversation_history, [])
+        self.assertEqual(tui.session.last_messages, [])
+
+    def test_restore_bumps_run_generation(self):
+        """/restore replaces the conversation epoch: a dying worker from
+        a cancelled run must be marked stale so it can't clobber the
+        restored session."""
+        from python_agent_harness import config
+
+        tui, _ = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            old = config.SESSION_DIR
+            config.SESSION_DIR = __import__("pathlib").Path(d)
+            try:
+                path = tui.session.store.save(
+                    "**user**: hello\n\n**assistant**: hi"
+                )
+                gen = tui.session.run_generation
+                tui._run_restore(path)
+            finally:
+                config.SESSION_DIR = old
+        self.assertEqual(tui.session.run_generation, gen + 1)
+        self.assertEqual(
+            [m.text() for m in tui.conversation_history], ["hello", "hi"]
+        )
+        self.assertEqual(
+            [m.text() for m in tui.session.last_messages], ["hello", "hi"]
+        )
 
     def test_restore_idempotent(self):
         """The slash-command restore may run more than once (cancel

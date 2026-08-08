@@ -297,7 +297,10 @@ class TestAgentLoop(unittest.TestCase):
 
             def chat(self, *a, **k):
                 session.cancel()  # Ctrl-C: cancel() aborts the HTTP client
-                session.cancel_event.clear()  # next run started meanwhile
+                # the next run started meanwhile: `_start_agent` bumps
+                # the run generation and clears the shared event
+                session.run_generation += 1
+                session.cancel_event.clear()
                 raise RuntimeError("aborted read")
 
         session.client = AbortClient()
@@ -318,20 +321,89 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(roles, ["user", "assistant"])
         self.assertEqual(session.last_messages[0].text(), "q2")
 
-    def test_cancel_generation_sticks_after_event_cleared(self):
+    def test_cancel_sticks_after_event_cleared(self):
         """A cancelled run stays cancelled once the next run clears the
-        shared event (the per-run generation is what protects state)."""
+        shared event (cancel generation + run generation protect state)."""
         session = RecordingSession()
         session.tools_enabled = False
         loop = AgentLoop(session, messages=[Message(role="user", content="q1")])
         loop._cancel_gen = session.cancel_generation  # run() start
+        loop._run_gen = session.run_generation
         session.cancel()
-        session.cancel_event.clear()  # next run cleared the shared event
+        session.run_generation += 1  # next run started
+        session.cancel_event.clear()  # ...and cleared the shared event
         self.assertTrue(loop._is_cancelled())
+        self.assertTrue(loop._is_stale())
+
+    def test_cancelled_run_keeps_completed_rounds(self):
+        """A fully completed tool round survives a cancel that lands in
+        a later round: the partial history is cut back to the last
+        complete round, so the next turn sends a valid request."""
+        session = RecordingSession()
+        session.tools_enabled = True
+        calls = {"n": 0}
+        orig_execute = RecordingSession.execute_tool
+
+        def cancelling_execute(name, args, call_id=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                session.cancel()  # Ctrl-C during the second round
+            return orig_execute(session, name, args, call_id=call_id)
+
+        session.execute_tool = cancelling_execute
+        session.client.script = [
+            ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}')]),
+            ("", [
+                ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
+                ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
+            ]),
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="read all")])
+        self.assertIsNone(loop.run())
+        # the second round's tool 3 never ran (cancel stops the round)
+        self.assertEqual(len(session.executed), 2)
+        # the completed round survives; the dangling second round
+        # (tool call 3 unanswered) is cut from the shared history
+        roles = [m.role for m in session.last_messages]
+        self.assertEqual(roles, ["user", "assistant", "tool"])
+        self.assertEqual(session.last_messages[-1].text(), "file content")
+
+    def test_cancelled_run_salvages_partial_history(self):
+        """Ctrl-C mid-tool-round with no successor must not lose the
+        turn: completed content survives, and the dangling round is cut
+        so the next turn sends a valid request."""
+        session = RecordingSession()
+        session.tools_enabled = True
+        calls = {"n": 0}
+        orig_execute = RecordingSession.execute_tool
+
+        def cancelling_execute(name, args, call_id=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                session.cancel()  # Ctrl-C while the 2nd tool runs
+            return orig_execute(session, name, args, call_id=call_id)
+
+        session.execute_tool = cancelling_execute
+        session.client.script = [
+            ("", [
+                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
+                ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
+            ]),
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="read all")])
+        self.assertIsNone(loop.run())
+        # tool 3 never ran: the cancelled run stops mid-round
+        self.assertEqual(len(session.executed), 2)
+        # the salvaged history is a valid prefix (user message only —
+        # the round's lone tool result can't stand without its peers)
+        self.assertEqual([m.role for m in session.last_messages], ["user"])
+        self.assertEqual(session.last_messages[0].text(), "read all")
 
     def test_cancel_between_chat_and_tools_skips_tools(self):
         """Ctrl-C after the model emitted tool calls but before the tools
-        run: the tools must not execute and the history must not change."""
+        run: the tools must not execute; with no successor the run still
+        salvages its (user-only) partial history."""
         session = RecordingSession()
         session.tools_enabled = True
 
@@ -341,8 +413,7 @@ class TestAgentLoop(unittest.TestCase):
 
             def chat(self, *a, **k):
                 result = super().chat(*a, **k)
-                session.cancel()
-                session.cancel_event.clear()  # next run cleared the event
+                session.cancel()  # Ctrl-C right after the response
                 return result
 
         session.client = CancelAfterChat()
@@ -352,7 +423,44 @@ class TestAgentLoop(unittest.TestCase):
         loop = AgentLoop(session, messages=[Message(role="user", content="read it")])
         self.assertIsNone(loop.run())
         self.assertEqual(session.executed, [])
+        # the assistant tool-call message was dropped with the cancel:
+        # only the user message is salvaged
+        self.assertEqual([m.text() for m in session.last_messages], ["read it"])
+
+    def test_cancelled_worker_does_not_resurrect_after_clear(self):
+        """A cancelled worker winding down after /clear (which bumps the
+        run generation WITHOUT starting a new run) must not resurrect
+        its salvaged history over the cleared state."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.cancel_event.set()
+        session.cancel_generation += 1   # Ctrl-C
+        loop = AgentLoop(session, messages=[Message(role="user", content="q2")])
+        loop._run_gen = session.run_generation  # captured before /clear
+        session.last_messages = []       # /clear wiped the shared state
+        session.run_generation += 1      # /clear invalidated in-flight workers
+        self.assertIsNone(loop.run())
         self.assertEqual(session.last_messages, [])
+
+    def test_compact_and_summary_bump_run_generation(self):
+        """/compact and /summary replace the shared conversation, so they
+        must invalidate in-flight workers just like /clear and /restore
+        (otherwise a dying cancelled worker's salvaged-history commit
+        would clobber the compacted/summarized buffer)."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.last_messages = [
+            Message(role="user", content="hello"),
+            Message(role="assistant", content="hi"),
+        ]
+        gen = session.run_generation
+        session.compact_conversation()
+        self.assertEqual(session.run_generation, gen + 1)
+        self.assertEqual(
+            [m.role for m in session.last_messages], ["system", "user"]
+        )
+        session.summarize_conversation()
+        self.assertEqual(session.run_generation, gen + 2)
 
     def test_stale_worker_does_not_stream_deltas(self):
         """A stale cancelled worker must not stream into the live row."""

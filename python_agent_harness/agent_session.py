@@ -130,6 +130,13 @@ class AgentSession:
         # worker from a cancelled run can tell it was cancelled even
         # after the next run clears the shared event.
         self.cancel_generation = 0
+        # Monotonic run identity: bumped when a new top-level run starts
+        # (tui._start_agent).  A worker whose captured value no longer
+        # matches is stale — superseded by a newer run — and must never
+        # touch shared state.  Unlike cancel_generation this is NOT
+        # bumped by cancel(): a cancelled run with no successor still
+        # owns the session and may salvage its partial history.
+        self.run_generation = 0
         self._skill_dir = self._find_skill_dir()
 
         # TUI hooks (overridden by the UI)
@@ -564,6 +571,10 @@ class AgentSession:
         from .prompts import last_user_request, read_prompt_file
         from .models import Message as Msg
 
+        # Replacing the conversation is a new epoch: invalidate any
+        # worker still winding down from a cancelled run, or its
+        # salvaged-history commit would clobber the compacted buffer.
+        self.run_generation += 1
         messages = self.last_messages or []
         if not messages:
             return False, "Nothing to compact."
@@ -607,6 +618,10 @@ class AgentSession:
         from .prompts import read_prompt_file
         from .models import Message as Msg
 
+        # Appending to the shared conversation is a new epoch: invalidate
+        # any worker still winding down from a cancelled run, or its
+        # salvaged-history commit would clobber the appended summary.
+        self.run_generation += 1
         messages = self.last_messages or []
         if not messages:
             return "Nothing to summarize."

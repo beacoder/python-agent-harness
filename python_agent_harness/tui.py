@@ -719,6 +719,12 @@ class Tui:
         """
         self.stream_text = ""
         self.status = " running"
+        # A new top-level run starts here: invalidate any worker still
+        # unwinding from a previous run — from this point on it is stale
+        # and must never touch shared state.  Bump before clearing the
+        # event so there is no instant where an old worker sees "not
+        # cancelled".
+        self.session.run_generation += 1
         self.session.cancel_event.clear()
         self._data_event.clear()
         self._history_dirty = True
@@ -836,13 +842,14 @@ class Tui:
                 top_level=True,
                 system=system or self.session.system_prompt,
             )
-            # Only the current run may update shared state; a cancelled
-            # worker that finishes late must not clobber the next run.
-            if (
-                seq == self.run_seq
-                and not self.session.cancel_event.is_set()
-                and self.session.last_messages
-            ):
+            # Only the current run may update shared state: a stale
+            # worker (a newer run started — `run_seq` advanced) must not
+            # clobber the next run.  A cancelled run with no successor
+            # is still current, so it adopts its salvaged partial
+            # history and the interrupted turn is not lost (the seq
+            # check is the staleness guard; the cancel event no longer
+            # blocks the adoption).
+            if seq == self.run_seq and self.session.last_messages:
                 self.conversation_history = list(self.session.last_messages)
         except Exception as e:  # noqa: BLE001
             if seq == self.run_seq:
@@ -902,6 +909,10 @@ class Tui:
         elif cmd == "/restore":
             self._run_restore(arg)
         elif cmd == "/clear":
+            # Replacing the conversation is a new epoch: invalidate any
+            # worker still winding down from a cancelled run, or its
+            # salvaged-history commit would resurrect what we just wiped.
+            self.session.run_generation += 1
             self.conversation_history = []
             self.session.last_messages = []
             self.session.clear_todos()
@@ -1117,7 +1128,10 @@ class Tui:
         title = title_from_filename(path)
         if title:
             self.session.store.title = title
-        # Replace conversation history
+        # Replace conversation history: a new epoch.  Invalidate any
+        # worker still winding down from a cancelled run so its salvaged
+        # history can't clobber the restored session.
+        self.session.run_generation += 1
         self.conversation_history = messages
         self.session.last_messages = list(messages)
         self.session.clear_todos()
