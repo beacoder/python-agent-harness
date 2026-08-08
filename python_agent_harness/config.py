@@ -154,8 +154,10 @@ SUBAGENT_MAX_ROUNDS = 60
 # Tools a sub-agent must NOT see or call: it runs autonomously as a
 # one-shot task inside the parent's tool round, so it cannot spawn
 # further sub-agents (Agent), ask the user questions (Question), nor
-# end in a plan/build handoff (PlanExit).
-SUBAGENT_EXCLUDED_TOOLS = ("Agent", "Question", "PlanExit")
+# end in a plan/build handoff (PlanExit).  TodoWrite is also parent-only:
+# a sub-agent is a single delegated task — progress tracking belongs to
+# the parent, and the sub-agent must never clobber the parent's list.
+SUBAGENT_EXCLUDED_TOOLS = ("Agent", "Question", "PlanExit", "TodoWrite")
 
 # ---- TUI preview limits -------------------------------------------------------
 TOOL_RESULT_PREVIEW_LINES = 5    # max lines of a tool result shown in the TUI

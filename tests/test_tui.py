@@ -739,30 +739,6 @@ class TestTui(unittest.TestCase):
         out = buf.getvalue()
         self.assertNotIn("Todos", out)
 
-    def test_todos_panel_subagent_label(self):
-        """While a sub-agent runs, its scoped todos show with a `sub:`
-        label so they're not mistaken for the parent's list."""
-        tui, buf = make_tui()
-        tui.session.update_todos(
-            [{"content": "parent task", "status": "pending"}]
-        )
-        tui.session.push_todo_scope("sub:1", "find the bug")
-        tui.session.update_todos(
-            [{"content": "search", "status": "in_progress"}]
-        )
-        tui.console.print(tui._render_frame())
-        out = buf.getvalue()
-        self.assertIn("Todos (sub: find the bug)", out)
-        self.assertIn("search", out)
-        # parent's list is restored on pop and the label disappears
-        tui.session.pop_todo_scope()
-        buf2 = io.StringIO()
-        out_c2 = Console(file=buf2, width=100, force_terminal=False)
-        out_c2.print(tui._render_frame())
-        out2 = buf2.getvalue()
-        self.assertIn("parent task", out2)
-        self.assertNotIn("sub: find the bug", out2)
-
     # ------------------------------------------------------------------
     # slash commands (/init /review /explain)
     # ------------------------------------------------------------------

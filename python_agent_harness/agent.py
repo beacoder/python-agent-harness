@@ -190,7 +190,7 @@ class AgentLoop:
             # registry — the spec was filtered, so refuse it here too
             return (
                 f"Error: {call.name} is not available to sub-agents — "
-                "one-shot/interactive tools are parent-only"
+                "it is a parent-only tool"
             )
         args = call.arguments
         if isinstance(args, str):
@@ -336,7 +336,8 @@ class AgentLoop:
             try:
                 # sub-agents are one-shot tasks: they must not see (or
                 # call) parent-only tools — Agent (no nesting), Question
-                # and PlanExit (interactive/handoff) — filtered from the
+                # and PlanExit (interactive/handoff), TodoWrite (the
+                # parent's own progress tracking) — filtered from the
                 # specs before sending
                 tools = session.tool_specs(
                     exclude=config.SUBAGENT_EXCLUDED_TOOLS if not self.top_level else ()

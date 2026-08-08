@@ -1,8 +1,12 @@
-"""Scoped todos: a sub-agent's TodoWrite must not clobber the parent list."""
+"""TodoWrite is parent-only: a sub-agent must not see the tool spec and a
+hallucinated TodoWrite call must be refused without touching the parent's
+todo list.
+"""
 
 import json
 import unittest
 
+from python_agent_harness.agent import AgentLoop
 from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall, Usage
 from python_agent_harness.tools import default_registry
@@ -14,10 +18,12 @@ class FakeClient:
     def __init__(self, sub_todos):
         self.sub_todos = sub_todos
         self.n = 0
+        self.sent_tools = []
 
     def chat(self, messages, tools=None, system=None, temperature=None,
              max_tokens=None, reasoning_effort=None, on_delta=None, stream=True):
         self.n += 1
+        self.sent_tools.append([t.name for t in tools] if tools else None)
         if self.n == 1:
             tc = ToolCall(
                 id="call_1", name="TodoWrite",
@@ -42,40 +48,29 @@ def make_session() -> AgentSession:
     )
 
 
-class TestTodoScoping(unittest.TestCase):
-    def test_update_todos_writes_active_scope(self):
+class TestSubagentTodoIsolation(unittest.TestCase):
+    def test_update_todos_writes_parent_list(self):
         s = make_session()
         s.update_todos([{"content": "parent task", "status": "in_progress"}])
         self.assertEqual(s.todos[0]["content"], "parent task")
-        self.assertEqual(s._todo_scopes["main"][0]["content"], "parent task")
+        s.clear_todos()
+        self.assertEqual(s.todos, [])
 
-    def test_push_pop_restores_parent(self):
+    def test_subagent_spec_excludes_todowrite(self):
+        """The TodoWrite spec is filtered from the sub-agent's request."""
         s = make_session()
-        s.update_todos([{"content": "parent task", "status": "pending"}])
-        s.push_todo_scope("sub:1", "explore code")
-        self.assertEqual(s.todos, [])  # sub scope starts empty
-        self.assertEqual(s.todo_scope_label, "explore code")
-        s.update_todos([{"content": "sub task", "status": "in_progress"}])
-        self.assertEqual(s.todos[0]["content"], "sub task")
-        # parent list untouched in its own scope
-        self.assertEqual(s._todo_scopes["main"][0]["content"], "parent task")
-        s.pop_todo_scope()
-        self.assertEqual(s.todos[0]["content"], "parent task")  # restored
-        self.assertIsNone(s.todo_scope_label)
+        s.run_subagent("subagent", "find the bug", "do it")
+        self.assertTrue(s.client.sent_tools)
+        sub_tools = s.client.sent_tools[0]
+        self.assertNotIn("TodoWrite", sub_tools)
+        # the sub-agent keeps its working tools
+        self.assertIn("Read", sub_tools)
+        self.assertIn("Bash", sub_tools)
 
-    def test_nested_scopes(self):
-        s = make_session()
-        s.update_todos([{"content": "parent", "status": "pending"}])
-        s.push_todo_scope("sub:1", "outer")
-        s.update_todos([{"content": "outer sub", "status": "pending"}])
-        s.push_todo_scope("sub:2", "inner")
-        s.update_todos([{"content": "inner sub", "status": "pending"}])
-        s.pop_todo_scope()
-        self.assertEqual(s.todos[0]["content"], "outer sub")
-        s.pop_todo_scope()
-        self.assertEqual(s.todos[0]["content"], "parent")
-
-    def test_run_subagent_isolates_and_restores(self):
+    def test_subagent_todowrite_call_refused(self):
+        """Defense in depth: even a hallucinated TodoWrite call from a
+        sub-agent is refused and never reaches the registry, so the
+        parent's todo list is untouched."""
         sub_todos = [
             {"content": "search", "status": "in_progress"},
             {"content": "read", "status": "pending"},
@@ -83,15 +78,21 @@ class TestTodoScoping(unittest.TestCase):
         s = make_session()
         s.client = FakeClient(sub_todos)
         s.update_todos([{"content": "parent task", "status": "in_progress"}])
-        result = s.run_subagent("subagent", "find the bug", "do it")
+        loop = AgentLoop(
+            s,
+            messages=[Message(role="user", content="do it")],
+            top_level=False,
+            system="SUB",
+        )
+        result = loop.run()
         self.assertIn("sub done", result)
-        # parent's todo list restored after the sub-agent finished
+        tool_rows = [m for m in loop.messages if m.role == "tool"]
+        self.assertTrue(tool_rows)
+        self.assertIn("not available to sub-agents", tool_rows[0].text())
+        # the parent's todo list was never modified
         self.assertEqual(s.todos[0]["content"], "parent task")
-        # sub-agent's list is preserved in its own scope
-        self.assertEqual(s._todo_scopes["sub:1"][0]["content"], "search")
-        self.assertEqual(s.todo_scope_label, None)  # back on main
 
-    def test_run_subagent_exception_restores(self):
+    def test_run_subagent_exception_contained(self):
         s = make_session()
 
         class BoomClient(FakeClient):
@@ -102,8 +103,7 @@ class TestTodoScoping(unittest.TestCase):
         s.update_todos([{"content": "parent task", "status": "in_progress"}])
         result = s.run_subagent("subagent", "boom", "do it")
         self.assertIn("Error", result)
-        self.assertEqual(s.todos[0]["content"], "parent task")  # restored
-        self.assertEqual(s.todo_scope_label, None)
+        self.assertEqual(s.todos[0]["content"], "parent task")  # untouched
 
 
 if __name__ == "__main__":

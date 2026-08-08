@@ -146,8 +146,9 @@ class TestSubagentIsolation(unittest.TestCase):
         self.assertIsNone(s.calibrator.last_raw_estimate)
 
     def test_subagent_does_not_get_parent_only_specs(self):
-        """Parent-only tools (Agent, Question, PlanExit) are excluded
-        from the sub-agent's request specs, while the parent keeps them."""
+        """Parent-only tools (Agent, Question, PlanExit, TodoWrite) are
+        excluded from the sub-agent's request specs, while the parent
+        keeps them."""
         from python_agent_harness.tools import PlanExit
 
         client = RecClient([
@@ -165,17 +166,19 @@ class TestSubagentIsolation(unittest.TestCase):
         self.assertIn("Agent", parent_tools)
         self.assertIn("Question", parent_tools)
         self.assertIn("PlanExit", parent_tools)
+        self.assertIn("TodoWrite", parent_tools)
         self.assertNotIn("Agent", sub_tools)
         self.assertNotIn("Question", sub_tools)
         self.assertNotIn("PlanExit", sub_tools)
+        self.assertNotIn("TodoWrite", sub_tools)
         # the sub-agent keeps its working tools
         self.assertIn("Read", sub_tools)
         self.assertIn("Bash", sub_tools)
 
     def test_subagent_parent_only_call_refused_at_execution(self):
         """Defense in depth: even a hallucinated parent-only call (Agent,
-        Question, PlanExit) from a sub-agent must be refused at execution
-        time, not silently run."""
+        Question, PlanExit, TodoWrite) from a sub-agent must be refused
+        at execution time, not silently run."""
         from python_agent_harness.agent import AgentLoop
         from python_agent_harness.tools import PlanExit
 

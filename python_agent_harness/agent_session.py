@@ -115,13 +115,6 @@ class AgentSession:
         self.context_ratio: float | None = None
         self.compacting = False
         self.todos: list[dict] = []
-        # scoped todo lists: "main" is the top-level agent; each running
-        # sub-agent gets its own scope so its TodoWrite calls don't
-        # clobber the parent's list
-        self._todo_scopes: dict[str, list[dict]] = {"main": []}
-        self._todo_scope_stack: list[str] = ["main"]
-        self._todo_scope_labels: dict[str, str] = {}
-        self._subagent_seq = 0
         self.pending_user_prompts: list[str] = []
         self._pending_execute_prompt: str | None = None
         self.last_messages: list = []
@@ -293,45 +286,12 @@ class AgentSession:
         self.undo.record_absent(path, tool)
 
     def update_todos(self, todos: list[dict]) -> None:
-        """Store TODOS into the currently active scope.
-
-        While a sub-agent runs, its TodoWrite calls land in the
-        sub-agent's own scope; `self.todos` always mirrors the active
-        scope so the pinned TUI panel shows the right list.
-        """
-        scope = self._todo_scope_stack[-1]
-        self._todo_scopes[scope] = list(todos)
+        """Store TODOS so the pinned TUI panel shows the current list."""
         self.todos = list(todos)
         self.notify("todos")
 
-    @property
-    def todo_scope_label(self) -> str | None:
-        """Human-readable label of the active scope (None for main)."""
-        scope = self._todo_scope_stack[-1]
-        return self._todo_scope_labels.get(scope)
-
-    def push_todo_scope(self, scope_id: str, label: str | None = None) -> None:
-        """Switch the active todos scope (e.g. when a sub-agent starts)."""
-        if scope_id not in self._todo_scopes:
-            self._todo_scopes[scope_id] = []
-        if label:
-            self._todo_scope_labels[scope_id] = label
-        self._todo_scope_stack.append(scope_id)
-        self.todos = list(self._todo_scopes[scope_id])
-        self.notify("todos")
-
-    def pop_todo_scope(self) -> None:
-        """Restore the previous todos scope (e.g. sub-agent finished)."""
-        if len(self._todo_scope_stack) > 1:
-            self._todo_scope_stack.pop()
-            self.todos = list(self._todo_scopes[self._todo_scope_stack[-1]])
-            self.notify("todos")
-
     def clear_todos(self) -> None:
-        """Drop all todo scopes (e.g. session cleared or restored)."""
-        self._todo_scopes = {"main": []}
-        self._todo_scope_stack = ["main"]
-        self._todo_scope_labels = {}
+        """Drop the todo list (e.g. session cleared or restored)."""
         self.todos = []
         self.notify("todos")
 
@@ -353,19 +313,12 @@ class AgentSession:
         return find_skill_dir(self.project_dir, self._configured_skill_path)
 
     def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str:
-        """Run a delegated sub-agent task with an isolated todos scope.
+        """Run a delegated sub-agent task.
 
-        The sub-agent's TodoWrite calls go to its own scope (visible in
-        the pinned TUI panel with a `sub:` label); when it finishes the
-        parent's todo list is restored automatically.
+        The sub-agent has no TodoWrite (parent-only), so it can never
+        touch the parent's todo list.
         """
-        self._subagent_seq += 1
-        scope_id = f"sub:{self._subagent_seq}"
-        self.push_todo_scope(scope_id, description)
-        try:
-            return run_subagent(self, description, prompt)
-        finally:
-            self.pop_todo_scope()
+        return run_subagent(self, description, prompt)
 
     def plan_exit(self) -> str:
         """PlanExit tool implementation.

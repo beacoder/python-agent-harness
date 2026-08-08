@@ -555,17 +555,10 @@ class Tui:
 
     def _todos_panel(self) -> Panel | None:
         """Todos panel — rebuilt every frame (not cached), so a
-        TodoWrite call shows up immediately even mid-run.  When a
-        sub-agent is running, its scoped list is shown with a `sub:`
-        label so the parent's list isn't mistaken for the sub's."""
+        TodoWrite call shows up immediately even mid-run."""
         if not self.session.todos:
             return None
         title = "Todos"
-        label = self.session.todo_scope_label
-        if label:
-            # parentheses, not markup brackets: rich parses panel titles
-            # as markup and `[sub: ...]` would be eaten as a style tag
-            title = f"Todos (sub: {_tail_chars(label, 40)})"
         t = Table.grid(padding=(0, 1))
         for todo in self.session.todos[-8:]:
             status = todo.get("status", "")
