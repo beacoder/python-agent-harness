@@ -65,7 +65,7 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
   the file change and render it inline (red/green) in the TUI, so file
   edits are visible without leaving the app.
 
-## Screenshots
+## Screenshot
 
 ![demo.png](demo.png)
 
