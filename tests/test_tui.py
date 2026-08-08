@@ -190,6 +190,71 @@ class TestTui(unittest.TestCase):
         self.assertIn("Working...", row.plain)
         self.assertNotIn("Status:", row.plain)
 
+    def test_reasoning_streams_normally(self):
+        """While streaming, reasoning content shows up live like any
+        other text — the collapse only happens in the final history."""
+        tui, _ = make_tui()
+        tui.stream_text = "thinking hard...\n\nanswer here"
+        row = tui._stream_row()
+        self.assertIsNotNone(row)
+        self.assertIn("thinking hard...", row.plain)
+        self.assertIn("answer here", row.plain)
+
+    def test_reasoning_collapsed_in_history(self):
+        """Once the stream is done, the stored reasoning collapses to a
+        '...' marker in the history so it stops eating TUI space; the
+        answer stays fully visible.  The stored message is untouched."""
+        tui, buf = make_tui()
+        reasoning = "Let me think: Rayleigh scattering dominates..."
+        tui.session.last_messages = [
+            Message(role="user", content="why is the sky blue?"),
+            Message(
+                role="assistant",
+                content=reasoning + "\n\nThe sky is blue due to Rayleigh scattering.",
+                reasoning=reasoning,
+            ),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("💭 ...", out)
+        self.assertIn("Rayleigh scattering.", out)
+        self.assertNotIn("Let me think", out)
+        # the stored message keeps its reasoning — only the display hides it
+        self.assertEqual(
+            tui.session.last_messages[1].reasoning, reasoning
+        )
+        self.assertIn("Let me think", tui.session.last_messages[1].text())
+
+    def test_reasoning_collapsed_marker_shows_even_without_answer(self):
+        """A reasoning-only assistant message (no answer content) still
+        shows the collapse marker instead of vanishing entirely."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="go"),
+            Message(
+                role="assistant", content="pensive thoughts here",
+                reasoning="pensive thoughts here",
+            ),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("💭 ...", out)
+        self.assertNotIn("pensive thoughts", out)
+
+    def test_strip_reasoning(self):
+        """_strip_reasoning removes the leading reasoning prefix and
+        leaves non-matching text untouched."""
+        from python_agent_harness.tui import _strip_reasoning
+
+        self.assertEqual(
+            _strip_reasoning("ABCanswer", "ABC"), "answer"
+        )
+        self.assertEqual(
+            _strip_reasoning("  ABCanswer", "ABC"), "answer"
+        )
+        self.assertEqual(_strip_reasoning("answer", "ABC"), "answer")
+        self.assertEqual(_strip_reasoning("x", ""), "x")
+
     def test_long_conversation_bounded(self):
         """A long conversation is capped so rendering stays fast."""
         tui, buf = make_tui()

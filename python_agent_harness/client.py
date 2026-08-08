@@ -203,6 +203,7 @@ class Client:
             reasoning_effort=reasoning_effort,
         )
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tc_index: dict[int, dict[str, Any]] = {}
         usage = Usage()
 
@@ -238,6 +239,7 @@ class Client:
                             on_delta(delta["content"])
                     if delta.get("reasoning_content"):
                         content_parts.append(delta["reasoning_content"])
+                        reasoning_parts.append(delta["reasoning_content"])
                         if on_delta:
                             on_delta(delta["reasoning_content"])
                     for tc in delta.get("tool_calls") or []:
@@ -268,10 +270,12 @@ class Client:
                 for i in sorted(tc_index)
             ]
         if content or tool_calls:
-            msg = Message(role="assistant", content=content, tool_calls=tool_calls)
+            msg = Message(role="assistant", content=content, tool_calls=tool_calls,
+                          reasoning="".join(reasoning_parts) or None)
             _log_llm_interaction(self.log_path, payload, msg, usage)
             return msg, usage
-        msg = Message(role="assistant", content="")
+        msg = Message(role="assistant", content="",
+                      reasoning="".join(reasoning_parts) or None)
         _log_llm_interaction(self.log_path, payload, msg, usage)
         return msg, usage
 

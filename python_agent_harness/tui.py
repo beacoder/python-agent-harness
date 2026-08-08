@@ -150,6 +150,24 @@ def _strip_final_check(text: str) -> str:
     return "\n".join(lines[:first]).rstrip()
 
 
+def _strip_reasoning(text: str, reasoning: str) -> str:
+    """Remove the leading REASONING block from TEXT, or TEXT unchanged.
+
+    Reasoning content is streamed before the answer, so it forms the
+    leading part of the stored message content.  The TUI collapses it
+    to a marker once the stream is done, so it stops eating the
+    visible-row budget; the stored message is never modified.
+    """
+    if not reasoning:
+        return text
+    if text.startswith(reasoning):
+        return text[len(reasoning):]
+    stripped = text.lstrip()
+    if stripped.startswith(reasoning):
+        return stripped[len(reasoning):]
+    return text
+
+
 def _history_path() -> str:
     d = config.SESSION_DIR / "python-agent-harness"
     d.mkdir(parents=True, exist_ok=True)
@@ -497,7 +515,14 @@ class Tui:
                 if body.strip():
                     rows.append(Markdown(f"**user:** {body}"))
             elif m.role == "assistant":
-                body = _tail_lines(_strip_final_check(m.text()), 12)
+                body = m.text()
+                collapsed_reasoning = False
+                if m.reasoning:
+                    stripped = _strip_reasoning(body, m.reasoning)
+                    if stripped != body:
+                        body = stripped
+                        collapsed_reasoning = True
+                body = _tail_lines(_strip_final_check(body), 12)
                 if m.tool_calls:
                     for tc in m.tool_calls:
                         args = tc.arguments
@@ -513,6 +538,11 @@ class Tui:
                             params = ""
                         label = f"🤖 {tc.name}({params})" if params else f"🤖 {tc.name}"
                         rows.append(Text(label, style="cyan"))
+                if collapsed_reasoning:
+                    # the reasoning streamed live while it was being
+                    # produced; once it is done it collapses to a marker
+                    # so it doesn't eat the visible-row budget
+                    rows.append(Text("💭 ...", style="dim"))
                 if body.strip():
                     rows.append(Markdown(f"**assistant:** {body}"))
             elif m.role == "tool":

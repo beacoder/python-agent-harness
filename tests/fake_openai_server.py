@@ -12,6 +12,8 @@ class Handler(BaseHTTPRequestHandler):
         stream = body.get("stream", False)
         if stream:
             chunks = [
+                {"choices": [{"delta": {"role": "assistant", "reasoning_content": "thinking"}}]},
+                {"choices": [{"delta": {"reasoning_content": " hard"}}]},
                 {"choices": [{"delta": {"role": "assistant", "content": "Hello"}}]},
                 {"choices": [{"delta": {"content": " world"}}]},
                 {"choices": [{"delta": {"tool_calls": [
