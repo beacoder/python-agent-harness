@@ -135,6 +135,13 @@ PLAN_EXIT_APPROVED_MESSAGE = (
     "The plan at %s has been approved, you can now edit files. Execute the plan"
 )
 
+# PlanExit asks the user with the same choice UI as the Question tool:
+# option[0] approves the switch to build mode, anything else rejects it.
+PLAN_EXIT_OPTIONS = (
+    "Yes, switch to build agent",
+    "No, keep refining the plan",
+)
+
 # ---- tools -------------------------------------------------------------------
 DEFAULT_TOOLS: list[str] = [
     "Agent", "TodoWrite", "Glob", "Grep", "Read", "Insert", "Edit",
@@ -149,6 +156,11 @@ TEMPERATURE = 0.0
 
 # ---- sub-agents ---------------------------------------------------------------
 SUBAGENT_MAX_ROUNDS = 60
+# Tools a sub-agent must NOT see or call: it runs autonomously as a
+# one-shot task inside the parent's tool round, so it cannot spawn
+# further sub-agents (Agent), ask the user questions (Question), nor
+# end in a plan/build handoff (PlanExit).
+SUBAGENT_EXCLUDED_TOOLS = ("Agent", "Question", "PlanExit")
 
 # ---- TUI preview limits -------------------------------------------------------
 TOOL_RESULT_PREVIEW_LINES = 5    # max lines of a tool result shown in the TUI

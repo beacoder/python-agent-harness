@@ -164,8 +164,13 @@ class AgentSession:
     # ------------------------------------------------------------------
     # tools
     # ------------------------------------------------------------------
-    def tool_specs(self) -> list:
-        return self.registry.specs()
+    def tool_specs(self, exclude: tuple[str, ...] = ()) -> list:
+        """Tool specs exposed to the model; ``exclude`` drops tools by
+        name (e.g. one-shot/interactive tools for sub-agent runs)."""
+        return [
+            spec for spec in self.registry.specs()
+            if spec.name not in exclude
+        ]
 
     def execute_tool(
         self, name: str, args: dict[str, Any], call_id: str | None = None
@@ -401,7 +406,13 @@ class AgentSession:
             self.pop_todo_scope()
 
     def plan_exit(self) -> str:
-        """PlanExit tool implementation."""
+        """PlanExit tool implementation.
+
+        Asks the user to approve the plan→build switch through a y/n
+        confirmation UI (rendered like the Question tool's choice list,
+        but keyed with y/n instead of numbers).  The TUI hook decides
+        the exact look; the session only interprets the boolean answer.
+        """
         if not self.plan_mode.is_plan:
             return "Not in plan mode; PlanExit has no effect.  Continue as normal."
         approved = self.confirm(

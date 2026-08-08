@@ -20,11 +20,13 @@ class RecClient:
         self.n = 0
         self.streamed = []      # turn indices that streamed
         self.sent = []
+        self.sent_tools = []    # tool names sent per chat call
 
     def chat(self, messages, tools=None, system=None, temperature=None,
              max_tokens=None, reasoning_effort=None, on_delta=None):
         self.n += 1
         self.sent.append([m.to_api() for m in messages])
+        self.sent_tools.append([t.name for t in tools] if tools else None)
         if on_delta:
             on_delta(f"stream-{self.n} ")
             self.streamed.append(self.n)
@@ -163,6 +165,62 @@ class TestSubagentIsolation(unittest.TestCase):
         self.assertIsNone(s.context_ratio)
         self.assertEqual(s.calibrator.factor, 1.0)
         self.assertIsNone(s.calibrator.last_raw_estimate)
+
+    def test_subagent_does_not_get_parent_only_specs(self):
+        """Parent-only tools (Agent, Question, PlanExit) are excluded
+        from the sub-agent's request specs, while the parent keeps them."""
+        from python_agent_harness.tools import PlanExit
+
+        client = RecClient([
+            ("", [ToolCall(id="p1", name="Agent", arguments=AGENT_CALL)]),
+            "sub done",
+            "parent done",
+        ])
+        s = make_session(client)
+        s.registry.register(PlanExit())  # plan mode registers it too
+        run_agent_loop(
+            s, messages=[Message(role="user", content="delegate")], top_level=True
+        )
+        # turn 1 = parent's Agent call, turn 2 = the sub-agent, turn 3 = parent
+        parent_tools, sub_tools = client.sent_tools[0], client.sent_tools[1]
+        self.assertIn("Agent", parent_tools)
+        self.assertIn("Question", parent_tools)
+        self.assertIn("PlanExit", parent_tools)
+        self.assertNotIn("Agent", sub_tools)
+        self.assertNotIn("Question", sub_tools)
+        self.assertNotIn("PlanExit", sub_tools)
+        # the sub-agent keeps its working tools
+        self.assertIn("Read", sub_tools)
+        self.assertIn("Bash", sub_tools)
+
+    def test_subagent_parent_only_call_refused_at_execution(self):
+        """Defense in depth: even a hallucinated parent-only call (Agent,
+        Question, PlanExit) from a sub-agent must be refused at execution
+        time, not silently run."""
+        from python_agent_harness.agent import AgentLoop
+        from python_agent_harness.tools import PlanExit
+
+        client = RecClient([
+            ("", [ToolCall(id="s1", name="Agent", arguments=AGENT_CALL)]),
+            "sub done",
+        ])
+        s = make_session(client)
+        s.registry.register(PlanExit())
+        loop = AgentLoop(
+            s,
+            messages=[Message(role="user", content="find stuff")],
+            top_level=False,
+            system="SUB",
+        )
+        loop.run()
+        tool_rows = [m for m in loop.messages if m.role == "tool"]
+        self.assertTrue(tool_rows)
+        self.assertIn("not available to sub-agents", tool_rows[0].text())
+        # the refused call never executed the Agent tool, so no nested
+        # sub-agent loop ran: exactly 2 chat calls (refused call turn +
+        # the terminal "sub done" reply) — a real delegation would have
+        # spawned an additional nested loop's chat call
+        self.assertEqual(len(client.sent), 2)
 
 
 if __name__ == "__main__":

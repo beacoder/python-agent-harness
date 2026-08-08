@@ -162,6 +162,13 @@ class AgentLoop:
     # tool execution
     # ------------------------------------------------------------------
     def _execute_tool_call(self, call: ToolCall) -> str:
+        if not self.top_level and call.name in config.SUBAGENT_EXCLUDED_TOOLS:
+            # defense in depth: a hallucinated call must never reach the
+            # registry — the spec was filtered, so refuse it here too
+            return (
+                f"Error: {call.name} is not available to sub-agents — "
+                "one-shot/interactive tools are parent-only"
+            )
         args = call.arguments
         if isinstance(args, str):
             try:
@@ -256,9 +263,16 @@ class AgentLoop:
                     session.on_delta(text)
 
             try:
+                # sub-agents are one-shot tasks: they must not see (or
+                # call) parent-only tools — Agent (no nesting), Question
+                # and PlanExit (interactive/handoff) — filtered from the
+                # specs before sending
+                tools = session.tool_specs(
+                    exclude=config.SUBAGENT_EXCLUDED_TOOLS if not self.top_level else ()
+                )
                 assistant, usage = session.client.chat(
                     self.messages,
-                    tools=session.tool_specs() if session.tools_enabled else None,
+                    tools=tools if session.tools_enabled else None,
                     system=self.system,
                     temperature=session.temperature,
                     max_tokens=session.max_tokens,

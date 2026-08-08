@@ -13,7 +13,9 @@ from python_agent_harness.client import Client
 from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall
 from python_agent_harness.tools import default_registry
-from python_agent_harness.tui import Tui, UiQuestion, _resolve_numbered_choice
+from python_agent_harness.tui import (
+    Tui, UiQuestion, _resolve_keyed_choice, _resolve_numbered_choice,
+)
 
 
 def make_tui() -> tuple[Tui, io.StringIO]:
@@ -841,6 +843,57 @@ class TestTui(unittest.TestCase):
         with mock.patch.object(tui.prompt_session, "prompt", return_value="1,3"):
             tui._ask_question_blocking()
         self.assertEqual(q.answer, "first choice, third choice")
+
+    # ------------------------------------------------------------------
+    # PlanExit confirmation (y/n keyed list, like Question but keys)
+    # ------------------------------------------------------------------
+    def test_keyed_choice_resolution(self):
+        """Keys map to the matching option label; non-keys pass through."""
+        options = ["Yes, switch to build agent", "No, keep refining the plan"]
+        keys = ["y", "n"]
+        self.assertEqual(_resolve_keyed_choice("y", options, keys), options[0])
+        self.assertEqual(_resolve_keyed_choice("n", options, keys), options[1])
+        self.assertEqual(_resolve_keyed_choice("Y", options, keys), options[0])
+        self.assertEqual(_resolve_keyed_choice("y, custom", options, keys),
+                         f"{options[0]}, custom")
+        self.assertEqual(_resolve_keyed_choice("custom", options, keys), "custom")
+        self.assertEqual(_resolve_keyed_choice("", options, keys), "")
+        self.assertEqual(_resolve_keyed_choice("y", [], []), "y")
+
+    def test_ask_question_keyed_list_renders_and_resolves(self):
+        """A keyed choice renders as a list (y) label / n) label) with a
+        hint line, and a typed key resolves to the option label."""
+        tui, buf = make_tui()
+        q = UiQuestion(
+            "Approve plan?",
+            options=["Yes, switch to build agent", "No, keep refining the plan"],
+            keys=["y", "n"],
+            custom=False,
+        )
+        tui.question = q
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="n"):
+            tui._ask_question_blocking()
+        out = buf.getvalue()
+        self.assertIn("Approve plan?", out)
+        self.assertIn("y) Yes, switch to build agent", out)
+        self.assertIn("n) No, keep refining the plan", out)
+        self.assertIn("Enter a key", out)
+        self.assertEqual(q.answer, "No, keep refining the plan")
+
+    def test_ui_confirm_accepts_y_n_and_legacy_yes(self):
+        """_ui_confirm approves on y/yes, rejects on n; it renders a
+        y/n keyed choice list (not a bare prompt)."""
+        from python_agent_harness import config
+
+        tui, _ = make_tui()
+        for raw, expected in (("y", True), ("n", False), ("yes", True),
+                              ("a", True), ("1", True), ("", False)):
+            with mock.patch.object(tui, "_ask_sync", return_value=raw) as ask:
+                self.assertEqual(tui._ui_confirm("Switch to build?"), expected)
+            q = ask.call_args[0][0]
+            self.assertEqual(q.options, list(config.PLAN_EXIT_OPTIONS))
+            self.assertEqual(q.keys, ["y", "n"])
+            self.assertFalse(q.custom)
 
 
 if __name__ == "__main__":

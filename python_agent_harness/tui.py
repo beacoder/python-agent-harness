@@ -234,13 +234,36 @@ class SlashCompleter(Completer):
 class UiQuestion:
     def __init__(self, prompt: str, multiple: bool = False,
                  options: list[str] | None = None,
-                 custom: bool = True) -> None:
+                 custom: bool = True,
+                 keys: list[str] | None = None) -> None:
         self.prompt = prompt
         self.multiple = multiple
         self.options = options or []
         self.custom = custom
+        # keyed choices (e.g. ["y", "n"] for a confirm): render the
+        # options as a keyed list and resolve typed keys to labels,
+        # instead of the numbered-list style of the Question tool
+        self.keys = keys or []
         self.answer: str | None = None
         self.event = threading.Event()
+
+
+def _resolve_keyed_choice(answer: str, options: list[str], keys: list[str]) -> str:
+    """Map bare keys in ANSWER to the matching option label.
+
+    Comma-separated keys pick several options (multiple select);
+    non-key tokens pass through unchanged as free-text answers.
+    """
+    if not options or not keys or not answer.strip():
+        return answer
+    resolved: list[str] = []
+    for part in answer.split(","):
+        part = part.strip()
+        if part.lower() in keys:
+            resolved.append(options[keys.index(part.lower())])
+            continue
+        resolved.append(part)
+    return ", ".join(resolved)
 
 
 def _resolve_numbered_choice(answer: str, options: list[str]) -> str:
@@ -329,8 +352,20 @@ class Tui:
         self.status = f" {msg[:60]}"
 
     def _ui_confirm(self, prompt: str) -> bool:
-        q = UiQuestion(prompt)
-        return self._ask_sync(q) in ("y", "yes", "true", "1", "a")
+        """PlanExit confirmation: same look as the Question tool, but a
+        y/n keyed choice list instead of numbers (two choices only)."""
+        q = UiQuestion(
+            prompt,
+            options=list(config.PLAN_EXIT_OPTIONS),
+            keys=["y", "n"],
+            custom=False,
+        )
+        answer = self._ask_sync(q).strip().lower()
+        # resolved answers arrive as the option label; legacy free-text
+        # (y/yes/a/1/true) keeps working for muscle memory
+        return answer == config.PLAN_EXIT_OPTIONS[0].lower() or answer in (
+            "y", "yes", "a", "true", "1",
+        )
 
     def _ui_ask(self, questions: list[dict]) -> str:
         lines = []
@@ -608,7 +643,24 @@ class Tui:
         self.console.print()
         self._flush()
         options = q.options or []
-        if options and any(len(o) > 1 for o in options):
+        keys = q.keys or []
+        if keys and options and len(keys) == len(options):
+            # keyed choices (e.g. y/n confirm): type the key to pick —
+            # same list look as the Question tool, keys instead of numbers
+            self.console.print(Text(q.prompt))
+            for key, opt in zip(keys, options):
+                line = Text(f"  {key}) ", style="cyan")
+                line.append(opt)
+                self.console.print(line)
+            if q.multiple:
+                hint = "Enter keys, comma-separated"
+            else:
+                hint = "Enter a key"
+            if q.custom:
+                hint += ", or type your own answer"
+            self.console.print(f"[dim]{hint}[/dim]")
+            prompt = "> "
+        elif options and any(len(o) > 1 for o in options):
             # long option labels get a numbered list: type the number to pick
             self.console.print(Text(q.prompt))
             for i, opt in enumerate(options, 1):
@@ -632,7 +684,10 @@ class Tui:
                 answer = self.prompt_session.prompt(prompt, multiline=False)
         except (EOFError, KeyboardInterrupt):
             answer = ""
-        q.answer = _resolve_numbered_choice(answer, options)
+        if keys:
+            q.answer = _resolve_keyed_choice(answer, options, keys)
+        else:
+            q.answer = _resolve_numbered_choice(answer, options)
         q.event.set()
         self.question = None
         self._data_event.set()  # re-render promptly after the answer

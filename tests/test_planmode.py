@@ -65,5 +65,63 @@ class TestPlanMode(unittest.TestCase):
         self.assertIn(pm.plan_file, reminder)
 
 
+class TestPlanExitConfirm(unittest.TestCase):
+    """plan_exit goes through the session confirm hook (a y/n choice UI
+    in the TUI) — not through the Question tool's ask_questions."""
+
+    class FakeClient:
+        def chat(self, *a, **k):
+            return None
+
+        def chat_sync(self, *a, **k):
+            return None
+
+        def close(self):
+            pass
+
+    def make_session(self):
+        from python_agent_harness.agent_session import AgentSession
+        from python_agent_harness.tools import default_registry
+
+        s = AgentSession(
+            project_dir="/tmp/proj", client=self.FakeClient(), model="m",
+            registry=default_registry(),
+        )
+        s.switch_to_plan()
+        return s
+
+    def test_plan_exit_uses_confirm_hook_not_ask_questions(self):
+        s = self.make_session()
+        seen = {}
+        s.confirm_fn = lambda prompt: seen.setdefault("prompt", prompt) or True
+        asked = []
+        s.ask_fn = lambda questions: asked.append(questions) or "Unanswered"
+        result = s.plan_exit()
+        self.assertIn("approved", result)
+        self.assertFalse(s.plan_mode.is_plan)
+        self.assertIn("Plan at", seen["prompt"])
+        self.assertIn("Switch to build agent", seen["prompt"])
+        # the Question path must NOT be used for the plan approval
+        self.assertEqual(asked, [])
+        s.close()
+
+    def test_plan_exit_rejected_stays_in_plan(self):
+        s = self.make_session()
+        s.confirm_fn = lambda prompt: False
+        result = s.plan_exit()
+        self.assertIn("rejected", result)
+        self.assertTrue(s.plan_mode.is_plan)
+        s.close()
+
+    def test_plan_exit_noop_outside_plan(self):
+        s = self.make_session()
+        s.switch_to_build()
+        s.confirm_fn = lambda prompt: True
+        result = s.plan_exit()
+        self.assertIn("Not in plan mode", result)
+        self.assertFalse(s.plan_mode.is_plan)
+        s.close()
+
+
 if __name__ == "__main__":
     unittest.main()
