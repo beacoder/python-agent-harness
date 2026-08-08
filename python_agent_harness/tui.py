@@ -82,6 +82,74 @@ def _tool_result_preview(content: str) -> str:
     return _head_chars(preview, config.TOOL_RESULT_PREVIEW_CHARS)
 
 
+_FINAL_CHECK_LABELS = ("Goal:", "Status:", "Evidence:")
+_FINAL_CHECK_BULLETS = ("-", "•", "*")
+
+
+def _is_final_check_bullet(line: str) -> str | None:
+    """Return the checklist label if LINE is a Goal/Status/Evidence bullet.
+
+    Accepts "-", "•" or "*" bullet chars and optional markdown emphasis
+    around the label ("- **Status:** SUCCESS"), case-insensitively.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return None
+    for bullet in _FINAL_CHECK_BULLETS:
+        if not stripped.startswith(bullet):
+            continue
+        rest = stripped[len(bullet):].strip().strip("*").strip()
+        lower = rest.lower()
+        for label in _FINAL_CHECK_LABELS:
+            if lower.startswith(label.lower()):
+                return label
+        return None
+    return None
+
+
+def _is_bullet_line(line: str) -> bool:
+    """True if LINE is any bullet-ish line (for trailing-block checks)."""
+    stripped = line.strip()
+    return bool(stripped) and stripped[0] in _FINAL_CHECK_BULLETS
+
+
+def _strip_final_check(text: str) -> str:
+    """Drop a trailing completion-check block from an assistant reply.
+
+    The task-completion rules make the model end with a [FINAL CHECK]
+    block (Goal / Status / Evidence) — verification bookkeeping, not
+    content the user wants to read.  Two shapes are recognized:
+
+    - an explicit "[FINAL CHECK]" header: everything from it is dropped;
+    - the bare checklist: a trailing block of Goal:/Status:/Evidence:
+      bullets with at least 2 distinct labels (fallback for replies
+      that answer the completion rules without the header).
+
+    The agent loop still produces and stores the message unchanged;
+    this only trims it from the TUI display.
+    """
+    idx = text.find("[FINAL CHECK]")
+    if idx != -1:
+        return text[:idx].rstrip()
+    lines = text.splitlines()
+    labels: set[str] = set()
+    first: int | None = None
+    for i, line in enumerate(lines):
+        label = _is_final_check_bullet(line)
+        if label is None:
+            continue
+        labels.add(label)
+        if first is None:
+            first = i
+    if len(labels) < 2 or first is None:
+        return text
+    # only a TRAILING bullet block is the completion check — bullets in
+    # the middle of a real reply (followed by more content) stay visible
+    if not all(not line.strip() or _is_bullet_line(line) for line in lines[first:]):
+        return text
+    return "\n".join(lines[:first]).rstrip()
+
+
 def _history_path() -> str:
     d = config.SESSION_DIR / "python-agent-harness"
     d.mkdir(parents=True, exist_ok=True)
@@ -420,11 +488,16 @@ class Tui:
                 rows.append(Text("📦 " + _tail_chars(m.text(), 200), style="dim italic"))
                 continue
             if m.role == "user":
+                # harness-injected completion nudge: it drives the agent
+                # loop, but the user never typed it — keep it out of the
+                # conversation panel
+                if m.text() == config.NUDGE_MESSAGE:
+                    continue
                 body = _tail_lines(m.text(), 12)
                 if body.strip():
                     rows.append(Markdown(f"**user:** {body}"))
             elif m.role == "assistant":
-                body = _tail_lines(m.text(), 12)
+                body = _tail_lines(_strip_final_check(m.text()), 12)
                 if m.tool_calls:
                     for tc in m.tool_calls:
                         args = tc.arguments
@@ -486,6 +559,7 @@ class Tui:
         """Live stream row (cheap Text, tail-capped)."""
         with self.lock:
             stream = self.stream_text
+        stream = _strip_final_check(stream)
         if not stream:
             return None
         cap = self._visible_row_cap()
