@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from python_agent_harness.tools.base import ToolContext
-from python_agent_harness.tools.filesystem import Edit, Grep, Read, Write, _apply_diff
+from python_agent_harness.tools.filesystem import (
+    Edit,
+    GlobTool,
+    Grep,
+    Insert,
+    Mkdir,
+    Read,
+    Write,
+    _apply_diff,
+)
 
 
 def _big_output(lines: int = 6000, width: int = 80) -> str:
@@ -102,6 +114,21 @@ class TestApplyDiff(unittest.TestCase):
         )
         self.assertEqual(_apply_diff(content, git_style), "a\nc")
 
+    def test_diff_in_fenced_code_block(self):
+        """Models often wrap diffs in ```diff / ```patch fences (the
+        gptel-agent Edit tool accepts these); the parser must skip the
+        fence lines instead of failing on them."""
+        content = "a\nb\nc\n"
+        for fence in ("```diff", "```patch", "```"):
+            diff = (
+                f"{fence}\n"
+                "--- a\n+++ b\n"
+                "@@ -1,3 +1,3 @@\n"
+                " a\n-b\n+B\n c\n"
+                "```\n"
+            )
+            self.assertEqual(_apply_diff(content, diff), "a\nB\nc\n", fence)
+
     def test_glob_depth_zero_is_unlimited(self):
         """depth=0 must mean 'no limit' (like `tree -L 0`), never an
         empty result."""
@@ -117,6 +144,21 @@ class TestApplyDiff(unittest.TestCase):
         self.assertNotIn("sub/deep/c.py", out1)
         out_none = _git_glob_results(raw, "/repo", "/repo", None, "*.py")
         self.assertIn("sub/deep/c.py", out_none)
+
+    def test_glob_depth_in_subdir_base(self):
+        """depth is relative to the search base: entries outside the base
+        subtree must never leak into the results."""
+        from python_agent_harness.tools.filesystem import _git_glob_results
+
+        raw = "a.py\0sub/b.py\0sub/deep/c.py\0sub/deep/deeper/d.py\0"
+        out1 = _git_glob_results(raw, "/repo", "/repo/sub", 1, "*.py")
+        self.assertIn("/repo/sub/b.py", out1)
+        self.assertNotIn("/repo/a.py", out1)
+        self.assertNotIn("/repo/sub/deep/c.py", out1)
+        out2 = _git_glob_results(raw, "/repo", "/repo/sub", 2, "*.py")
+        self.assertIn("/repo/sub/b.py", out2)
+        self.assertIn("/repo/sub/deep/c.py", out2)
+        self.assertNotIn("/repo/sub/deep/deeper/d.py", out2)
 
 
 class TestSpool(unittest.TestCase):
@@ -195,6 +237,33 @@ class TestSpool(unittest.TestCase):
         self.assertIn("[truncated grep]", result)
         self.assertNotIn("Stored in:", result)
 
+    def test_grep_out_formats_backend_errors(self):
+        """A failing backend (exit code >= 2) must surface as an explicit
+        error with the backend's stderr, not as an empty result."""
+        import subprocess
+
+        proc = subprocess.CompletedProcess([], returncode=2, stdout="boom\n")
+        out = self.fs._grep_out(proc, "rg")
+        self.assertIn("Error: search failed with exit-code 2", out)
+        self.assertIn("boom", out)
+
+    def test_grep_context_lines_clamped_to_15(self):
+        """context_lines beyond 15 is clamped (schema maximum), and a
+        huge context value must not crash the search."""
+        import shutil
+
+        if not shutil.which("grep") and not shutil.which("rg"):
+            self.skipTest("no grep backend available")
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "data.txt"), "w") as f:
+                f.write("one\ntwo\nthree\nneedle\nfour\nfive\nsix\n")
+            ctx, _ = make_ctx()
+            result = Grep().run(
+                {"regex": "needle", "path": d, "context_lines": 99}, ctx
+            )
+            self.assertIn("needle", result)
+            self.assertNotIn("Error", result)
+
 
 class TestReadTool(unittest.TestCase):
     """Read mirrors `gptel-agent--read-file-lines`: whole-file reads are
@@ -242,9 +311,107 @@ class TestReadTool(unittest.TestCase):
             {"file_path": p, "start_line": 5, "end_line": 7}, ToolContext()
         )
         self.assertIn("Showing lines 5-7:", out)
+        self.assertNotIn("of 1000", out)   # total unknown when EOF not reached
         self.assertIn("line00004-", out)
         self.assertIn("line00006-", out)
         self.assertNotIn("line00007-", out)
+
+    def test_end_line_only_starts_from_line_1(self):
+        p = self._write(10)
+        out = Read().run({"file_path": p, "end_line": 3}, ToolContext())
+        self.assertIn("Showing lines 1-3:", out)
+        self.assertIn("line00000-", out)
+        self.assertIn("line00002-", out)
+        self.assertNotIn("line00003-", out)
+
+    def test_start_line_only_reads_to_eof_with_total(self):
+        p = self._write(10)
+        out = Read().run({"file_path": p, "start_line": 8}, ToolContext())
+        self.assertIn("Showing lines 8-10 of 10:", out)
+        self.assertIn("line00007-", out)
+        self.assertIn("line00009-", out)
+
+    def test_range_read_on_file_above_limit_is_allowed(self):
+        """The 400 KB gate applies only to whole-file reads, not ranges."""
+        p = self._write(20000, width=80)   # > 1 MB
+        self.assertGreater(os.path.getsize(p), self.fs.READ_SIZE_LIMIT)
+        out = Read().run(
+            {"file_path": p, "start_line": 1, "end_line": 3}, ToolContext()
+        )
+        self.assertNotIn("Error", out)
+        self.assertIn("Showing lines 1-3:", out)
+        self.assertIn("line00000-", out)
+
+    def test_full_read_at_exact_limit_is_allowed(self):
+        p = os.path.join(self.tmp.name, "exact.txt")
+        with open(p, "w") as f:
+            f.write("x" * self.fs.READ_SIZE_LIMIT)
+        out = Read().run({"file_path": p}, ToolContext())
+        self.assertEqual(len(out), self.fs.READ_SIZE_LIMIT)
+        self.assertNotIn("Error", out)
+
+    def test_no_trailing_newline_counts_lines_correctly(self):
+        p = os.path.join(self.tmp.name, "nonl.txt")
+        with open(p, "w") as f:
+            f.write("a\nb\nc")
+        out = Read().run({"file_path": p, "start_line": 2, "end_line": 3}, ToolContext())
+        self.assertIn("Showing lines 2-3 of 3:", out)
+        self.assertIn("b\nc", out)
+
+    def test_negative_start_line_clamped_to_1(self):
+        p = self._write(10)
+        out = Read().run(
+            {"file_path": p, "start_line": -5, "end_line": 2}, ToolContext()
+        )
+        self.assertIn("Showing lines 1-2:", out)
+        self.assertIn("line00000-", out)
+
+    def test_missing_file_errors(self):
+        out = Read().run(
+            {"file_path": os.path.join(self.tmp.name, "nope.txt")}, ToolContext()
+        )
+        self.assertIn("Error", out)
+
+    def test_empty_file_full_read_returns_empty_string(self):
+        p = os.path.join(self.tmp.name, "empty.txt")
+        open(p, "w").close()
+        self.assertEqual(Read().run({"file_path": p}, ToolContext()), "")
+
+    def test_empty_file_range_read_errors_without_none_in_message(self):
+        p = os.path.join(self.tmp.name, "empty.txt")
+        open(p, "w").close()
+        out = Read().run({"file_path": p, "start_line": 1, "end_line": 5}, ToolContext())
+        self.assertIn("Error", out)
+        self.assertNotIn("None", out)
+        out = Read().run({"file_path": p, "start_line": 1}, ToolContext())
+        self.assertIn("Error", out)
+        self.assertNotIn("None", out)
+
+    def test_invalid_utf8_bytes_replaced_not_fatal(self):
+        p = os.path.join(self.tmp.name, "latin.txt")
+        with open(p, "wb") as f:
+            f.write(b"caf\xe9 \xff line\n")
+        out = Read().run({"file_path": p}, ToolContext())
+        self.assertIn("line", out)
+        self.assertNotIn("Error", out)
+
+    def test_symlink_resolved_before_size_check(self):
+        target = os.path.join(self.tmp.name, "target.txt")
+        link = os.path.join(self.tmp.name, "link.txt")
+        with open(target, "w") as f:
+            f.write("through link\n")
+        os.symlink(target, link)
+        out = Read().run({"file_path": link}, ToolContext())
+        self.assertIn("through link", out)
+
+    def test_read_spool_falls_back_to_truncation_when_tempdir_unwritable(self):
+        self.fs._spool_dir = lambda: "/dev/null/definitely-not-a-dir"
+        p = self._write(20000, width=80)
+        out = Read().run(
+            {"file_path": p, "start_line": 1, "end_line": 20000}, ToolContext()
+        )
+        self.assertIn("[truncated read]", out)
+        self.assertNotIn("Stored in:", out)
 
     def test_range_read_reports_total_when_eof_reached(self):
         p = self._write(10)
@@ -282,6 +449,121 @@ class TestReadTool(unittest.TestCase):
     def test_read_directory_errors(self):
         out = Read().run({"file_path": self.tmp.name}, ToolContext())
         self.assertIn("Error", out)
+
+    @unittest.skipIf(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        "root bypasses file permission checks",
+    )
+    def test_unreadable_file_returns_error_not_crash(self):
+        p = os.path.join(self.tmp.name, "secret.txt")
+        with open(p, "w") as f:
+            f.write("secret\n")
+        os.chmod(p, 0o000)
+        try:
+            out = Read().run({"file_path": p}, ToolContext())
+        finally:
+            os.chmod(p, 0o644)
+        self.assertIn("Error", out)
+        self.assertNotIn("Traceback", out)
+
+
+class TestGlobGrepTools(unittest.TestCase):
+    """End-to-end Glob/Grep behavior against real backends: the git-aware
+    branch (git ls-files / git grep) and the tree / plain-grep fallbacks,
+    plus error paths.  Backend-dependent tests skip when the executable
+    is missing."""
+
+    def setUp(self):
+        self.ctx = ToolContext()
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _mkdir(self, *parts) -> str:
+        p = os.path.join(self.tmp.name, *parts)
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    @unittest.skipUnless(shutil.which("tree"), "tree not available")
+    def test_glob_tree_fallback_lists_files_and_depth(self):
+        d = self._mkdir("proj")
+        open(os.path.join(d, "a.py"), "w").close()
+        self._mkdir("proj", "sub")
+        open(os.path.join(d, "sub", "b.py"), "w").close()
+        out = GlobTool().run({"pattern": "*.py", "path": d}, self.ctx)
+        self.assertIn(os.path.join(d, "a.py"), out)
+        self.assertIn(os.path.join(d, "sub", "b.py"), out)
+        out1 = GlobTool().run({"pattern": "*.py", "path": d, "depth": 1}, self.ctx)
+        self.assertIn(os.path.join(d, "a.py"), out1)
+        self.assertNotIn(os.path.join(d, "sub", "b.py"), out1)
+
+    @unittest.skipUnless(shutil.which("git"), "git not available")
+    def test_glob_and_grep_use_git_backend_in_repo(self):
+        repo = self._mkdir("repo")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        for name, content in (("a.py", "hello world\n"), ("b.txt", "nope\n")):
+            with open(os.path.join(repo, name), "w") as f:
+                f.write(content)
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        out = GlobTool().run({"pattern": "*", "path": repo}, self.ctx)
+        self.assertIn(os.path.join(repo, "a.py"), out)
+        self.assertIn(os.path.join(repo, "b.txt"), out)
+        out = Grep().run({"regex": "hello", "path": repo}, self.ctx)
+        self.assertIn("a.py", out)
+        self.assertIn("hello", out)
+        self.assertNotIn("b.txt", out)
+        out = Grep().run(
+            {"regex": "hello", "path": repo, "context_lines": 2}, self.ctx
+        )
+        self.assertIn("a.py", out)
+        self.assertIn("hello", out)
+
+    def test_glob_nonexistent_path_errors(self):
+        out = GlobTool().run(
+            {"pattern": "*", "path": os.path.join(self.tmp.name, "nope")}, self.ctx
+        )
+        self.assertIn("Error", out)
+
+    def test_glob_empty_pattern_errors(self):
+        out = GlobTool().run({"pattern": "", "path": self.tmp.name}, self.ctx)
+        self.assertIn("Error", out)
+
+    def test_grep_single_file_path(self):
+        d = self._mkdir("proj")
+        p = os.path.join(d, "a.py")
+        with open(p, "w") as f:
+            f.write("alpha\nbeta\nalpha\n")
+        out = Grep().run({"regex": "alpha", "path": p}, self.ctx)
+        self.assertIn("alpha", out)
+        self.assertIn("1", out)
+
+    def test_grep_glob_filter_restricts_files(self):
+        d = self._mkdir("proj")
+        with open(os.path.join(d, "a.py"), "w") as f:
+            f.write("needle\n")
+        with open(os.path.join(d, "a.md"), "w") as f:
+            f.write("needle\n")
+        out = Grep().run({"regex": "needle", "path": d, "glob": "*.py"}, self.ctx)
+        self.assertIn("a.py", out)
+        self.assertNotIn("a.md", out)
+
+    def test_grep_nonexistent_path_errors(self):
+        out = Grep().run(
+            {"regex": "x", "path": os.path.join(self.tmp.name, "nope")}, self.ctx
+        )
+        self.assertIn("Error", out)
+
+    @mock.patch("shutil.which", return_value=None)
+    def test_glob_errors_when_tree_missing(self, _which):
+        d = self._mkdir("proj")
+        out = GlobTool().run({"pattern": "*.py", "path": d}, self.ctx)
+        self.assertIn("Executable `tree` not found", out)
+
+    @mock.patch("shutil.which", return_value=None)
+    def test_grep_errors_when_no_backend_available(self, _which):
+        out = Grep().run({"regex": "x", "path": self.tmp.name}, self.ctx)
+        self.assertIn("ripgrep/grep/git-grep not available", out)
 
 
 class TestEditTool(unittest.TestCase):
@@ -400,6 +682,63 @@ class TestWriteTool(unittest.TestCase):
             ctx, sess = make_ctx()
             Write().run({"path": d, "filename": "f.txt", "content": "same\n"}, ctx)
             self.assertEqual(sess.recorded_diffs, [])
+
+
+class TestInsertTool(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "f.txt")
+        with open(self.path, "w") as f:
+            f.write("a\nb\nc\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_insert_after_line_number(self):
+        Insert().run({"path": self.path, "line_number": 2, "new_str": "X"}, ToolContext())
+        self.assertEqual(open(self.path).read(), "a\nb\nX\nc\n")
+
+    def test_insert_at_beginning(self):
+        Insert().run({"path": self.path, "line_number": 0, "new_str": "Z"}, ToolContext())
+        self.assertEqual(open(self.path).read(), "Z\na\nb\nc\n")
+
+    def test_insert_at_end(self):
+        Insert().run({"path": self.path, "line_number": -1, "new_str": "Y"}, ToolContext())
+        self.assertEqual(open(self.path).read(), "a\nb\nc\nY\n")
+
+    def test_insert_beyond_eof_appends(self):
+        Insert().run({"path": self.path, "line_number": 99, "new_str": "W"}, ToolContext())
+        self.assertEqual(open(self.path).read(), "a\nb\nc\nW\n")
+
+    def test_insert_adds_missing_trailing_newline(self):
+        Insert().run({"path": self.path, "line_number": 1, "new_str": "X"}, ToolContext())
+        self.assertEqual(open(self.path).read(), "a\nX\nb\nc\n")
+
+
+class TestMkdirTool(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_create_directory(self):
+        out = Mkdir().run({"parent": self.tmp.name, "name": "sub"}, ToolContext())
+        self.assertIn("created/verified", out)
+        self.assertTrue(os.path.isdir(os.path.join(self.tmp.name, "sub")))
+
+    def test_create_nested_directory(self):
+        out = Mkdir().run(
+            {"parent": self.tmp.name, "name": "sub/deep"}, ToolContext()
+        )
+        self.assertIn("created/verified", out)
+        self.assertTrue(os.path.isdir(os.path.join(self.tmp.name, "sub/deep")))
+
+    def test_existing_directory_is_noop(self):
+        d = os.path.join(self.tmp.name, "sub")
+        os.makedirs(d)
+        out = Mkdir().run({"parent": self.tmp.name, "name": "sub"}, ToolContext())
+        self.assertIn("created/verified", out)
 
 
 if __name__ == "__main__":

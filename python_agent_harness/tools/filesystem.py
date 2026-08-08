@@ -168,7 +168,9 @@ class Read(Tool):
             return f"Error: cannot read {path}: {e}"
         if end is not None and reached_eof and total is not None:
             end = min(end, total)   # clamp to the real file end
-        if start > (total or 0):
+        if total is None:
+            total = 0               # empty file
+        if start > total:
             return f"Error: start_line {start} > end_line {end if end is not None else total}"
         end_eff = end if end is not None else total
         if total is not None and reached_eof:
@@ -277,6 +279,8 @@ def _git_glob_results(
             base_depth = 1 + rel_base.count(os.sep)
         filtered = []
         for l in lines:
+            if rel_base != "." and not (l == rel_base or l.startswith(rel_base + "/")):
+                continue  # outside the search base subtree
             if l.count("/") >= base_depth + depth:
                 continue
             filtered.append(l)
@@ -517,6 +521,8 @@ def _parse_unified_diff(diff: str) -> list[_Hunk]:
     hunks: list[_Hunk] = []
     current: _Hunk | None = None
     for raw in diff.splitlines(keepends=True):
+        if raw.lstrip().startswith("```"):
+            continue  # code fences (```diff / ```patch / ```)
         if raw.startswith("--- ") or raw.startswith("+++ ") or raw.startswith("diff --git"):
             continue
         m = _HUNK_HEADER_RE.match(raw)
