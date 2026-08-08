@@ -442,6 +442,80 @@ class TestAgentLoop(unittest.TestCase):
             self.assertTrue(
                 all(b.get("stream") is False for b in bodies)
             )
+
+    def test_abort_unblocks_stalled_http_stream(self):
+        """Ctrl-C during a REAL stalled chunked SSE stream must unblock
+        the worker promptly: closing the pool is not enough on Linux
+        (close() cannot wake a blocked recv), so abort() must shutdown
+        the in-flight connection socket.  Regression test for Ctrl-C
+        leaving a zombie worker that would stall history adoption."""
+        import json as _json
+        import tempfile
+        import threading as _threading
+        import time as _time
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from pathlib import Path
+
+        import python_agent_harness.config as cfg
+        from python_agent_harness.client import Client
+
+        stall_started = _threading.Event()
+
+        class StallHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                self.rfile.read(length or b"{}")
+                stall_started.set()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                first = b'data: {"choices": [{"delta": {"content": "hi"}}]}\n\n'
+                self.wfile.write(("%x" % len(first)).encode() + b"\r\n" + first + b"\r\n")
+                self.wfile.flush()
+                _time.sleep(60)
+                try:
+                    self.wfile.write(b"0\r\n\r\n")
+                except Exception:
+                    pass
+
+            def log_message(self, *a):
+                pass
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg.SESSION_DIR = Path(d)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), StallHandler)
+            _threading.Thread(target=server.serve_forever, daemon=True).start()
+            host, port = server.server_address
+            client = Client(
+                base_url=f"http://{host}:{port}/v1", api_key="test", model="fake"
+            )
+            out = {}
+
+            def worker():
+                try:
+                    client.chat([Message(role="user", content="hi")], stream=True)
+                    out["r"] = "completed"
+                except BaseException as e:  # noqa: BLE001
+                    out["r"] = f"{type(e).__name__}: {e}"
+
+            t = _threading.Thread(target=worker, daemon=True)
+            t.start()
+            try:
+                self.assertTrue(stall_started.wait(timeout=5))
+                _time.sleep(0.3)  # worker is now blocked in iter_lines
+                client.abort()  # what session.cancel() calls on Ctrl-C
+                t.join(timeout=5)
+                self.assertFalse(t.is_alive(), "worker stuck after abort()")
+            finally:
+                server.shutdown()
+                client.close()
+            # the unblocked read surfaces as a network error (the agent
+            # loop maps a cancelled state to a clean None, not an error)
+            self.assertIn("Error", out["r"])
+
     def test_cancel_aborts_blocking_chat(self):
         """Ctrl-C during a blocking stream must stop the run, not error."""
         import threading

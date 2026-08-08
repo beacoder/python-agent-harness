@@ -128,13 +128,21 @@ class Client:
     def abort(self) -> None:
         """Abort the in-flight request (called on cancel).
 
-        Closing just the response object does NOT interrupt a blocked
-        ``iter_lines()`` read, so the whole connection pool is closed
-        instead — that unblocks the worker thread's read immediately —
-        and a fresh client is swapped in for the next request.
+        A blocked ``iter_lines()`` read must be interrupted so the agent
+        loop can stop promptly.  Closing the pool alone is NOT enough:
+        on Linux, ``close()`` from another thread cannot wake a ``recv``
+        that is already blocked in the kernel.  So we first
+        ``shutdown(SHUT_RDWR)`` every in-flight connection socket (which
+        does wake the blocked read, turning it into a connection error
+        the loop treats as a cancel) and then close the pool.  A fresh
+        client is swapped in for the next request.
         """
         old = self._http
         self._http = httpx.Client(timeout=self.timeout, verify=self.verify)
+        try:
+            _abort_inflight_sockets(old)
+        except Exception:  # noqa: BLE001 - best effort
+            pass
         try:
             old.close()
         except Exception:  # noqa: BLE001 - best effort
@@ -408,6 +416,33 @@ def _default_api_key() -> str | None:
         or __import__("os").environ.get("DEEPSEEK_API_KEY")
         or None
     )
+
+
+def _abort_inflight_sockets(client: httpx.Client) -> None:
+    """Wake any blocked stream reads by shutting down live pool sockets.
+
+    Reaches through httpx/httpcore internals (transport -> pool ->
+    connection -> network stream -> raw socket) and calls
+    ``shutdown(SHUT_RDWR)`` on each live connection.  On Linux this is
+    the only reliable way to interrupt a ``recv`` already blocked in the
+    kernel from another thread — ``close()`` cannot do it.  Shutting
+    down an idle socket is harmless (the pool is closed right after
+    anyway); any failure is ignored (best effort).
+    """
+    import socket as _socket
+
+    pool = getattr(getattr(client, "_transport", None), "_pool", None)
+    for conn in getattr(pool, "_connections", None) or ():
+        try:
+            stream = getattr(getattr(conn, "_connection", None), "_network_stream", None)
+            sock = stream.get_extra_info("socket") if stream is not None else None
+        except Exception:  # noqa: BLE001 - best effort
+            sock = None
+        if sock is not None:
+            try:
+                sock.shutdown(_socket.SHUT_RDWR)
+            except OSError:
+                pass
 
 
 def _iter_sse(lines: Iterator[str]) -> Iterator[str]:
