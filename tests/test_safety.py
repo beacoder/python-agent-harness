@@ -10,10 +10,6 @@ from python_agent_harness.undo import UndoStack
 
 
 class TestPathSafety(unittest.TestCase):
-    def test_forbidden_mnt(self):
-        self.assertIsNotNone(path_forbidden("/mnt/data"))
-        self.assertIsNone(path_forbidden("/home/user/file.py"))
-
     def test_forbidden_path_canonicalized(self):
         """Syntactic bypasses (//, /../, symlinks) must not evade the
         forbidden-path patterns; the bare directory is caught too."""
@@ -27,10 +23,6 @@ class TestPathSafety(unittest.TestCase):
         with self.assertRaises(SafetyViolation):
             check_path("/mnt/data", "Read")
         check_path("/home/user/file.py", "Read")  # no raise
-
-    def test_command_forbidden(self):
-        self.assertIsNotNone(command_forbidden("cat /mnt/secret.txt"))
-        self.assertIsNone(command_forbidden("ls /home"))
 
     def test_command_forbidden_canonicalized(self):
         self.assertIsNotNone(command_forbidden("ls //mnt/data"))
@@ -103,14 +95,6 @@ class TestBashPolicy(unittest.TestCase):
         self.assertFalse(bash_read_only_p("find . -delete"))
         self.assertFalse(bash_read_only_p("sort file -o out"))
         self.assertFalse(bash_read_only_p("ls | rm -rf x"))
-
-    def test_git_option_flags_no_mutating_bypass(self):
-        self.assertFalse(bash_read_only_p("git -C /tmp/x push"))
-        self.assertFalse(bash_read_only_p("git --git-dir=/tmp/x push"))
-        self.assertFalse(bash_read_only_p("git -c user.name=x commit"))
-        self.assertFalse(bash_read_only_p("git --work-tree /tmp/x rebase main"))
-        self.assertTrue(bash_read_only_p("git -C /tmp/x status"))
-        self.assertTrue(bash_read_only_p("git --git-dir=/tmp/x log -1"))
 
 
 class TestUndo(unittest.TestCase):

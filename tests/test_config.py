@@ -31,6 +31,7 @@ class TestConfigFile(unittest.TestCase):
         self.assertEqual(settings["base_url"], config.DEFAULT_LLM["base_url"])
         self.assertEqual(settings["model"], config.DEFAULT_LLM["model"])
         self.assertIsNone(settings["api_key"])
+        self.assertIsNone(settings["reasoning_effort"])
 
     def test_file_overrides_defaults(self):
         with tempfile.TemporaryDirectory() as d:
@@ -56,10 +57,6 @@ class TestConfigFile(unittest.TestCase):
             self.assertEqual(settings["max_tokens"], 2048)
             self.assertEqual(settings["timeout"], 30.0)
             self.assertEqual(settings["reasoning_effort"], "high")
-
-    def test_reasoning_effort_default_none(self):
-        settings = config.load_llm_config("/no/such/file.json")
-        self.assertIsNone(settings["reasoning_effort"])
 
     def test_reasoning_effort_unset_omitted_from_payload(self):
         from python_agent_harness.client import Client

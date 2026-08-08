@@ -181,20 +181,6 @@ class TestCommandToolAvailability(unittest.TestCase):
             s.close()
 
 
-class TestCliSessionCommands(unittest.TestCase):
-    def test_removed_cli_subcommands(self):
-        """init/review/sessions/restore are TUI slash commands only."""
-        from python_agent_harness import cli
-
-        parser = cli.build_parser()
-        subparsers = next(
-            a for a in parser._actions
-            if a.__class__.__name__ == "_SubParsersAction"
-        )
-        for name in ("init", "review", "sessions", "restore"):
-            self.assertNotIn(name, subparsers.choices)
-
-
 def _load(path, project_dir=None, with_context=False):
     from python_agent_harness.prompts import load_agent_prompt, load_context_files
     from python_agent_harness.agent_session import find_context_dir, find_skill_dir

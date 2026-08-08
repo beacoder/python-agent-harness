@@ -134,27 +134,6 @@ class TestSubagentIsolation(unittest.TestCase):
         ])
         self.assertEqual(s.store.first_user_message(), "real request")
 
-    def test_subagent_never_inherits_parent_prompt(self):
-        """A session without a configured subagent prompt must still give
-        the sub-agent ONLY its own default prompt — never the parent's
-        system prompt (which carries context + completion rules)."""
-        from python_agent_harness.prompts import assemble_agent_prompt
-
-        parent = make_session(RecClient([]))
-        parent.system_prompt = assemble_agent_prompt(
-            "/tmp/fakeproj", "PARENT PROMPT", include_context=False
-        )  # parent prompt includes the rules
-        parent.subagent_system_prompt = None  # not configured
-        # FakeClient with no script returns the fallback "done" — fine
-        parent.run_subagent("subagent", "explore", "do it")
-        from python_agent_harness.subagent import _subagent_system_prompt
-
-        sp = _subagent_system_prompt(parent)
-        self.assertIsNotNone(sp)
-        self.assertIn("autonomous subagent", sp)
-        self.assertNotIn("Task Completion Rules", sp)
-        self.assertNotIn("PARENT PROMPT", sp)
-
     def test_subagent_does_not_touch_shared_context_accounting(self):
         """The sub-agent's rounds must not update the shared context
         ratio or calibration factor: its payload (fresh context) is

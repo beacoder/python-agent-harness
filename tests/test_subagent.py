@@ -74,18 +74,6 @@ class TestSubagentPromptSelection(unittest.TestCase):
         self.assertEqual(session.client.systems, [default_sub])
         self.assertNotIn("MAIN AGENT PROMPT", session.client.systems[0])
 
-    def test_falls_back_when_session_lacks_attribute_entirely(self):
-        """Same fallback when the session object has no attribute at all."""
-        session = make_session("MAIN AGENT PROMPT", None, self._tmp.name)
-        del session.subagent_system_prompt  # simulate an older session object
-        run_subagent(session, "task", "do something")
-        from python_agent_harness import config as cfg
-        from python_agent_harness.prompts import load_agent_prompt
-
-        default_sub = load_agent_prompt(cfg.DEFAULT_SUBAGENT_PROMPT_FILE)
-        self.assertEqual(session.client.systems, [default_sub])
-        self.assertNotIn("MAIN AGENT PROMPT", session.client.systems[0])
-
     def test_plan_mode_reminder_prepended_but_prompt_still_subagent(self):
         session = make_session("MAIN", "SUB", self._tmp.name)
         session.plan_mode.set_mode(session.plan_mode.mode.PLAN, {
@@ -108,21 +96,11 @@ class TestSubagentPromptSelection(unittest.TestCase):
         self.assertTrue(result.startswith("Error:"))
         self.assertIn("risky task", result)
 
-    def test_default_session_gets_distinct_subagent_prompt_from_loader(self):
-        """cli.make_session() (not the bare AgentSession constructor) is
-        responsible for loading the bundled subagent prompt file by
-        default — it must differ from the main system_prompt."""
-        from python_agent_harness import config as cfg
-        from python_agent_harness.prompts import load_agent_prompt
-
-        main = load_agent_prompt(cfg.DEFAULT_AGENT_PROMPT_FILE)
-        sub = load_agent_prompt(cfg.DEFAULT_SUBAGENT_PROMPT_FILE)
-        self.assertIsNotNone(main)
-        self.assertIsNotNone(sub)
-        self.assertNotEqual(main, sub)
-        # a bare AgentSession() must NOT silently auto-load anything —
-        # defaulting is cli.make_session's responsibility, so passing
-        # nothing explicitly means "no subagent prompt" here.
+    def test_default_session_does_not_auto_load_prompt(self):
+        """A bare AgentSession() must NOT silently auto-load the bundled
+        subagent prompt — defaulting is cli.make_session's responsibility
+        (covered in test_cli.py); the bundled files themselves are
+        checked in test_prompts.py."""
         session = make_session("MAIN AGENT PROMPT", None, self._tmp.name)
         self.assertIsNone(session.subagent_system_prompt)
 

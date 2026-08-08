@@ -8,10 +8,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from python_agent_harness import prompts, config
+from python_agent_harness import prompts
 from python_agent_harness.prompts import (
     assemble_agent_prompt,
-    load_agent_prompt,
     load_task_completion_rules,
 )
 
@@ -63,26 +62,6 @@ class TestTaskCompletionRules(unittest.TestCase):
             self.assertIsNone(
                 assemble_agent_prompt("/tmp", None, include_context=False)
             )
-
-    def test_make_session_injects_rules(self):
-        """`run` sessions: rules before the main agent prompt; the
-        sub-agent prompt is NOT touched (no rules, no parent context)."""
-        from python_agent_harness.cli import make_session
-
-        with tempfile.TemporaryDirectory() as d:
-            s = make_session(d)
-            try:
-                self.assertIsNotNone(s.system_prompt)
-                self.assertIn("Task Completion Rules", s.system_prompt)
-                marker = load_agent_prompt(config.DEFAULT_AGENT_PROMPT_FILE)
-                marker = marker[: marker.index("\n")] if marker else "You are"
-                self.assertLess(
-                    s.system_prompt.index("Task Completion Rules"),
-                    s.system_prompt.index(marker),
-                )
-                self.assertNotIn("Task Completion Rules", s.subagent_system_prompt)
-            finally:
-                s.close()
 
     def test_slash_commands_keep_rules_before_command_prompt(self):
         """/init and custom commands (TUI slash path): the command

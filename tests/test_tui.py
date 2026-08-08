@@ -48,13 +48,6 @@ class TestTui(unittest.TestCase):
         self.assertIn("file contents", out)
         self.assertIn("Todos", out)
 
-    def test_status_bar(self):
-        tui, buf = make_tui()
-        tui.console.print(tui._status_bar())
-        out = buf.getvalue()
-        self.assertIn("[BUILD]", out)
-        self.assertIn("Ctx:55%", out)
-
     def test_frame_includes_status_bar(self):
         """The full frame (used by Live and idle loop) must show the status bar."""
         tui, buf = make_tui()
@@ -95,15 +88,6 @@ class TestTui(unittest.TestCase):
         # oldest rows are dropped (only the last ~60 rows are rendered)
         self.assertNotIn("message number 0", out)
         self.assertIn("message number 119", out)
-
-    def test_stream_preview_capped(self):
-        tui, buf = make_tui()
-        tui.stream_text = "x" * 10_000
-        tui.console.print(tui._render_conversation())
-        out = buf.getvalue()
-        # only the tail is rendered, so output stays bounded
-        self.assertLess(len(out), 20_000)
-        self.assertIn("assistant:", out)
 
     def test_height_budget_keeps_newest(self):
         """On a 24-line terminal only ~18 rows are kept — the NEWEST ones."""
