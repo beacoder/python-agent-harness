@@ -598,6 +598,23 @@ class Tui:
             budget -= est
         return kept[::-1]
 
+    def _dump_conversation(self) -> None:
+        """Print the full conversation into the terminal scrollback.
+
+        The Live display overwrites its frames in place and the frame
+        budget drops anything that doesn't fit the visible area, so the
+        conversation never reaches the terminal's scrollback during a
+        run.  When the run finishes, print it again as plain lines so
+        the user can scroll back through everything that happened.
+        """
+        rows = self._build_history_rows()
+        if not rows:
+            return
+        self.console.print()
+        self.console.print("[dim]— full conversation —[/dim]")
+        for row in rows:
+            self.console.print(row)
+
     def _visible_row_cap(self) -> int:
         """Max conversation rows that fit the visible terminal area.
 
@@ -865,6 +882,10 @@ class Tui:
                 self._flush()
             live.update(self._render_frame())
             self._flush()
+        # run finished: the last Live frame stays on screen, but the
+        # in-place redraws never reached the scrollback — print the
+        # full conversation so the user can scroll back through it
+        self._dump_conversation()
         return False
 
     def _run_dumb(self, worker: threading.Thread) -> bool:
@@ -886,6 +907,7 @@ class Tui:
             self._flush()
         self.console.print(self._render_frame())
         self._flush()
+        self._dump_conversation()
         return False
 
     def _flush(self) -> None:

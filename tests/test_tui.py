@@ -265,6 +265,57 @@ class TestTui(unittest.TestCase):
         rows_c = tui._history_rows()
         self.assertFalse(all(x is y for x, y in zip(rows_c, rows_b)))
 
+    def test_dump_conversation_full_history(self):
+        """After a run, the full conversation is printed as plain lines
+        (not Live frames) so it lands in the terminal scrollback —
+        including rows the visible frame budget would have dropped."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content=f"message number {i}")
+            for i in range(120)
+        ]
+        tui._dump_conversation()
+        out = buf.getvalue()
+        self.assertIn("message number 0", out)    # oldest rows included
+        self.assertIn("message number 119", out)  # newest rows included
+        self.assertIn("full conversation", out)
+
+    def test_dump_conversation_unlimited(self):
+        """No line cap: a huge conversation is dumped in full, oldest
+        and newest rows alike."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content=f"m{i}") for i in range(3000)
+        ]
+        tui._dump_conversation()
+        out = buf.getvalue()
+        self.assertIn("m0", out)      # oldest row included
+        self.assertIn("m2999", out)   # newest row included
+        self.assertNotIn("omitted", out)
+
+    def test_dump_conversation_empty_noop(self):
+        """No messages → no dump, no separator line."""
+        tui, buf = make_tui()
+        tui.session.last_messages = []
+        tui._dump_conversation()
+        self.assertEqual(buf.getvalue(), "")
+
+    def test_run_live_dumps_conversation_at_end(self):
+        """When a run finishes normally, _run_live prints the full
+        conversation into the scrollback after the Live frame."""
+        from types import SimpleNamespace
+
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="scrollback content"),
+            Message(role="assistant", content="final answer"),
+        ]
+        tui._run_live(SimpleNamespace(is_alive=lambda: False))
+        out = buf.getvalue()
+        self.assertIn("scrollback content", out)
+        self.assertIn("final answer", out)
+        self.assertIn("full conversation", out)
+
     def test_render_fast_with_cached_history(self):
         """Rendering with cached history + growing stream must stay fast."""
         import time
