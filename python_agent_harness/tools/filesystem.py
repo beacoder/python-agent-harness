@@ -3,6 +3,18 @@
 Glob is git-aware (git ls-files, .gitignore-respecting) with a tree
 fallback; Grep prefers rg, then git grep, then plain grep — mirroring
 gptel-agent-harness-tools.el.
+
+Oversized Glob/Grep results are spilled to a temp file (mirroring
+`gptel-agent--truncate-buffer` in gptel-agent-tools.el): the tool
+result then carries a short preview plus the temp-file path, so the
+full output remains readable via the Read tool.
+
+Read mirrors `gptel-agent--read-file-lines`: whole-file reads are
+refused above READ_SIZE_LIMIT (400 KB, matching
+`gptel-agent-read-file-size-threshold`), and line ranges are streamed
+instead of loading the whole file into memory.  Oversized range
+results are spilled to a temp file like Glob/Grep results, so nothing
+is ever silently truncated.
 """
 
 from __future__ import annotations
@@ -11,33 +23,98 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from .base import Tool, ToolContext
 from ..diffrender import unified_diff
+from ..safety import path_forbidden
 
-MAX_OUTPUT = 200_000  # truncation cap (chars)
+MAX_OUTPUT = 20_000   # spill threshold (chars), matching gptel-agent--truncate-buffer
+SPOOL_LINES = 50      # preview lines kept when results are spilled
+READ_SIZE_LIMIT = 400 * 1024  # whole-file reads above this are refused
+                              # (mirrors gptel-agent-read-file-size-threshold)
 
 
 def _truncate(text: str, label: str = "output") -> str:
+    """In-memory truncation fallback (used when spooling to disk fails)."""
     if len(text) > MAX_OUTPUT:
         return text[:MAX_OUTPUT] + f"\n... [truncated {label}]"
     return text
 
 
+def _spool_dir() -> str:
+    """Reliable temp dir for spilled results, skipping forbidden mounts."""
+    candidates = [
+        os.environ.get("TMPDIR"),
+        os.environ.get("TMP"),
+        os.environ.get("TEMP"),
+        tempfile.gettempdir(),
+    ]
+    for d in candidates:
+        if not d:
+            continue
+        d = os.path.abspath(d)
+        if path_forbidden(d):
+            continue
+        return d
+    return "/tmp"
+
+
+def _spool(text: str, label: str) -> str:
+    """Spill oversized tool output to a temp file; return a preview.
+
+    Mirrors `gptel-agent--truncate-buffer': when TEXT exceeds
+    MAX_OUTPUT chars the full content is written to a temp file and the
+    returned string becomes a header (size + path), the first
+    SPOOL_LINES lines, and a footer telling the agent to Read the file.
+    Falls back to in-memory truncation if the temp file cannot be
+    written."""
+    if len(text) <= MAX_OUTPUT:
+        return text
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    try:
+        fd, temp_file = tempfile.mkstemp(
+            prefix=f"python-agent-harness-{label}-{stamp}-",
+            suffix=".txt",
+            dir=_spool_dir(),
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+    except OSError:
+        return _truncate(text, label)
+    lines = text.splitlines()
+    preview = "\n".join(lines[:SPOOL_LINES])
+    return (
+        f"{label} results too large ({len(text)} chars, {len(lines)} lines) "
+        f"for context window.\n"
+        f"Stored in: {temp_file}\n\n"
+        f"First {SPOOL_LINES} lines:\n\n"
+        f"{preview}\n\n"
+        f'[Use Read tool with file_path="{temp_file}" to view full results]'
+    )
+
+
 class Read(Tool):
     name = "Read"
     description = (
-        "Read the contents of a file. Reads whole file by default, "
-        "or a specific line range (start_line/end_line, both inclusive)."
+        "Read file contents between specified line numbers `start_line` and "
+        "`end_line`, with both ends included.\n\n"
+        "Consider using the \"Grep\" tool to find the right range to read first.\n\n"
+        "Reads the whole file if the line range is not provided.\n\n"
+        f"Files over {READ_SIZE_LIMIT // 1024} KB in size can only be read by "
+        "specifying a line range.\n"
+        "Very large line ranges are spilled to a temp file (see the 'Stored "
+        "in:' path); use Read to view the full output."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "file_path": {"type": "string", "description": "Path of the file to read"},
-            "start_line": {"type": "integer", "description": "First line to read"},
-            "end_line": {"type": "integer", "description": "Last line to read"},
+            "file_path": {"type": "string", "description": "The path to the file to be read"},
+            "start_line": {"type": "integer", "description": "The line to start reading from, defaults to the start of the file"},
+            "end_line": {"type": "integer", "description": "The line up to which to read, defaults to the end of the file."},
         },
         "required": ["file_path"],
     }
@@ -45,35 +122,69 @@ class Read(Tool):
     def run(self, args: dict, ctx: ToolContext) -> str:
         path = args["file_path"]
         ctx.guard_path(path, "Read")
-        full = os.path.abspath(path)
+        full = os.path.realpath(os.path.abspath(path))
+        if os.path.isdir(full):
+            return f"Error: cannot read {path}: is a directory"
         try:
-            with open(full, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
+            size = os.path.getsize(full)
         except OSError as e:
             return f"Error: cannot read {path}: {e}"
         start = args.get("start_line")
         end = args.get("end_line")
         if start is None and end is None:
-            return _truncate("".join(lines), "read")
+            if size > READ_SIZE_LIMIT:
+                return (
+                    f"Error: File is too large ({size // 1024} KB > "
+                    f"{READ_SIZE_LIMIT // 1024} KB). Please specify a line "
+                    "range to read"
+                )
+            try:
+                with open(full, "r", encoding="utf-8", errors="replace") as f:
+                    return f.read()
+            except OSError as e:
+                return f"Error: cannot read {path}: {e}"
         start = int(start or 1)
-        end = int(end) if end is not None else len(lines)
         if start < 1:
             start = 1
-        if end > len(lines):
-            end = len(lines)
-        if start > end:
-            return f"Error: start_line {start} > end_line {end}"
-        sel = lines[start - 1:end]
-        text = "".join(sel)
-        prefix = f"Showing lines {start}-{end} of {len(lines)}:\n\n"
-        return prefix + _truncate(text, "read")
+        if end is not None:
+            end = int(end)
+            if start > end:
+                return f"Error: start_line {start} > end_line {end}"
+        # Stream the file line by line instead of loading it whole, so
+        # huge files can be read in ranges with constant memory.
+        selected: list[str] = []
+        total: int | None = None   # exact line count once EOF is reached
+        reached_eof = True
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as f:
+                for lineno, line in enumerate(f, 1):
+                    if end is not None and lineno > end:
+                        reached_eof = False
+                        break
+                    total = lineno
+                    if lineno >= start:
+                        selected.append(line)
+        except OSError as e:
+            return f"Error: cannot read {path}: {e}"
+        if end is not None and reached_eof and total is not None:
+            end = min(end, total)   # clamp to the real file end
+        if start > (total or 0):
+            return f"Error: start_line {start} > end_line {end if end is not None else total}"
+        end_eff = end if end is not None else total
+        if total is not None and reached_eof:
+            header = f"Showing lines {start}-{end_eff} of {total}:\n\n"
+        else:
+            header = f"Showing lines {start}-{end_eff}:\n\n"
+        return _spool(header + "".join(selected), "read")
 
 
 class GlobTool(Tool):
     name = "Glob"
     description = (
         "Find files by glob pattern (e.g. '*.py' or 'src/**/test*.py'). "
-        "Returns absolute paths. Git-aware: respects .gitignore."
+        "Returns absolute paths. Git-aware: respects .gitignore. "
+        "Oversized results are spilled to a temp file (see the 'Stored in:' "
+        "path); use Read to view the full output."
     )
     parameters = {
         "type": "object",
@@ -136,9 +247,9 @@ class GlobTool(Tool):
             except (OSError, subprocess.TimeoutExpired):
                 proc = None
             if proc is not None and proc.returncode == 0:
-                return _truncate(proc.stdout, "glob")
+                return _spool(proc.stdout, "glob")
             if proc is not None and proc.returncode != 0:
-                return _truncate(
+                return _spool(
                     proc.stdout + f"Glob failed with exit code {proc.returncode}\n.STDOUT:\n\n",
                     "glob",
                 )
@@ -173,14 +284,16 @@ def _git_glob_results(
     out = "\n".join(os.path.join(git_root, l) for l in lines)
     if not out:
         return ""
-    return _truncate(out + "\n", "glob")
+    return _spool(out + "\n", "glob")
 
 
 class Grep(Tool):
     name = "Grep"
     description = (
         "Search file contents with a regular expression. "
-        "Use this for content search; use Glob for filename search."
+        "Use this for content search; use Glob for filename search. "
+        "Oversized results are spilled to a temp file (see the 'Stored in:' "
+        "path); use Read to view the full output."
     )
     parameters = {
         "type": "object",
@@ -265,7 +378,7 @@ def _grep_out(proc: subprocess.CompletedProcess, backend: str) -> str:
             f"Error: search failed with exit-code {proc.returncode}.  "
             f"Tool output:\n\n{text}"
         )
-    return _truncate(text, "grep")
+    return _spool(text, "grep")
 
 
 class Mkdir(Tool):

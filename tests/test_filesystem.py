@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import unittest
 
 from python_agent_harness.tools.base import ToolContext
-from python_agent_harness.tools.filesystem import Edit, Write, _apply_diff
+from python_agent_harness.tools.filesystem import Edit, Grep, Read, Write, _apply_diff
+
+
+def _big_output(lines: int = 6000, width: int = 80) -> str:
+    return "".join(f"line{i:04d}-{'x' * width}\n" for i in range(lines))
 
 
 class FakeSession:
@@ -112,6 +117,171 @@ class TestApplyDiff(unittest.TestCase):
         self.assertNotIn("sub/deep/c.py", out1)
         out_none = _git_glob_results(raw, "/repo", "/repo", None, "*.py")
         self.assertIn("sub/deep/c.py", out_none)
+
+
+class TestSpool(unittest.TestCase):
+    """Oversized Glob/Grep results must be spilled to a temp file (like
+    `gptel-agent--truncate-buffer` in the elisp harness), with a preview
+    plus a Read instruction, so no matches are lost."""
+
+    def setUp(self):
+        import python_agent_harness.tools.filesystem as fs
+
+        self.fs = fs
+        self.orig_dir = fs._spool_dir
+        self.tmp = tempfile.TemporaryDirectory()
+        fs._spool_dir = lambda: self.tmp.name
+
+    def tearDown(self):
+        self.fs._spool_dir = self.orig_dir
+        self.tmp.cleanup()
+
+    def test_small_output_passes_through(self):
+        text = "small result\n"
+        self.assertEqual(self.fs._spool(text, "grep"), text)
+
+    def test_large_output_spills_to_temp_file(self):
+        big = _big_output()
+        self.assertGreater(len(big), self.fs.MAX_OUTPUT)
+        result = self.fs._spool(big, "grep")
+        self.assertIn("grep results too large", result)
+        self.assertIn("Stored in:", result)
+        self.assertIn(f"First {self.fs.SPOOL_LINES} lines", result)
+        m = re.search(r'file_path="([^"]+)"', result)
+        self.assertIsNotNone(m, result)
+        self.assertTrue(os.path.isabs(m.group(1)))
+        with open(m.group(1)) as f:
+            self.assertEqual(f.read(), big)
+        self.assertIn("line0000-", result)
+        self.assertNotIn("line5999-", result)
+
+    def test_large_glob_output_spills(self):
+        big = "\n".join(f"/repo/f{i:05d}.py" for i in range(20000))
+        self.assertGreater(len(big), self.fs.MAX_OUTPUT)
+        result = self.fs._git_glob_results(big, "/repo", "/repo", None, "*.py")
+        self.assertIn("glob results too large", result)
+        m = re.search(r'file_path="([^"]+)"', result)
+        self.assertIsNotNone(m, result)
+        with open(m.group(1)) as f:
+            self.assertEqual(f.read(), big + "\n")
+
+    def test_grep_tool_spills_large_result(self):
+        import shutil
+
+        if not shutil.which("grep"):
+            self.skipTest("grep not available")
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "data.txt"), "w") as f:
+                # 1500 matching lines; --max-count=1000 + -C15 context
+                # inflates output well beyond MAX_OUTPUT
+                f.write(
+                    "".join(
+                        f"line{i:04d}-needle-{'x' * 300}\n" for i in range(1500)
+                    )
+                )
+            ctx, _ = make_ctx()
+            result = Grep().run(
+                {"regex": "needle", "path": d, "context_lines": 15}, ctx
+            )
+            self.assertIn("grep results too large", result)
+            m = re.search(r'file_path="([^"]+)"', result)
+            self.assertIsNotNone(m, result)
+            self.assertGreater(os.path.getsize(m.group(1)), self.fs.MAX_OUTPUT)
+
+    def test_spool_falls_back_to_truncation_when_tempdir_unwritable(self):
+        self.fs._spool_dir = lambda: "/dev/null/definitely-not-a-dir"
+        big = _big_output()
+        result = self.fs._spool(big, "grep")
+        self.assertIn("[truncated grep]", result)
+        self.assertNotIn("Stored in:", result)
+
+
+class TestReadTool(unittest.TestCase):
+    """Read mirrors `gptel-agent--read-file-lines`: whole-file reads are
+    refused above READ_SIZE_LIMIT, line ranges are streamed instead of
+    loading the file, and oversized range results spill to a temp file
+    rather than being silently truncated."""
+
+    def setUp(self):
+        import python_agent_harness.tools.filesystem as fs
+
+        self.fs = fs
+        self.orig_dir = fs._spool_dir
+        self.tmp = tempfile.TemporaryDirectory()
+        fs._spool_dir = lambda: self.tmp.name
+
+    def tearDown(self):
+        self.fs._spool_dir = self.orig_dir
+        self.tmp.cleanup()
+
+    def _write(self, lines: int, width: int = 20) -> str:
+        p = os.path.join(self.tmp.name, f"f{lines}x{width}.txt")
+        with open(p, "w") as f:
+            for i in range(lines):
+                f.write(f"line{i:05d}-{'x' * width}\n")
+        return p
+
+    def test_full_read_small_file_returns_raw_content(self):
+        p = self._write(5)
+        out = Read().run({"file_path": p}, ToolContext())
+        self.assertIn("line00000-", out)
+        self.assertIn("line00004-", out)
+        self.assertNotIn("Showing lines", out)
+
+    def test_full_read_too_large_refuses_like_gptel(self):
+        p = self._write(20000)
+        self.assertGreater(os.path.getsize(p), self.fs.READ_SIZE_LIMIT)
+        out = Read().run({"file_path": p}, ToolContext())
+        self.assertIn("File is too large", out)
+        self.assertIn("specify a line range", out)
+        self.assertNotIn("line00000-", out)
+
+    def test_range_read_streams_selected_lines(self):
+        p = self._write(1000)
+        out = Read().run(
+            {"file_path": p, "start_line": 5, "end_line": 7}, ToolContext()
+        )
+        self.assertIn("Showing lines 5-7:", out)
+        self.assertIn("line00004-", out)
+        self.assertIn("line00006-", out)
+        self.assertNotIn("line00007-", out)
+
+    def test_range_read_reports_total_when_eof_reached(self):
+        p = self._write(10)
+        out = Read().run(
+            {"file_path": p, "start_line": 8, "end_line": 999}, ToolContext()
+        )
+        self.assertIn("Showing lines 8-10 of 10:", out)
+        self.assertIn("line00009-", out)
+
+    def test_range_read_errors_on_start_gt_end(self):
+        p = self._write(10)
+        out = Read().run(
+            {"file_path": p, "start_line": 5, "end_line": 3}, ToolContext()
+        )
+        self.assertIn("start_line 5 > end_line 3", out)
+
+    def test_range_read_errors_when_start_beyond_eof(self):
+        p = self._write(10)
+        out = Read().run({"file_path": p, "start_line": 99}, ToolContext())
+        self.assertIn("start_line 99 > end_line 10", out)
+
+    def test_large_range_spills_to_temp_file(self):
+        p = self._write(20000, width=80)
+        out = Read().run(
+            {"file_path": p, "start_line": 1, "end_line": 20000}, ToolContext()
+        )
+        self.assertIn("read results too large", out)
+        m = re.search(r'file_path="([^"]+)"', out)
+        self.assertIsNotNone(m, out)
+        with open(m.group(1)) as f:
+            content = f.read()
+        self.assertIn("Showing lines 1-20000 of 20000:", content)
+        self.assertIn("line19999-", content)
+
+    def test_read_directory_errors(self):
+        out = Read().run({"file_path": self.tmp.name}, ToolContext())
+        self.assertIn("Error", out)
 
 
 class TestEditTool(unittest.TestCase):
