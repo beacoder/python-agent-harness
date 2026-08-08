@@ -1,10 +1,18 @@
 """Client streaming tests against the in-process fake OpenAI server."""
 
+import os
+import sys
 import unittest
 
 from python_agent_harness.client import Client
+from python_agent_harness.models import Message
 
-from fake_openai_server import serve
+# `discover -s tests` puts the tests dir on sys.path, but a direct
+# `-m unittest tests.test_client` invocation does not — make the
+# sibling helper importable either way.
+sys.path.insert(0, os.path.dirname(__file__))
+
+from fake_openai_server import serve  # noqa: E402
 
 
 def make_client() -> Client:
@@ -22,9 +30,7 @@ class TestClientStreaming(unittest.TestCase):
         c = make_client()
         deltas: list[str] = []
         msg, usage = c.chat(
-            [__import__("python_agent_harness.models", fromlist=["Message"]).Message(
-                role="user", content="hi"
-            )],
+            [Message(role="user", content="hi")],
             on_delta=deltas.append,
         )
         self.assertEqual("".join(deltas), "thinking hardHello world")

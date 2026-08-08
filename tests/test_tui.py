@@ -241,6 +241,43 @@ class TestTui(unittest.TestCase):
         self.assertIn("💭 ...", out)
         self.assertNotIn("pensive thoughts", out)
 
+    def test_reasoning_marker_before_tool_call_label(self):
+        """For a reasoned tool call the marker comes first: reasoning
+        happened before the tool invocation, so it renders above the
+        tool label."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="read the file"),
+            Message(
+                role="assistant", content="let me check the path first",
+                reasoning="let me check the path first",
+                tool_calls=[ToolCall(id="1", name="Read", arguments="{}")],
+            ),
+            Message(role="tool", content="file contents", tool_call_id="1", name="Read"),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("💭 ...", out)
+        self.assertIn("🤖 Read", out)
+        self.assertLess(out.index("💭 ..."), out.index("🤖 Read"))
+        self.assertNotIn("let me check", out)
+
+    def test_non_string_reasoning_does_not_crash(self):
+        """A malformed (non-string) reasoning value must not raise —
+        display falls back to the raw content."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="go"),
+            Message(
+                role="assistant", content="full text here",
+                reasoning=["not", "a", "string"],
+            ),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("full text here", out)
+        self.assertNotIn("💭 ...", out)
+
     def test_strip_reasoning(self):
         """_strip_reasoning removes the leading reasoning prefix and
         leaves non-matching text untouched."""
