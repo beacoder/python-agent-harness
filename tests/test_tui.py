@@ -168,8 +168,11 @@ class TestTui(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("build the thing", out)
         self.assertIn("Done. All tests pass.", out)
-        self.assertNotIn("FINAL CHECK", out)
-        self.assertNotIn("Status: SUCCESS", out)
+        # the [FINAL CHECK] block on a content-carrying reply is hidden,
+        # but a reply that IS only the check block stays visible — the
+        # model's only visible response must not vanish
+        self.assertNotIn("FINAL CHECK\n- Goal: build the thing", out)
+        self.assertIn("Status: SUCCESS", out)
         self.assertNotIn(config.NUDGE_MESSAGE, out)
         # the agent loop's history is untouched
         self.assertEqual(
@@ -185,7 +188,7 @@ class TestTui(unittest.TestCase):
     def test_final_check_without_header_stripped(self):
         """A reply that answers the completion rules WITHOUT the
         [FINAL CHECK] header (just the checklist bullets) is hidden too:
-        at least 2 of Goal:/Status:/Evidence: in the trailing block."""
+        all three of Goal:/Status:/Evidence: in the trailing block."""
         tui, buf = make_tui()
         tui.session.last_messages = [
             Message(role="user", content="build the thing"),
@@ -202,9 +205,9 @@ class TestTui(unittest.TestCase):
         self.assertNotIn("Status: SUCCESS", out)
         self.assertNotIn("Evidence:", out)
 
-    def test_final_check_pure_bullets_stripped(self):
-        """A pure-checklist reply (no header, no content, "•" bullets)
-        vanishes entirely from the panel."""
+    def test_final_check_pure_bullets_kept(self):
+        """A pure-checklist reply (no header, no other content) stays
+        visible — stripping it would hide the model's only response."""
         tui, buf = make_tui()
         tui.session.last_messages = [
             Message(role="user", content="build the thing"),
@@ -215,23 +218,28 @@ class TestTui(unittest.TestCase):
         ]
         tui.console.print(tui._render_conversation())
         out = buf.getvalue()
-        self.assertNotIn("Status", out)
-        self.assertNotIn("Evidence", out)
+        self.assertIn("Status: SUCCESS", out)
+        self.assertIn("Evidence: done", out)
+        self.assertIn("Goal: build it", out)
 
-    def test_regular_reply_mentioning_one_label_kept(self):
-        """A genuine reply mentioning a single checklist label is NOT
-        stripped — at least 2 distinct labels are required."""
+    def test_partial_checklist_kept(self):
+        """A genuine reply ending in only two checklist-looking bullets
+        is NOT stripped — all three labels are required for the
+        no-header fallback, so real summary bullets survive (also
+        covers the single-label case, which takes the same path)."""
         tui, buf = make_tui()
         tui.session.last_messages = [
             Message(role="user", content="build the thing"),
             Message(
                 role="assistant",
-                content="Goal: build the thing. Now verifying the build...",
+                content="Deployed.\n- Status: SUCCESS\n- Goal: deploy the service",
             ),
         ]
         tui.console.print(tui._render_conversation())
         out = buf.getvalue()
-        self.assertIn("Goal: build the thing", out)
+        self.assertIn("Deployed.", out)
+        self.assertIn("Status: SUCCESS", out)
+        self.assertIn("Goal: deploy the service", out)
 
     def test_final_check_mid_message_not_stripped(self):
         """Checklist bullets in the MIDDLE of a reply (followed by real
@@ -257,6 +265,15 @@ class TestTui(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertIn("Working...", row.plain)
         self.assertNotIn("Status:", row.plain)
+
+    def test_stream_pure_final_check_kept(self):
+        """A stream that is only the check block stays on screen — the
+        stream row must never go blank on the final reply."""
+        tui, _ = make_tui()
+        tui.stream_text = "[FINAL CHECK]\n- Status: SUCCESS"
+        row = tui._stream_row()
+        self.assertIsNotNone(row)
+        self.assertIn("Status: SUCCESS", row.plain)
 
     def test_reasoning_streams_normally(self):
         """While streaming, reasoning content shows up live like any

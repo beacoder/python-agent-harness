@@ -147,15 +147,20 @@ def _strip_final_check(text: str) -> str:
 
     - an explicit "[FINAL CHECK]" header: everything from it is dropped;
     - the bare checklist: a trailing block of Goal:/Status:/Evidence:
-      bullets with at least 2 distinct labels (fallback for replies
-      that answer the completion rules without the header).
+      bullets with ALL THREE labels (fallback for replies that answer
+      the completion rules without the header; requiring all three
+      avoids eating genuine summary bullets like "- Status: ...").
 
-    The agent loop still produces and stores the message unchanged;
-    this only trims it from the TUI display.
+    The strip NEVER empties a reply: if the check block is the whole
+    message (no real content before it), the message is kept intact —
+    hiding it would hide the model's only visible response.  The agent
+    loop still produces and stores the message unchanged; this only
+    trims it from the TUI display.
     """
     idx = text.find("[FINAL CHECK]")
     if idx != -1:
-        return text[:idx].rstrip()
+        prefix = text[:idx].rstrip()
+        return prefix if prefix else text
     lines = text.splitlines()
     labels: set[str] = set()
     first: int | None = None
@@ -166,13 +171,14 @@ def _strip_final_check(text: str) -> str:
         labels.add(label)
         if first is None:
             first = i
-    if len(labels) < 2 or first is None:
+    if len(labels) < len(_FINAL_CHECK_LABELS) or first is None:
         return text
     # only a TRAILING bullet block is the completion check — bullets in
     # the middle of a real reply (followed by more content) stay visible
     if not all(not line.strip() or _is_bullet_line(line) for line in lines[first:]):
         return text
-    return "\n".join(lines[:first]).rstrip()
+    prefix = "\n".join(lines[:first]).rstrip()
+    return prefix if prefix else text
 
 
 def _strip_reasoning(text: str, reasoning: str) -> str:
