@@ -76,6 +76,74 @@ class TestTui(unittest.TestCase):
         self.assertNotIn("You:", out)
         self.assertNotIn("Agent:", out)
 
+    def test_injected_user_prompts_hidden(self):
+        """Auto-injected user prompts (plan / plan-mode / build-switch
+        reminders, plan-exit notices) are harness bookkeeping — the TUI
+        shows only what the user actually typed.  Messages flagged
+        ``injected`` never render as user rows; real user input stays."""
+        from python_agent_harness import config
+
+        tui, buf = make_tui()
+        plan_file = "/tmp/python-agent-plans-proj-ab12cd/PLAN.md"
+        tui.session.last_messages = [
+            Message(role="user", content="real typed request"),
+            Message(role="user", content="plan.txt contents", injected=True),
+            Message(role="user", content="plan-mode.txt contents", injected=True),
+            Message(
+                role="user",
+                content=config.PLAN_EXIT_APPROVED_MESSAGE % plan_file,
+                injected=True,
+            ),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("real typed request", out)
+        self.assertNotIn("plan.txt contents", out)
+        self.assertNotIn("plan-mode.txt contents", out)
+        self.assertNotIn("plan at ", out)
+        self.assertNotIn(plan_file, out)
+        # the stored messages are untouched
+        self.assertEqual(len(tui.session.last_messages), 4)
+
+    def test_restored_injected_prompts_hidden(self):
+        """Sessions restored from disk lose the ``injected`` flag (plain
+        markdown round-trip) — the content checks must still keep
+        harness prompts out of the panel: nudge, the
+        <system-reminder>-wrapped plan/build-switch prompts, and the
+        plan-exit approval notice."""
+        from python_agent_harness import config
+
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="typed during the restored session"),
+            Message(role="user", content=config.NUDGE_MESSAGE),
+            Message(
+                role="user",
+                content=(
+                    "<system-reminder>\n# Plan Mode - System Reminder\n\n"
+                    "plan.txt body"
+                ),
+            ),
+            Message(
+                role="user",
+                content=(
+                    "<system-reminder>\nYour operational mode has changed "
+                    "from plan to build.\nYou are no longer in read-only mode."
+                ),
+            ),
+            Message(
+                role="user",
+                content=config.PLAN_EXIT_APPROVED_MESSAGE % "/old/plan/PLAN.md",
+            ),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("typed during the restored session", out)
+        self.assertNotIn("Plan Mode - System Reminder", out)
+        self.assertNotIn("no longer in read-only mode", out)
+        self.assertNotIn(config.NUDGE_MESSAGE, out)
+        self.assertNotIn("The plan at ", out)
+
     def test_nudge_and_final_check_hidden(self):
         """Harness bookkeeping is hidden from the panel: the injected
         completion-nudge user prompt and the assistant's [FINAL CHECK]

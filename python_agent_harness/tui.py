@@ -85,6 +85,31 @@ def _tool_result_preview(content: str) -> str:
 _FINAL_CHECK_LABELS = ("Goal:", "Status:", "Evidence:")
 _FINAL_CHECK_BULLETS = ("-", "•", "*")
 
+_PLAN_EXIT_PREFIX = "The plan at "
+_PLAN_EXIT_SUFFIX = " has been approved, you can now edit files. Execute the plan"
+
+
+def _is_plan_exit_notice(text: str) -> bool:
+    """True for the plan-exit approval notice (PLAN_EXIT_APPROVED_MESSAGE
+    with the plan file path substituted in)."""
+    return text.startswith(_PLAN_EXIT_PREFIX) and text.endswith(_PLAN_EXIT_SUFFIX)
+
+
+def _is_injected_user_text(text: str) -> bool:
+    """True for harness-injected user messages (not user input).
+
+    Live sessions flag injected messages directly; these content checks
+    cover restored sessions, where the flag is lost in the markdown
+    round-trip: the completion nudge, the <system-reminder>-wrapped
+    plan/build-switch prompts (plan.txt, plan-mode.txt, build-switch.txt
+    all start with the reminder tag), and the plan-exit approval notice.
+    """
+    if text == config.NUDGE_MESSAGE:
+        return True
+    if text.startswith("<system-reminder>"):
+        return True
+    return _is_plan_exit_notice(text)
+
 
 def _is_final_check_bullet(line: str) -> str | None:
     """Return the checklist label if LINE is a Goal/Status/Evidence bullet.
@@ -506,10 +531,14 @@ class Tui:
                 rows.append(Text("📦 " + _tail_chars(m.text(), 200), style="dim italic"))
                 continue
             if m.role == "user":
-                # harness-injected completion nudge: it drives the agent
-                # loop, but the user never typed it — keep it out of the
-                # conversation panel
-                if m.text() == config.NUDGE_MESSAGE:
+                # harness-injected messages (completion nudge,
+                # plan/build-mode prompts, build-switch notices,
+                # plan-exit approval): they drive the agent loop, but the
+                # user never typed them — keep them out of the
+                # conversation panel.  The flag covers live sessions; the
+                # content checks catch restored sessions, where the flag
+                # is lost in the markdown round-trip.
+                if m.injected or _is_injected_user_text(m.text()):
                     continue
                 body = _tail_lines(m.text(), 12)
                 if body.strip():
