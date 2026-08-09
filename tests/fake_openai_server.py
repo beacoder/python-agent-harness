@@ -9,6 +9,12 @@ NON_STREAM_RESPONSE: dict | None = None
 # Queue of non-streaming response bodies consumed in order; when
 # exhausted, NON_STREAM_RESPONSE / the default reply is used.
 NON_STREAM_SEQUENCE: list[dict] = []
+# Queue of HTTP statuses consumed in order; a non-200 entry makes the
+# server respond with that error status instead of a reply (used to
+# exercise client retry behavior).  When exhausted, 200 is used.
+STATUS_QUEUE: list[int] = []
+# Optional Retry-After header (seconds) attached to error responses.
+RETRY_AFTER_HEADER: str | None = None
 # Every request body received, in order (for asserting payloads).
 REQUEST_BODIES: list[dict] = []
 
@@ -17,7 +23,10 @@ def reset_state() -> None:
     global NON_STREAM_RESPONSE
     NON_STREAM_RESPONSE = None
     NON_STREAM_SEQUENCE.clear()
+    STATUS_QUEUE.clear()
     REQUEST_BODIES.clear()
+    global RETRY_AFTER_HEADER
+    RETRY_AFTER_HEADER = None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -25,6 +34,16 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
         REQUEST_BODIES.append(body)
+        status = STATUS_QUEUE.pop(0) if STATUS_QUEUE else 200
+        if status != 200:
+            err = b'{"error": "transient failure"}'
+            self.send_response(status)
+            if RETRY_AFTER_HEADER is not None:
+                self.send_header("Retry-After", RETRY_AFTER_HEADER)
+            self.send_header("Content-Length", str(len(err)))
+            self.end_headers()
+            self.wfile.write(err)
+            return
         stream = body.get("stream", False)
         if stream:
             chunks = [

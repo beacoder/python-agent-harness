@@ -21,7 +21,8 @@ class FakeClient:
         self.sent_tools = []
 
     def chat(self, messages, tools=None, system=None, temperature=None,
-             max_tokens=None, reasoning_effort=None, on_delta=None, stream=True):
+             max_tokens=None, reasoning_effort=None, on_delta=None, stream=True,
+             cancel_check=None):
         self.n += 1
         self.sent_tools.append([t.name for t in tools] if tools else None)
         if self.n == 1:

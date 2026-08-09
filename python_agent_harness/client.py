@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -21,6 +22,46 @@ from .models import Message, ToolCall, ToolSpec, Usage
 
 class ApiError(Exception):
     """Raised when the API call itself fails (network/HTTP)."""
+
+
+class RetryableApiError(ApiError):
+    """A transient failure (rate limit, server error) safe to retry.
+
+    Carries the server's ``Retry-After`` value (if any) so the retry
+    backoff can honor it.  Permanent errors remain a plain ApiError.
+    """
+
+    def __init__(self, message: str, retry_after: str | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _retryable_status(status: int) -> bool:
+    """429 and 5xx are transient; every other error is permanent."""
+    return status == 429 or status >= 500
+
+
+def _retry_delay(
+    attempt: int,
+    retry_after: str | None,
+    base_delay: float,
+    max_delay: float,
+) -> float:
+    """Backoff delay for the failed ATTEMPT (1 = first attempt).
+
+    Computed as ``base_delay`` doubled per attempt, capped at
+    ``max_delay``, plus jitter.  A ``Retry-After`` header (seconds)
+    from a 429 response wins when present.
+    """
+    if isinstance(retry_after, str) and retry_after.strip():
+        try:
+            secs = float(retry_after.strip())
+        except ValueError:
+            pass
+        else:
+            return min(secs, max_delay) + random.uniform(0, 0.5)
+    delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+    return delay + random.uniform(0, delay * 0.3)
 
 
 def _llm_log_path() -> Path:
@@ -113,12 +154,22 @@ class Client:
         model: str | None = None,
         timeout: float = 600.0,
         verify: str | bool | None = None,
+        retry_max: int | None = None,
+        retry_base_delay: float | None = None,
+        retry_max_delay: float | None = None,
     ) -> None:
         self.base_url = (base_url or config.DEFAULT_BASE_URL).rstrip("/")
         self.api_key = api_key or _default_api_key()
         self.model = model or config.DEFAULT_MODEL
         self.timeout = timeout
         self.verify = verify if verify is not None else _resolve_ca_bundle()
+        self.retry_max = config.API_RETRY_MAX if retry_max is None else retry_max
+        self.retry_base_delay = (
+            config.API_RETRY_BASE_DELAY if retry_base_delay is None else retry_base_delay
+        )
+        self.retry_max_delay = (
+            config.API_RETRY_MAX_DELAY if retry_max_delay is None else retry_max_delay
+        )
         self._http = httpx.Client(timeout=timeout, verify=self.verify)
         self.log_path: Path | None = _llm_log_path() if config.LLM_LOG_ENABLED else None
 
@@ -201,6 +252,7 @@ class Client:
         on_delta: Callable[[str], None] | None = None,
         on_tool_call: Callable[[str, str, str], None] | None = None,
         stream: bool = True,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[Message, Usage]:
         """Send a chat request, return (assistant msg, usage).
 
@@ -210,6 +262,15 @@ class Client:
         ``stream`` False a single non-streaming POST is used; both
         callbacks fire once per text/tool-call with the complete values,
         so callers (agent loop, TUI) behave identically either way.
+
+        Transient failures (HTTP 429 / 5xx, connection errors) are
+        retried with exponential backoff + jitter up to ``retry_max``
+        attempts, honoring ``Retry-After`` when present.  A retry only
+        happens before any delta has been delivered to the callbacks,
+        so streaming output is never duplicated for the caller.  Other
+        4xx errors are permanent and fail immediately.  ``cancel_check``
+        (when given) is polled during backoff sleeps so an abort lands
+        promptly instead of after the full wait.
         """
         payload = self._payload(
             messages, tools, stream=stream, temperature=temperature,
@@ -217,17 +278,46 @@ class Client:
             reasoning_effort=reasoning_effort,
         )
         usage = Usage()
-        try:
-            if stream:
-                content_parts, reasoning_parts, tc_index = self._stream_response(
-                    payload, on_delta, on_tool_call, usage
-                )
-            else:
-                content_parts, reasoning_parts, tc_index = self._sync_response(
-                    payload, on_delta, on_tool_call, usage
-                )
-        except httpx.HTTPError as e:
-            raise ApiError(f"network error: {e}") from e
+        emitted = False
+
+        def wrap_delta(chunk: str) -> None:
+            nonlocal emitted
+            emitted = True
+            if on_delta:
+                on_delta(chunk)
+
+        def wrap_tool_call(name: str, call_id: str, fragment: str) -> None:
+            nonlocal emitted
+            emitted = True
+            if on_tool_call:
+                on_tool_call(name, call_id, fragment)
+
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                if stream:
+                    content_parts, reasoning_parts, tc_index = self._stream_response(
+                        payload, wrap_delta, wrap_tool_call, usage
+                    )
+                else:
+                    content_parts, reasoning_parts, tc_index = self._sync_response(
+                        payload, wrap_delta, wrap_tool_call, usage
+                    )
+                break
+            except RetryableApiError as e:
+                if emitted or attempt >= self.retry_max:
+                    raise
+                if self._sleep_backoff(attempt, e.retry_after, cancel_check):
+                    raise
+            except httpx.HTTPError as e:
+                # connection-level failures: connect errors, timeouts,
+                # dropped streams — all transient unless a delta already
+                # reached the caller (then a retry would duplicate it)
+                if emitted or attempt >= self.retry_max:
+                    raise ApiError(f"network error: {e}") from e
+                if self._sleep_backoff(attempt, None, cancel_check):
+                    raise ApiError(f"network error: {e}") from e
 
         content = "".join(content_parts)
         tool_calls = None
@@ -248,6 +338,31 @@ class Client:
         )
         _log_llm_interaction(self.log_path, payload, msg, usage)
         return msg, usage
+
+    def _sleep_backoff(
+        self,
+        attempt: int,
+        retry_after: str | None,
+        cancel_check: Callable[[], bool] | None,
+    ) -> bool:
+        """Sleep between retries; return True when aborted (cancelled).
+
+        ``attempt`` is the number of the request that just failed (1 =
+        first attempt); the delay doubles per attempt, capped, with
+        jitter (``Retry-After`` wins for 429s).  When ``cancel_check``
+        is given it is polled in small increments so a Ctrl-C lands
+        promptly instead of after the full backoff wait.
+        """
+        deadline = time.monotonic() + _retry_delay(
+            attempt, retry_after, self.retry_base_delay, self.retry_max_delay
+        )
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if cancel_check is not None and cancel_check():
+                return True
+            time.sleep(min(0.25, remaining))
 
     def _stream_response(
         self,
@@ -271,9 +386,12 @@ class Client:
         ) as resp:
             if resp.status_code >= 400:
                 body = resp.read().decode("utf-8", "replace")
-                raise ApiError(
-                    f"API error {resp.status_code}: {body[:500]}"
-                )
+                message = f"API error {resp.status_code}: {body[:500]}"
+                if _retryable_status(resp.status_code):
+                    raise RetryableApiError(
+                        message, resp.headers.get("Retry-After")
+                    )
+                raise ApiError(message)
             for chunk in _iter_sse(resp.iter_lines()):
                 if not chunk:
                     continue
@@ -324,9 +442,12 @@ class Client:
             self._url(), headers=self._headers(stream=False), json=payload
         )
         if resp.status_code >= 400:
-            raise ApiError(
-                f"API error {resp.status_code}: {resp.text[:500]}"
-            )
+            message = f"API error {resp.status_code}: {resp.text[:500]}"
+            if _retryable_status(resp.status_code):
+                raise RetryableApiError(
+                    message, resp.headers.get("Retry-After")
+                )
+            raise ApiError(message)
         data = resp.json()
         u = data.get("usage")
         if u:

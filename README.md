@@ -7,6 +7,11 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
 - **Agent loop with completion supervision** — the model is nudged (max 2) when it
   tries to stop before the task is complete; the nudge counter resets on tool
   calls; tool results are sanitized so a failed call never strands the loop.
+- **API retry with backoff** — transient failures (HTTP 429 / 5xx, connection
+  errors) are retried automatically with exponential backoff + jitter
+  (honoring `Retry-After`), so a rate limit or a dropped connection no longer
+  kills the run; retries never duplicate streamed output and a Ctrl-C aborts
+  the backoff wait promptly. Permanent errors (other 4xx) fail fast.
 - **Context management** — CJK-aware token estimation, per-model context
   windows (deepseek-v4/glm-5.2 1M, gpt-5 400k, kimi-k2.7 256k, claude 200k,
   ...), self-calibrating estimates from API-reported input tokens, and

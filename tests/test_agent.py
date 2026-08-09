@@ -28,12 +28,13 @@ class FakeClient:
         self.kwargs = []
 
     def chat(self, messages, tools=None, system=None, temperature=None,
-             max_tokens=None, reasoning_effort=None, on_delta=None, stream=True):
+             max_tokens=None, reasoning_effort=None, on_delta=None, stream=True,
+             cancel_check=None):
         self.calls.append([m.to_api() for m in messages])
         self.kwargs.append({
             "tools": tools, "system": system, "temperature": temperature,
             "max_tokens": max_tokens, "reasoning_effort": reasoning_effort,
-            "stream": stream,
+            "stream": stream, "cancel_check": cancel_check,
         })
         if not self.script:
             return Message(role="assistant", content="done"), Usage()

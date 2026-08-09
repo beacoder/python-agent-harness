@@ -421,6 +421,9 @@ class AgentLoop:
                     # sub-agents must not stream into the parent's live
                     # stream row — their text is private until returned
                     on_delta=(safe_delta if self.top_level else None),
+                    # poll cancellation during retry backoff so Ctrl-C
+                    # aborts promptly instead of after the full sleep
+                    cancel_check=self._is_cancelled,
                 )
             except Exception as e:  # noqa: BLE001 - API errors become ERRS
                 if self._is_cancelled():

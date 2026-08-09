@@ -147,6 +147,15 @@ DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
 MAX_TOKENS = 8192
 TEMPERATURE = 0.0
 
+# ---- API retry / backoff -------------------------------------------------------
+# Transient API failures (HTTP 429 / 5xx, connection errors) are retried
+# with exponential backoff + jitter instead of killing the run.  The
+# per-request attempt budget and delay bounds live here; a Client
+# instance can override them per call.
+API_RETRY_MAX = 3            # max attempts per request (initial + retries)
+API_RETRY_BASE_DELAY = 1.0   # base backoff (seconds), doubled per attempt
+API_RETRY_MAX_DELAY = 30.0   # per-attempt backoff cap (seconds)
+
 # ---- tool execution ----------------------------------------------------------
 SUBAGENT_MAX_ROUNDS = 60
 # Max tool calls that may run CONCURRENTLY in one tool round (all tools

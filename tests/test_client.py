@@ -17,10 +17,21 @@ from fake_openai_server import serve  # noqa: E402
 import fake_openai_server  # noqa: E402  (state overrides for sync tests)
 
 
-def make_client() -> Client:
+def make_client(
+    retry_max: int | None = None,
+    retry_base_delay: float | None = None,
+    retry_max_delay: float | None = None,
+) -> Client:
     srv = serve()
     host, port = srv.server_address
-    c = Client(base_url=f"http://{host}:{port}/v1", api_key="test", model="fake")
+    c = Client(
+        base_url=f"http://{host}:{port}/v1",
+        api_key="test",
+        model="fake",
+        retry_max=retry_max,
+        retry_base_delay=retry_base_delay,
+        retry_max_delay=retry_max_delay,
+    )
     c._server = srv  # keep the server alive for the test
     return c
 
@@ -242,11 +253,15 @@ class TestClientNonStreaming(unittest.TestCase):
         self.assertIs(fake_openai_server.REQUEST_BODIES[-1]["stream"], False)
 
     def test_sync_error_raises_api_error(self):
-        """Non-streaming HTTP errors surface as ApiError, like streaming."""
+        """Non-streaming HTTP errors surface as ApiError, like streaming.
+
+        retry_max=1 disables retries so the error surfaces directly
+        (no backoff sleep in the test).
+        """
         from python_agent_harness.client import ApiError
         from unittest import mock
 
-        c = make_client()
+        c = make_client(retry_max=1)
         try:
             with mock.patch.object(c._http, "post") as post:
                 post.return_value.status_code = 429
@@ -255,6 +270,108 @@ class TestClientNonStreaming(unittest.TestCase):
                     c.chat([Message(role="user", content="hi")], stream=False)
         finally:
             c.close()
+
+
+class TestClientRetry(unittest.TestCase):
+    """Transient API failures (429/5xx/connection) are retried with
+    backoff; permanent errors are not; streamed output is never
+    duplicated."""
+
+    def setUp(self):
+        fake_openai_server.reset_state()
+
+    def tearDown(self):
+        fake_openai_server.reset_state()
+
+    def make_fast_client(self, retry_max: int = 3) -> Client:
+        return make_client(
+            retry_max=retry_max, retry_base_delay=0.01, retry_max_delay=0.05
+        )
+
+    def test_transient_errors_retried_then_success(self):
+        """429 then 500 then success: the client retries with backoff
+        and returns the final response unchanged."""
+        fake_openai_server.STATUS_QUEUE = [429, 500]
+        c = self.make_fast_client()
+        try:
+            msg, _ = c.chat([Message(role="user", content="hi")], stream=False)
+        finally:
+            c.close()
+        self.assertEqual(msg.content, "sync reply")
+        self.assertEqual(len(fake_openai_server.REQUEST_BODIES), 3)
+
+    def test_permanent_error_not_retried(self):
+        """A 4xx other than 429 is permanent: exactly one request."""
+        from python_agent_harness.client import ApiError
+
+        fake_openai_server.STATUS_QUEUE = [400]
+        c = self.make_fast_client()
+        try:
+            with self.assertRaises(ApiError):
+                c.chat([Message(role="user", content="hi")], stream=False)
+        finally:
+            c.close()
+        self.assertEqual(len(fake_openai_server.REQUEST_BODIES), 1)
+
+    def test_retry_budget_exhausted_raises(self):
+        """Persistent 429s exhaust the attempt budget and the last
+        transient error surfaces (as RetryableApiError)."""
+        from python_agent_harness.client import RetryableApiError
+
+        fake_openai_server.STATUS_QUEUE = [429, 429, 429, 429]
+        c = self.make_fast_client()
+        try:
+            with self.assertRaises(RetryableApiError):
+                c.chat([Message(role="user", content="hi")], stream=False)
+        finally:
+            c.close()
+        self.assertEqual(len(fake_openai_server.REQUEST_BODIES), 3)
+
+    def test_retry_after_header_honored(self):
+        """A 429 carrying Retry-After is retried after that delay."""
+        fake_openai_server.STATUS_QUEUE = [429]
+        fake_openai_server.RETRY_AFTER_HEADER = "0.01"
+        c = self.make_fast_client()
+        try:
+            msg, _ = c.chat([Message(role="user", content="hi")], stream=False)
+        finally:
+            c.close()
+        self.assertEqual(msg.content, "sync reply")
+        self.assertEqual(len(fake_openai_server.REQUEST_BODIES), 2)
+
+    def test_streaming_retry_does_not_duplicate_deltas(self):
+        """A stream that fails before any delta (429) is retried; the
+        caller receives the streamed text exactly once."""
+        fake_openai_server.STATUS_QUEUE = [429]
+        c = self.make_fast_client()
+        deltas: list[str] = []
+        try:
+            msg, _ = c.chat(
+                [Message(role="user", content="hi")], on_delta=deltas.append
+            )
+        finally:
+            c.close()
+        self.assertEqual("".join(deltas), "thinking hardHello world")
+        self.assertEqual(msg.content, "thinking hardHello world")
+        self.assertEqual(len(fake_openai_server.REQUEST_BODIES), 2)
+
+    def test_cancel_check_aborts_backoff_sleep(self):
+        """cancel_check=True ends the backoff sleep immediately; the
+        pending transient error surfaces instead of a full wait."""
+        from python_agent_harness.client import RetryableApiError
+
+        fake_openai_server.STATUS_QUEUE = [429, 429]
+        c = make_client(retry_max=3, retry_base_delay=60.0, retry_max_delay=60.0)
+        try:
+            with self.assertRaises(RetryableApiError):
+                c.chat(
+                    [Message(role="user", content="hi")],
+                    stream=False,
+                    cancel_check=lambda: True,
+                )
+        finally:
+            c.close()
+        self.assertEqual(len(fake_openai_server.REQUEST_BODIES), 1)
 
 
 if __name__ == "__main__":
