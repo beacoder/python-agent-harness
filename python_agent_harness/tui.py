@@ -1270,6 +1270,14 @@ class Tui:
 
         The save format is markdown with **role**: content blocks
         separated by blank lines.
+
+        ``tool`` blocks are dropped: the saved markdown does not keep
+        ``tool_call_id``/``name`` (assistant tool calls are flattened to
+        plain text), so a restored ``role="tool"`` message would form an
+        API-invalid payload (a tool message with no preceding assistant
+        ``tool_calls``).  The following assistant reply already
+        summarizes the results, so dropping them loses no essential
+        context.
         """
         messages: list[Message] = []
         current_role: str | None = None
@@ -1281,8 +1289,9 @@ class Tui:
                 prefix, _, rest = line.partition("**: ")
                 role = prefix.strip("*").strip()
                 if role in ("user", "assistant", "system", "tool"):
-                    # Save the previous block
-                    if current_role is not None:
+                    # Save the previous block (tool blocks are dropped:
+                    # their tool_call_id/name were not persisted)
+                    if current_role is not None and current_role != "tool":
                         content = "\n".join(current_lines).strip()
                         if content:
                             messages.append(Message(role=current_role, content=content))
@@ -1291,8 +1300,8 @@ class Tui:
                     continue
             current_lines.append(line)
 
-        # Don't forget the last block
-        if current_role is not None:
+        # Don't forget the last block (tool blocks are dropped)
+        if current_role is not None and current_role != "tool":
             content = "\n".join(current_lines).strip()
             if content:
                 messages.append(Message(role=current_role, content=content))

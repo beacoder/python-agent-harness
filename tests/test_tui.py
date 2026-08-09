@@ -777,6 +777,56 @@ class TestTui(unittest.TestCase):
             [m.text() for m in tui.session.last_messages], ["hello", "hi"]
         )
 
+    def test_restore_drops_tool_messages(self):
+        """/restore of a session that used tools must not resurrect
+        orphan ``tool`` messages: the saved markdown has no
+        ``tool_call_id``/``name``, so they would make the next API
+        request invalid."""
+        from python_agent_harness import config
+
+        tui, _ = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            old = config.SESSION_DIR
+            config.SESSION_DIR = __import__("pathlib").Path(d)
+            try:
+                path = tui.session.store.save(
+                    "**user**: find the files\n\n"
+                    "**assistant**: [tool calls: Glob, Read]\n\n"
+                    "**tool**: tests/test_agent.py\n"
+                    "tests/test_tui.py\n\n"
+                    "**assistant**: I found them."
+                )
+                tui._run_restore(path)
+            finally:
+                config.SESSION_DIR = old
+        roles = [m.role for m in tui.session.last_messages]
+        self.assertEqual(roles, ["user", "assistant", "assistant"])
+        self.assertNotIn("tool", roles)
+
+    def test_parse_saved_body_drops_tool_blocks(self):
+        """``**tool**:`` blocks are dropped from restored history,
+        including a trailing tool block; all remaining messages must
+        serialize to an API-valid payload."""
+        body = (
+            "**user**: find the files\n\n"
+            "**assistant**: [tool calls: Glob, Read]\n\n"
+            "**tool**: tests/test_agent.py\n"
+            "tests/test_tui.py\n\n"
+            "**assistant**: I found them.\n\n"
+            "**tool**: trailing result"
+        )
+        msgs = Tui._parse_saved_body(body)
+        self.assertEqual(
+            [(m.role, m.text()) for m in msgs],
+            [
+                ("user", "find the files"),
+                ("assistant", "[tool calls: Glob, Read]"),
+                ("assistant", "I found them."),
+            ],
+        )
+        for m in msgs:
+            self.assertNotEqual(m.to_api()["role"], "tool")
+
     def test_restore_idempotent(self):
         """The slash-command restore may run more than once (cancel
         path + worker finally) and must only undo its own borrow."""

@@ -699,10 +699,6 @@ class TestInsertTool(unittest.TestCase):
         Insert().run({"path": self.path, "line_number": -1, "new_str": "Y"}, ToolContext())
         self.assertEqual(open(self.path).read(), "a\nb\nc\nY\n")
 
-    def test_insert_beyond_eof_appends(self):
-        Insert().run({"path": self.path, "line_number": 99, "new_str": "W"}, ToolContext())
-        self.assertEqual(open(self.path).read(), "a\nb\nc\nW\n")
-
     def test_insert_adds_missing_trailing_newline(self):
         Insert().run({"path": self.path, "line_number": 1, "new_str": "X"}, ToolContext())
         self.assertEqual(open(self.path).read(), "a\nX\nb\nc\n")

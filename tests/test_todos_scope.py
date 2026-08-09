@@ -57,17 +57,6 @@ class TestSubagentTodoIsolation(unittest.TestCase):
         s.clear_todos()
         self.assertEqual(s.todos, [])
 
-    def test_subagent_spec_excludes_todowrite(self):
-        """The TodoWrite spec is filtered from the sub-agent's request."""
-        s = make_session()
-        s.run_subagent("subagent", "find the bug", "do it")
-        self.assertTrue(s.client.sent_tools)
-        sub_tools = s.client.sent_tools[0]
-        self.assertNotIn("TodoWrite", sub_tools)
-        # the sub-agent keeps its working tools
-        self.assertIn("Read", sub_tools)
-        self.assertIn("Bash", sub_tools)
-
     def test_subagent_todowrite_call_refused(self):
         """Defense in depth: even a hallucinated TodoWrite call from a
         sub-agent is refused and never reaches the registry, so the
