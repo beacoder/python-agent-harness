@@ -76,6 +76,46 @@ class TestTui(unittest.TestCase):
         self.assertNotIn("You:", out)
         self.assertNotIn("Agent:", out)
 
+    def test_message_colors_distinct(self):
+        """User and assistant bodies get distinct colors that do NOT
+        collide with the tool colors (tool calls are cyan, tool results
+        dim): bright green for user, bright blue for assistant."""
+        from python_agent_harness.tui import ASSISTANT_STYLE, USER_STYLE
+
+        tui, _ = make_tui()
+        rows = tui._build_history_rows()
+        styles = [getattr(r, "style", None) for r in rows]
+        self.assertIn(USER_STYLE, styles)       # user body
+        self.assertIn(ASSISTANT_STYLE, styles)  # assistant body
+        self.assertIn("cyan", styles)           # tool call label
+        self.assertIn("dim", styles)            # tool result
+        self.assertNotEqual(USER_STYLE, ASSISTANT_STYLE)
+        # user must not be confused with tool activity (cyan/dim) nor
+        # with the panel border (plain green)
+        self.assertNotIn(USER_STYLE, ("cyan", "dim", "green"))
+        self.assertNotIn(ASSISTANT_STYLE, ("cyan", "dim", "green"))
+
+    def test_stream_row_assistant_color(self):
+        """The live stream row uses the assistant color so the in-flight
+        response matches the stored assistant rows."""
+        from python_agent_harness.tui import ASSISTANT_STYLE
+
+        tui, _ = make_tui()
+        tui.stream_text = "streaming answer text"
+        row = tui._stream_row()
+        self.assertEqual(row.style, ASSISTANT_STYLE)
+
+    def test_dump_rows_keep_message_colors(self):
+        """The full scrollback dump shares the role colors (same row
+        builder as the live panel)."""
+        from python_agent_harness.tui import ASSISTANT_STYLE, USER_STYLE
+
+        tui, _ = make_tui()
+        rows = tui._build_history_rows(full=True)
+        styles = [getattr(r, "style", None) for r in rows]
+        self.assertIn(USER_STYLE, styles)
+        self.assertIn(ASSISTANT_STYLE, styles)
+
     def test_injected_user_prompts_hidden(self):
         """Auto-injected user prompts (plan / plan-mode / build-switch
         reminders, plan-exit notices) are harness bookkeeping — the TUI
@@ -486,6 +526,58 @@ class TestTui(unittest.TestCase):
         tui.session.last_messages = []
         tui._dump_conversation()
         self.assertEqual(buf.getvalue(), "")
+
+    def test_dump_conversation_full_long_reply(self):
+        """The scrollback dump must show long assistant replies in FULL.
+
+        The live panel tail-caps long messages to the newest lines
+        (regression: the dump reused those same capped rows, so the
+        head of a long summary was never readable anywhere in the TUI
+        — only its tail, prefixed with a "…" marker).
+        """
+        tui, buf = make_tui()
+        body = "\n".join(f"summary line {i}" for i in range(40))
+        tui.session.last_messages = [Message(role="assistant", content=body)]
+        tui._dump_conversation()
+        out = buf.getvalue()
+        self.assertIn("summary line 0", out)    # head visible
+        self.assertIn("summary line 39", out)   # tail visible
+        self.assertNotIn("…\n", out)            # no tail-cut marker
+        self.assertNotIn("more lines", out)     # no head-cut marker
+
+    def test_dump_conversation_full_long_user_message(self):
+        """Long user messages are dumped uncapped too (the live panel
+        tail-caps them to 12 lines)."""
+        tui, buf = make_tui()
+        body = "\n".join(f"user line {i}" for i in range(30))
+        tui.session.last_messages = [Message(role="user", content=body)]
+        tui._dump_conversation()
+        out = buf.getvalue()
+        self.assertIn("user line 0", out)
+        self.assertIn("user line 29", out)
+        self.assertNotIn("…\n", out)
+
+    def test_dump_conversation_still_filters_and_strips(self):
+        """The full dump keeps the same display hygiene as the panel:
+        injected prompts hidden, final-check blocks stripped."""
+        from python_agent_harness import config
+
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="real question"),
+            Message(role="user", content=config.NUDGE_MESSAGE),
+            Message(
+                role="assistant",
+                content="Answer body.\n\n[FINAL CHECK]\n- Goal: x\n"
+                        "- Status: SUCCESS\n- Evidence: y",
+            ),
+        ]
+        tui._dump_conversation()
+        out = buf.getvalue()
+        self.assertIn("real question", out)
+        self.assertIn("Answer body.", out)
+        self.assertNotIn(config.NUDGE_MESSAGE, out)
+        self.assertNotIn("[FINAL CHECK]", out)
 
     def test_run_live_dumps_conversation_at_end(self):
         """When a run finishes normally, _run_live prints the full

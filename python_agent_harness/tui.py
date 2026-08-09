@@ -38,6 +38,11 @@ from .session_store import SessionStore, title_from_filename
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
+# message-body colors - distinct from tool colors (tool calls are cyan,
+# tool results dim) so roles never blend into tool activity
+USER_STYLE = "bright_green"
+ASSISTANT_STYLE = "yellow"
+
 
 def _tail_lines(text: str, n: int) -> str:
     """Keep the last N lines of TEXT, marking the cut with an ellipsis."""
@@ -523,8 +528,14 @@ class Tui:
     # ------------------------------------------------------------------
     # rendering
     # ------------------------------------------------------------------
-    def _build_history_rows(self) -> list[Any]:
-        """Rows for the stored conversation (messages + todos). No stream."""
+    def _build_history_rows(self, full: bool = False) -> list[Any]:
+        """Rows for the stored conversation (messages + todos). No stream.
+
+        FULL=True renders user/assistant bodies uncapped (used by the
+        post-run scrollback dump, where the whole answer must be
+        readable); the live panel keeps the tail caps so the newest
+        content stays on screen.
+        """
         rows: list[Any] = []
         calls_by_id: dict[str, Any] = {}
         for m in self.session.last_messages or []:
@@ -546,9 +557,9 @@ class Tui:
                 # is lost in the markdown round-trip.
                 if m.injected or _is_injected_user_text(m.text()):
                     continue
-                body = _tail_lines(m.text(), 12)
+                body = m.text() if full else _tail_lines(m.text(), 12)
                 if body.strip():
-                    rows.append(Markdown(f"**user:** {body}"))
+                    rows.append(Markdown(f"**user:** {body}", style=USER_STYLE))
             elif m.role == "assistant":
                 body = m.text()
                 collapsed_reasoning = False
@@ -557,7 +568,9 @@ class Tui:
                     if stripped != body:
                         body = stripped
                         collapsed_reasoning = True
-                body = _tail_lines(_strip_final_check(body), 12)
+                body = _strip_final_check(body)
+                if not full:
+                    body = _tail_lines(body, 12)
                 if collapsed_reasoning:
                     # the reasoning streamed live while it was being
                     # produced; once it is done it collapses to a marker
@@ -579,7 +592,7 @@ class Tui:
                         label = f"🤖 {tc.name}({params})" if params else f"🤖 {tc.name}"
                         rows.append(Text(label, style="cyan"))
                 if body.strip():
-                    rows.append(Markdown(f"**assistant:** {body}"))
+                    rows.append(Markdown(f"**assistant:** {body}", style=ASSISTANT_STYLE))
             elif m.role == "tool":
                 preview = _tool_result_preview(m.text())
                 rows.append(Text(f"tool: {m.name or 'tool'}: {preview}", style="dim"))
@@ -625,7 +638,7 @@ class Tui:
         lines = max(3, cap - 3)
         preview = _tail_lines(stream, lines)
         preview = _tail_chars(preview, lines * max(1, width))
-        return Text(f"assistant: {preview}")
+        return Text(f"assistant: {preview}", style=ASSISTANT_STYLE)
 
     def _render_conversation(self) -> Panel:
         from rich.console import Group
@@ -664,8 +677,14 @@ class Tui:
         conversation never reaches the terminal's scrollback during a
         run.  When the run finishes, print it again as plain lines so
         the user can scroll back through everything that happened.
+
+        Unlike the live panel, message bodies are printed UNCAPPED
+        (``full=True``): the live panel tail-caps long replies to the
+        newest lines, but the dump is where the whole answer becomes
+        readable — a capped dump would hide the head of long
+        summaries exactly like the live view.
         """
-        rows = self._build_history_rows()
+        rows = self._build_history_rows(full=True)
         if not rows:
             return
         self.console.print()
