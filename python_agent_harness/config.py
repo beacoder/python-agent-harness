@@ -131,8 +131,8 @@ PLAN_EXIT_APPROVED_MESSAGE = (
 # PlanExit asks the user with the same choice UI as the Question tool:
 # option[0] approves the switch to build mode, anything else rejects it.
 PLAN_EXIT_OPTIONS = (
-    "Yes, switch to build agent",
-    "No, keep refining the plan",
+    "yes, switch to build",
+    "no, stay in plan",
 )
 
 # ---- tools -------------------------------------------------------------------
