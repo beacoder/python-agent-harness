@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shlex
 import threading
 import time
@@ -87,8 +88,11 @@ def _tool_result_preview(content: str) -> str:
     return _head_chars(preview, config.TOOL_RESULT_PREVIEW_CHARS)
 
 
-_FINAL_CHECK_LABELS = ("Goal:", "Status:", "Evidence:")
-_FINAL_CHECK_BULLETS = ("-", "•", "*")
+# the completion-check filter: a [FINAL CHECK] header followed by the
+# Goal:/Status:/Evidence: labels (anywhere in the block, any lines)
+_FINAL_CHECK_RE = re.compile(
+    r"\[FINAL CHECK\].*Goal:.*Status:.*Evidence:", re.DOTALL
+)
 
 _PLAN_EXIT_PREFIX = "The plan at "
 _PLAN_EXIT_SUFFIX = " has been approved, you can now edit files. Execute the plan"
@@ -116,74 +120,24 @@ def _is_injected_user_text(text: str) -> bool:
     return _is_plan_exit_notice(text)
 
 
-def _is_final_check_bullet(line: str) -> str | None:
-    """Return the checklist label if LINE is a Goal/Status/Evidence bullet.
-
-    Accepts "-", "•" or "*" bullet chars and optional markdown emphasis
-    around the label ("- **Status:** SUCCESS"), case-insensitively.
-    """
-    stripped = line.strip()
-    if not stripped:
-        return None
-    for bullet in _FINAL_CHECK_BULLETS:
-        if not stripped.startswith(bullet):
-            continue
-        rest = stripped[len(bullet):].strip().strip("*").strip()
-        lower = rest.lower()
-        for label in _FINAL_CHECK_LABELS:
-            if lower.startswith(label.lower()):
-                return label
-        return None
-    return None
-
-
-def _is_bullet_line(line: str) -> bool:
-    """True if LINE is any bullet-ish line (for trailing-block checks)."""
-    stripped = line.strip()
-    return bool(stripped) and stripped[0] in _FINAL_CHECK_BULLETS
-
-
 def _strip_final_check(text: str) -> str:
-    """Drop a trailing completion-check block from an assistant reply.
+    """Drop a completion-check block from an assistant reply.
 
     The task-completion rules make the model end with a [FINAL CHECK]
     block (Goal / Status / Evidence) — verification bookkeeping, not
-    content the user wants to read.  Two shapes are recognized:
+    content the user wants to read.  The filter is the
+    "[FINAL CHECK].*Goal:.*Status:.*Evidence:" pattern: everything
+    from the header onward is dropped.
 
-    - an explicit "[FINAL CHECK]" header: everything from it is dropped;
-    - the bare checklist: a trailing block of Goal:/Status:/Evidence:
-      bullets with ALL THREE labels (fallback for replies that answer
-      the completion rules without the header; requiring all three
-      avoids eating genuine summary bullets like "- Status: ...").
-
-    The strip NEVER empties a reply: if the check block is the whole
-    message (no real content before it), the message is kept intact —
-    hiding it would hide the model's only visible response.  The agent
-    loop still produces and stores the message unchanged; this only
-    trims it from the TUI display.
+    The block is hidden even when it is the reply's ONLY content —
+    check-only replies never render.  Replies without the header are
+    untouched.  The agent loop still produces and stores the message
+    unchanged; this only trims it from the TUI display.
     """
-    idx = text.find("[FINAL CHECK]")
-    if idx != -1:
-        prefix = text[:idx].rstrip()
-        return prefix if prefix else text
-    lines = text.splitlines()
-    labels: set[str] = set()
-    first: int | None = None
-    for i, line in enumerate(lines):
-        label = _is_final_check_bullet(line)
-        if label is None:
-            continue
-        labels.add(label)
-        if first is None:
-            first = i
-    if len(labels) < len(_FINAL_CHECK_LABELS) or first is None:
-        return text
-    # only a TRAILING bullet block is the completion check — bullets in
-    # the middle of a real reply (followed by more content) stay visible
-    if not all(not line.strip() or _is_bullet_line(line) for line in lines[first:]):
-        return text
-    prefix = "\n".join(lines[:first]).rstrip()
-    return prefix if prefix else text
+    m = _FINAL_CHECK_RE.search(text)
+    if m is not None:
+        return text[: m.start()].rstrip()
+    return text
 
 
 def _strip_reasoning(text: str, reasoning: str) -> str:
