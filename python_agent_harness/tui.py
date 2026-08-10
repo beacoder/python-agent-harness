@@ -418,6 +418,8 @@ class Tui:
             self._history_dirty = True
         elif kind == "error":
             self.status = " error"
+        elif kind == "save-error":
+            self.status = " auto-save failed"
         else:
             self.status = " running"
         self._data_event.set()
@@ -458,9 +460,18 @@ class Tui:
         return "\n".join(lines) if lines else "Unanswered"
 
     def _ask_sync(self, q: UiQuestion) -> str:
-        """Block the worker thread until the main thread answers."""
+        """Block the worker thread until the main thread answers.
+
+        Cancel-aware: the wait polls the session cancel event, so a
+        Ctrl-C outside the answer prompt (e.g. during the render loop)
+        unblocks the worker immediately instead of wedging it until a
+        question is answered.  A cancelled run returns an empty answer.
+        """
         self.question = q
-        q.event.wait()
+        cancel = getattr(self.session, "cancel_event", None)
+        while not q.event.wait(0.1):
+            if cancel is not None and cancel.is_set():
+                return ""
         return q.answer or ""
 
     # ------------------------------------------------------------------
@@ -683,6 +694,8 @@ class Tui:
         t = Text()
         t.append(f" [{mode.upper()}]", style=mode_style)
         t.append(ctx)
+        if getattr(self.session, "_save_error", None):
+            t.append(" [!save]", style="red bold")
         if self.agent_running:
             frame = SPINNER_FRAMES[int(time.time() * 10) % len(SPINNER_FRAMES)]
             t.append(f" {frame}", style="bold cyan")
@@ -848,6 +861,13 @@ class Tui:
             # the input prompt immediately.
             cancelled = True
             self.session.cancel()
+            if self.question is not None:
+                # a pending question wedges the worker in its wait: the
+                # run is cancelled, so release it now — it must not be
+                # re-prompted after the run is over
+                self.question.answer = ""
+                self.question.event.set()
+                self.question = None
             if self._restore is not None:
                 # release state the cancelled run borrowed (e.g. a slash
                 # command's project dir) now: the worker may finish late

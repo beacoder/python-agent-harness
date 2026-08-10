@@ -485,7 +485,20 @@ class AgentLoop:
         # the loop
         if self.error:
             return self.error
-        return self.messages[-1].text() if self.messages else None
+        # best-effort final answer: the last real assistant text.  The
+        # final message at exhaustion is a tool result or an empty-text
+        # tool-call round — surfacing either as the "final answer" would
+        # feed raw tool output (or "") to the parent, so scan backward
+        # for the last actual text instead.
+        for m in reversed(self.messages):
+            if m.role == "assistant" and m.text().strip():
+                return m.text()
+        if self.messages and self.messages[-1].role == "tool":
+            return (
+                "Error: sub-agent round budget exhausted mid-tool-round; "
+                "no final answer was produced"
+            )
+        return None
 
 
 def run_agent_loop(

@@ -225,6 +225,50 @@ class TestAgentLoop(unittest.TestCase):
         result = loop.run()
         self.assertEqual(result, "hello there")
 
+    def test_subagent_budget_exhausted_returns_last_real_text(self):
+        """Round-budget exhaustion must surface the last real assistant
+        text, never a trailing tool result or an empty string."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        # round 1: text + tool call; round 2: tool call only; budget 2
+        session.client.script = [
+            ("partial answer", [ToolCall(
+                id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            ("", [ToolCall(
+                id="2", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+        ]
+        loop = AgentLoop(
+            session,
+            messages=[Message(role="user", content="do it")],
+            top_level=False, max_rounds=2,
+        )
+        result = loop.run()
+        # the trailing messages are [tool result, assistant+tool_call,
+        # tool result]; the only real text is "partial answer"
+        self.assertEqual(result, "partial answer")
+
+    def test_subagent_budget_exhausted_no_text_returns_error(self):
+        """Exhaustion with NO assistant text at all (only tool rounds)
+        must return an informative error, not raw tool output or ''."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.client.script = [
+            ("", [ToolCall(
+                id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            ("", [ToolCall(
+                id="2", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+        ]
+        loop = AgentLoop(
+            session,
+            messages=[Message(role="user", content="do it")],
+            top_level=False, max_rounds=2,
+        )
+        result = loop.run()
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error: sub-agent round budget"), result)
+        self.assertNotEqual(result, "file content")  # not raw tool output
+        self.assertNotEqual(result, "")
+
     def test_tool_round(self):
         session = RecordingSession()
         with mock.patch("python_agent_harness.config.MAX_NUDGES", 1):
@@ -1632,6 +1676,58 @@ class TestBashAsync(unittest.TestCase):
         result = Bash().run({"command": "echo hi"}, ToolContext(FakeSess()))
         self.assertIsInstance(result, str)
         self.assertTrue(result.startswith("Error:"))
+
+
+class TestAutoSave(unittest.TestCase):
+    """Auto-save failures must not be silent: retry once, then leave a
+    persistent, visible error state (cleared by the next success)."""
+
+    def make_session(self):
+        session = RecordingSession()
+        session.logs = []
+        session.log_fn = session.logs.append
+        session.notified = []
+        session.notify_fn = session.notified.append
+        return session
+
+    def test_retry_then_persistent_error(self):
+        session = self.make_session()
+        fails = {"n": 0}
+
+        def flaky_save(text):
+            fails["n"] += 1
+            if fails["n"] <= 2:
+                raise OSError("disk full")
+            return None
+
+        with mock.patch.object(session.store, "save", side_effect=flaky_save):
+            session.auto_save([Message(role="user", content="hi")], None)
+        self.assertEqual(fails["n"], 2)  # retried once, failed again
+        self.assertEqual(session._save_error, "disk full")
+        self.assertIn("auto-save failed", session.logs[-1])
+        self.assertIn("save-error", session.notified)
+        # the next successful save clears the persistent error
+        with mock.patch.object(session.store, "save", return_value=None):
+            session.auto_save([Message(role="user", content="hi")], None)
+        self.assertIsNone(session._save_error)
+
+    def test_transient_failure_recovers(self):
+        """A one-off failure (retry succeeds) must not leave an error
+        state behind."""
+        session = self.make_session()
+        fails = {"n": 0}
+
+        def transient_save(text):
+            fails["n"] += 1
+            if fails["n"] == 1:
+                raise OSError("nfs hiccup")
+            return None
+
+        with mock.patch.object(session.store, "save", side_effect=transient_save):
+            session.auto_save([Message(role="user", content="hi")], None)
+        self.assertEqual(fails["n"], 2)  # retried
+        self.assertIsNone(session._save_error)  # success cleared it
+        self.assertNotIn("save-error", session.notified)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from typing import Any, Callable
 
 from . import config
@@ -121,6 +122,7 @@ class AgentSession:
         self.compacting = False
         self.todos: list[dict] = []
         self.pending_user_prompts: list[str] = []
+        self._save_error: str | None = None
         self.last_messages: list = []
         self.cancel_event = threading.Event()
         # Monotonic cancel identity: cancel() bumps this counter, so a
@@ -345,10 +347,21 @@ class AgentSession:
         if not config.AUTO_SAVE_SESSION:
             return
         text = self._conversation_text(messages)
-        try:
-            self.store.save(text)
-        except OSError as e:
-            self.log(f"auto-save failed: {e}")
+        # retry once: transient failures (NFS hiccup, brief lock) clear
+        # on the second attempt; permanent ones (disk full, read-only)
+        # fail again and leave a persistent, visible error state instead
+        # of silently dropping the session
+        for attempt in (1, 2):
+            try:
+                self.store.save(text)
+                self._save_error = None
+                return
+            except OSError as e:
+                self._save_error = str(e)
+                if attempt == 1:
+                    time.sleep(0.2)
+        self.log(f"auto-save failed: {self._save_error}")
+        self.notify("save-error")
 
     def generate_session_title(self) -> None:
         """Generate a title from the first real user message (title.md).

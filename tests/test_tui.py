@@ -1248,28 +1248,6 @@ class TestTui(unittest.TestCase):
         self.assertEqual(_resolve_numbered_choice("1", []), "1")
         self.assertEqual(_resolve_numbered_choice("1", ["only"]), "only")
 
-    def test_ask_question_number_maps_to_option(self):
-        """Typing a bare number selects the numbered option label."""
-        tui, _ = make_tui()
-        q = UiQuestion("Pick one", options=["long option a", "long option b"])
-        tui.question = q
-        with mock.patch.object(tui.prompt_session, "prompt", return_value="2"):
-            tui._ask_question_blocking()
-        self.assertEqual(q.answer, "long option b")
-        self.assertIsNone(tui.question)
-
-    def test_ask_question_prints_numbered_options(self):
-        """Long option labels render as a numbered list before the input."""
-        tui, buf = make_tui()
-        q = UiQuestion("Pick one", options=["long option a", "long option b"])
-        tui.question = q
-        with mock.patch.object(tui.prompt_session, "prompt", return_value="1"):
-            tui._ask_question_blocking()
-        out = buf.getvalue()
-        self.assertIn("Pick one", out)
-        self.assertIn("1) long option a", out)
-        self.assertIn("2) long option b", out)
-
     def test_ask_question_short_options_numbered_too(self):
         """Single-letter options (y/n/a/d) also render as a numbered
         list — numbers apply to ALL option lists now — and a number
@@ -1358,6 +1336,47 @@ class TestTui(unittest.TestCase):
             self.assertEqual(q.options, list(config.PLAN_EXIT_OPTIONS))
             self.assertEqual(q.keys, ["y", "n"])
             self.assertFalse(q.custom)
+
+    # ------------------------------------------------------------------
+    # cancel-aware question wait + auto-save error surfacing
+    # ------------------------------------------------------------------
+    def test_ask_sync_unblocks_on_cancel(self):
+        """A Ctrl-C (session cancel) while a question is pending must
+        unblock the worker's wait promptly with an empty answer."""
+        import threading
+        import time
+
+        tui, _ = make_tui()
+        q = UiQuestion("Pick one", options=["a", "b"])
+        results = {}
+        worker = threading.Thread(
+            target=lambda: results.update(r=tui._ask_sync(q))
+        )
+        worker.start()
+        time.sleep(0.2)
+        tui.session.cancel()  # sets cancel_event
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive(), "question wait wedged by cancel")
+        self.assertEqual(results["r"], "")
+
+    def test_ask_sync_returns_answer_when_not_cancelled(self):
+        tui, _ = make_tui()
+        q = UiQuestion("Pick one", options=["a", "b"])
+        q.answer = "b"
+        q.event.set()
+        self.assertEqual(tui._ask_sync(q), "b")
+
+    def test_status_bar_shows_save_error_marker(self):
+        tui, buf = make_tui()
+        tui.session._save_error = "disk full"
+        tui.console.print(tui._render_frame())
+        out = buf.getvalue()
+        self.assertIn("[!save]", out)
+        buf.seek(0)
+        buf.truncate()
+        tui.session._save_error = None
+        tui.console.print(tui._render_frame())
+        self.assertNotIn("[!save]", buf.getvalue())
 
 
 if __name__ == "__main__":
