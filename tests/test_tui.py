@@ -741,7 +741,7 @@ class TestTui(unittest.TestCase):
         )
 
     def test_clear_bumps_run_generation(self):
-        """/clear replaces the conversation epoch: an in-flight worker
+        """/clear replaces the conversation generation: an in-flight worker
         from a cancelled run must be marked stale, or its salvaged
         history would resurrect what /clear just wiped."""
         tui, _ = make_tui()
@@ -752,7 +752,7 @@ class TestTui(unittest.TestCase):
         self.assertEqual(tui.session.last_messages, [])
 
     def test_restore_bumps_run_generation(self):
-        """/restore replaces the conversation epoch: a dying worker from
+        """/restore replaces the conversation generation: a dying worker from
         a cancelled run must be marked stale so it can't clobber the
         restored session."""
         from python_agent_harness import config
@@ -1163,7 +1163,6 @@ class TestTui(unittest.TestCase):
         must cycle backwards through the completion menu."""
         import asyncio
 
-        from prompt_toolkit import PromptSession
         from prompt_toolkit.history import FileHistory
         from prompt_toolkit.input import create_pipe_input
         from prompt_toolkit.output import DummyOutput

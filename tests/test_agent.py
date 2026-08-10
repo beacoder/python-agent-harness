@@ -836,7 +836,6 @@ class TestAgentLoop(unittest.TestCase):
         (close() cannot wake a blocked recv), so abort() must shutdown
         the in-flight connection socket.  Regression test for Ctrl-C
         leaving a zombie worker that would stall history adoption."""
-        import json as _json
         import tempfile
         import threading as _threading
         import time as _time

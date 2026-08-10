@@ -102,9 +102,9 @@ class AgentSession:
         # sub-agents would clobber each other's diff slot
         self._active_call = threading.local()
         # serializes interactive prompts (Question tool, PlanExit
-        # confirmation, dangerous-Bash approval): parallel tool rounds
-        # may hit them simultaneously, but the TUI can only ask one
-        # question at a time
+        # confirmation): parallel tool rounds may hit them
+        # simultaneously, but the TUI can only ask one question at a
+        # time
         self._interactive_lock = threading.Lock()
         self.store = SessionStore(
             project_dir=project_dir,
@@ -451,7 +451,7 @@ class AgentSession:
         from .prompts import last_user_request, read_prompt_file
         from .models import Message as Msg
 
-        # Replacing the conversation is a new epoch: invalidate any
+        # Replacing the conversation is a new generation: invalidate any
         # worker still winding down from a cancelled run, or its
         # salvaged-history commit would clobber the compacted buffer.
         self.run_generation += 1
@@ -497,7 +497,7 @@ class AgentSession:
         from .prompts import read_prompt_file
         from .models import Message as Msg
 
-        # Appending to the shared conversation is a new epoch: invalidate
+        # Appending to the shared conversation is a new generation: invalidate
         # any worker still winding down from a cancelled run, or its
         # salvaged-history commit would clobber the appended summary.
         self.run_generation += 1

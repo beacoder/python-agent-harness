@@ -2,8 +2,7 @@
 
 Layout: conversation panel + status bar + input line.  The agent loop
 runs in a worker thread; the main thread renders with rich Live and
-services interactive questions (Bash approval, Question tool, PlanExit
-confirmation).
+services interactive questions (Question tool, PlanExit confirmation).
 """
 
 from __future__ import annotations
@@ -1015,7 +1014,7 @@ class Tui:
         elif cmd == "/restore":
             self._run_restore(arg)
         elif cmd == "/clear":
-            # Replacing the conversation is a new epoch: invalidate any
+            # Replacing the conversation is a new generation: invalidate any
             # worker still winding down from a cancelled run, or its
             # salvaged-history commit would resurrect what we just wiped.
             self.session.run_generation += 1
@@ -1234,7 +1233,7 @@ class Tui:
         title = title_from_filename(path)
         if title:
             self.session.store.title = title
-        # Replace conversation history: a new epoch.  Invalidate any
+        # Replace conversation history: a new generation.  Invalidate any
         # worker still winding down from a cancelled run so its salvaged
         # history can't clobber the restored session.
         self.session.run_generation += 1
