@@ -761,8 +761,8 @@ class Tui:
                 hint += ", or type your own answer"
             self.console.print(f"[dim]{hint}[/dim]")
             prompt = "> "
-        elif options and any(len(o) > 1 for o in options):
-            # long option labels get a numbered list: type the number to pick
+        elif options:
+            # option labels get a numbered list: type the number to pick
             self.console.print(Text(q.prompt))
             for i, opt in enumerate(options, 1):
                 line = Text(f"  {i}) ", style="cyan")
@@ -776,8 +776,6 @@ class Tui:
                 hint += ", or type your own answer"
             self.console.print(f"[dim]{hint}[/dim]")
             prompt = "> "
-        elif options:
-            prompt = q.prompt + " [choices: " + ", ".join(options) + "] > "
         else:
             prompt = q.prompt + " > "
         try:

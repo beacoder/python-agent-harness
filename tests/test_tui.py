@@ -1270,16 +1270,20 @@ class TestTui(unittest.TestCase):
         self.assertIn("1) long option a", out)
         self.assertIn("2) long option b", out)
 
-    def test_ask_question_short_options_stay_inline(self):
-        """Single-letter options (y/n/a/d) keep the compact inline
-        format, but a number still resolves to the matching option."""
-        tui, _ = make_tui()
+    def test_ask_question_short_options_numbered_too(self):
+        """Single-letter options (y/n/a/d) also render as a numbered
+        list — numbers apply to ALL option lists now — and a number
+        resolves to the matching option."""
+        tui, buf = make_tui()
         q = UiQuestion("Proceed?", options=["y", "n"])
         tui.question = q
-        with mock.patch.object(tui.prompt_session, "prompt", return_value="1") as m:
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="2") as m:
             tui._ask_question_blocking()
-        self.assertEqual(q.answer, "y")
-        m.assert_called_once_with("Proceed? [choices: y, n] > ", multiline=False)
+        self.assertEqual(q.answer, "n")
+        m.assert_called_once_with("> ", multiline=False)
+        out = buf.getvalue()
+        self.assertIn("1) y", out)
+        self.assertIn("2) n", out)
 
     def test_ask_question_custom_answer_passthrough(self):
         """Free-text answers (not numbers) are returned verbatim."""
