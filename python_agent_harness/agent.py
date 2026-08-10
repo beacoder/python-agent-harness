@@ -1,14 +1,22 @@
-"""Core agent loop: send -> tool -> supervise.
+"""Agent execution as a finite state machine.
 
-Implements the gptel-agent-harness supervision semantics:
+The run is driven by a small state machine with the harness's
+completion supervision as an extension:
 
-- context ratio is computed before each top-level request; compaction is
-  triggered past the threshold (top-level, agentic, not already compacting)
-- queued plan/build-mode prompts are injected before sending
-- a terminal response on an agentic top-level loop nudges the model back
-  to work while nudge budget remains (max 2), reset on tool calls
+    WAIT -> TOOL -> TRET -> WAIT -> ...
+      |  '-> ERRS        (API error)
+      '-> SUPERVISE -> WAIT (nudge) | DONE
+    cancelled at any point -> ABRT
+
+- WAIT prepares the round (prompt injection, context accounting,
+  compaction, sub-agent round budget) and fires the request; its
+  transition predicates classify the response (error -> ERRS, tool
+  calls -> TOOL, terminal -> SUPERVISE)
+- a terminal response on an agentic top-level loop nudges the model
+  back to work while nudge budget remains (max 2), reset on tool calls
 - tool results are sanitized (None -> error placeholder, non-str -> str)
-- tool-call batches never strand the loop: failures become error results
+- tool-call batches never strand the machine: failures become error
+  results
 - every tool call in a round runs concurrently in a thread pool (results
   delivered in original order); async tools (e.g. Bash) return a
   ``PendingToolResult`` and deliver their result when the work completes,
@@ -34,7 +42,15 @@ from .tools.base import PendingToolResult
 
 
 class AgentLoop:
-    """Runs one agent session until terminal (main) or max rounds (sub-agent)."""
+    """Runs one agent session as a finite state machine until terminal
+    (main) or max rounds (sub-agent).
+
+    ``run()`` drives the steps until a terminal state
+    (DONE/ERRS/ABRT) records the result.  State-specific work lives in
+    the ``_handle_*`` methods; routing between states lives in
+    ``TRANSITIONS`` (predicates over ``self.info``), so adding a state
+    or changing the flow never touches the driver.
+    """
 
     def __init__(
         self,
@@ -63,6 +79,17 @@ class AgentLoop:
         self.error: str | None = None
         self.harness_injected: bool = False
         self.supervisor = Supervisor(session)
+        # FSM state: `state` is the current state, `info` the per-round
+        # context read by the transition-table predicates, `history`
+        # the states visited so far (newest last), `rounds` the number
+        # of WAIT visits (sub-agent budget), and `result` the final
+        # return value recorded by the terminal state's handler.
+        self.state = self.WAIT
+        self.info: dict[str, Any] = {}
+        self.history: list[str] = []
+        self.rounds = 0
+        self.terminal_text: str | None = None
+        self.result: str | None = None
         # Cancellation identity for this run: cancel() bumps the session
         # generation, so a stale worker from a cancelled run stays
         # cancelled even after the next run clears the shared event (and
@@ -102,6 +129,72 @@ class AgentLoop:
         clobber the new run's).
         """
         return self.session.run_generation != self._run_gen
+
+    # ------------------------------------------------------------------
+    # finite state machine
+    #
+    #   WAIT  -> ABRT (cancel) | DONE (budget) | WAIT (compaction)
+    #         | ERRS (error) | TOOL (tool calls) | SUPERVISE (terminal)
+    #   TOOL  -> ABRT (cancel) | TRET
+    #   TRET  -> ABRT (cancel) | WAIT            (next round)
+    #   SUPERVISE -> WAIT (nudge) | DONE         (harness extension:
+    #              a terminal response would end the run, so it is
+    #              intercepted here to nudge the model back to work)
+    #
+    # INIT and TYPE are intentionally absent: they only make sense in
+    # an asynchronous machine (built before the request is realized,
+    # with the response classified in a network callback).  The Python
+    # driver is synchronous: the run starts directly in WAIT and WAIT's
+    # handler classifies the response itself.
+    #
+    # Routing lives in TRANSITIONS: each entry is a (predicate, next)
+    # pair evaluated in order over self.info, with True as the default.
+    # Handlers only do state work and set info flags; they never route
+    # themselves.  DONE/ERRS/ABRT are terminal: their handlers record
+    # self.result and the driver stops.
+    # ------------------------------------------------------------------
+    WAIT = "WAIT"
+    TOOL = "TOOL"
+    TRET = "TRET"
+    SUPERVISE = "SUPERVISE"
+    DONE = "DONE"
+    ERRS = "ERRS"
+    ABRT = "ABRT"
+    TERMINAL = frozenset({DONE, ERRS, ABRT})
+
+    # -- transition predicates -------------------------------------------
+    def _cancelled_p(self, info: dict[str, Any]) -> bool:
+        return self._is_cancelled()
+
+    def _error_p(self, info: dict[str, Any]) -> bool:
+        return bool(info.get("error"))
+
+    def _tool_use_p(self, info: dict[str, Any]) -> bool:
+        return bool(info.get("tool_calls"))
+
+    def _budget_exhausted_p(self, info: dict[str, Any]) -> bool:
+        return bool(info.get("budget"))
+
+    def _compacted_p(self, info: dict[str, Any]) -> bool:
+        return bool(info.get("compacted"))
+
+    def _nudged_p(self, info: dict[str, Any]) -> bool:
+        return bool(info.get("nudged"))
+
+    # -- transition table ------------------------------------------------
+    TRANSITIONS = {
+        WAIT: (
+            (_budget_exhausted_p, DONE),
+            (_cancelled_p, ABRT),
+            (_compacted_p, WAIT),
+            (_error_p, ERRS),
+            (_tool_use_p, TOOL),
+            (True, SUPERVISE),
+        ),
+        TOOL: ((_cancelled_p, ABRT), (True, TRET)),
+        TRET: ((_cancelled_p, ABRT), (True, WAIT)),
+        SUPERVISE: ((_nudged_p, WAIT), (True, DONE)),
+    }
 
     # ------------------------------------------------------------------
     # context management
@@ -182,9 +275,8 @@ class AgentLoop:
             frame = config.COMPACT_HEADER + summary + config.COMPACT_SEPARATOR
             # The summary replaces the whole conversation history EXCEPT
             # the system prompt (self.system is passed separately and
-            # stays untouched): it is part of the user turn, like elisp
-            # inserts it into the gptel buffer and gptel-send sends the
-            # buffer as the user prompt — never as a system message.
+            # stays untouched): it is part of the user turn, never a
+            # system message.
             self.messages = [
                 Message(role="user", content=frame.strip()),
                 Message(role="user", content=request),
@@ -197,9 +289,7 @@ class AgentLoop:
                 self.session.last_messages = list(self.messages)
             # Fresh start for the resumed conversation: the pre-compaction
             # nudge budget must not carry over, or the first terminal
-            # answer after compaction ends the run immediately (elisp
-            # parity: gptel-agent-harness--compact resets the count on
-            # success).
+            # answer after compaction ends the run immediately.
             self.supervisor.reset_nudges()
             self.session.notify("compact")
             return True
@@ -298,17 +388,17 @@ class AgentLoop:
                         f"thread — {e}"
                     )
 
-    def _run_tool_round(self) -> None:
-        """Execute all pending tool calls concurrently; deliver results.
+    def _execute_pending(self) -> None:
+        """TOOL state: run the round's pending tool calls concurrently.
 
         The assistant message carrying the tool calls was already
-        appended by the main loop; here we add the per-call results.
+        appended by the WAIT state.  Results land in
+        ``self.info["tool_result"]`` and are delivered by the TRET
+        state in original tool-call order.
 
         All tools issued in the round run CONCURRENTLY in a thread
         pool — the session's shared state is concurrency-safe
         (thread-local diff slots, serialized interactive prompts).
-        Results are delivered in the original tool-call order
-        regardless of execution order.
         """
         pending = list(self.pending)
         if not pending:
@@ -327,6 +417,23 @@ class AgentLoop:
             # to this (dead) run
             self.pending = []
             return
+        self.info["tool_result"] = results
+
+    def _deliver_results(self) -> None:
+        """TRET state: deliver the round's results to the conversation.
+
+        Results are appended as tool messages in the original
+        tool-call order regardless of execution order.  On cancel the
+        partial delivery is discarded — the shared history salvage
+        cuts the dangling round so no tool call is left unanswered.
+        """
+        pending = list(self.pending)
+        if not pending:
+            return
+        if self._is_cancelled():
+            self.pending = []
+            return
+        results = self.info.get("tool_result", {})
         for p in pending:
             if self._is_cancelled():
                 self.pending = []
@@ -334,6 +441,16 @@ class AgentLoop:
             self._deliver_tool_result(p, results[p.id])
         self.pending = []
         self.session.notify("tools")
+
+    def _run_tool_round(self) -> None:
+        """Execute all pending tool calls concurrently; deliver results.
+
+        Convenience wrapper around the FSM's TOOL (execute) and TRET
+        (deliver) handlers, kept for direct callers and tests; the
+        machine itself runs the two steps through its handlers.
+        """
+        self._execute_pending()
+        self._deliver_results()
 
     def _salvage_messages(self) -> list[Message]:
         """Longest valid prefix of ``self.messages`` for the shared history.
@@ -370,14 +487,31 @@ class AgentLoop:
         return msgs
 
     # ------------------------------------------------------------------
-    # main loop
+    # state machine driver
     # ------------------------------------------------------------------
     def run(self) -> str | None:
-        """Run the loop; returns the final assistant text (or None)."""
+        """Drive the state machine to a terminal state.
+
+        Returns the final assistant text (or None when cancelled, or
+        the error text on failure) recorded by the terminal state's
+        handler.
+        """
         session = self.session
-        rounds = 0
         try:
-            return self._run(rounds)
+            # The machine starts directly in WAIT — an asynchronous
+            # INIT state is not needed for the synchronous driver.
+            # Each step runs the current state's handler first (routing
+            # needs the info flags the handler just set), then routes
+            # via the transition table; the driver stops only once a
+            # terminal state's handler has run and recorded the result.
+            while True:
+                handler = self.HANDLERS.get(self.state)
+                if handler is not None:
+                    handler(self)
+                if self.state in self.TERMINAL:
+                    break
+                self.history.append(self.state)
+                self.state = self._next_state()
         finally:
             # A stale worker (a newer run has started) must never touch
             # shared state, and a sub-agent must never overwrite the
@@ -396,126 +530,214 @@ class AgentLoop:
                     # file — the next turn's save would overwrite it
                     # without ever containing it.
                     session.auto_save(salvaged, self.system)
-                    # Elisp parity: the title is generated on the first
-                    # save, not only on clean completion — an
-                    # interrupted session still gets a meaningful name
-                    # (one-shot; no-op when already titled/pending).
+                    # The title is generated on the first save, not
+                    # only on clean completion — an interrupted session
+                    # still gets a meaningful name (one-shot; no-op when
+                    # already titled/pending).
                     session.generate_session_title()
                 else:
-                    # Loop finished: give the session a meaningful title
-                    # from the first real user message (one-shot; no-op
-                    # when the title already exists or generation is in
-                    # flight)
+                    # Machine finished: give the session a meaningful
+                    # title from the first real user message (one-shot;
+                    # no-op when the title already exists or generation
+                    # is in flight)
                     session.generate_session_title()
+        return self.result
 
-    def _run(self, rounds: int) -> str | None:
+    def _next_state(self) -> str:
+        """Next state per the transition table.
+
+        Predicates are evaluated in order against ``self.info``; True
+        is the default.  A state with no matching predicate is a
+        programming error — surface it loudly instead of stalling.
+        """
+        for pred, nxt in self.TRANSITIONS[self.state]:
+            if pred is True or pred(self, self.info):
+                return nxt
+        raise RuntimeError(
+            f"agent FSM: no matching transition from state {self.state!r}"
+        )
+
+    # ------------------------------------------------------------------
+    # state handlers
+    # ------------------------------------------------------------------
+    def _handle_wait(self) -> None:
+        """WAIT — prepare and fire a request.
+
+        Resets the per-round info flags, enforces the sub-agent round
+        budget (the run-top check), injects pending plan/build-mode
+        prompts, updates the context ratio and compacts past the
+        trigger, then sends the request.  The table routes the
+        outcome: DONE on budget exhaustion, ABRT on cancel, WAIT again
+        after compaction, ERRS on API error, TOOL on tool calls,
+        SUPERVISE on a terminal response.
+        """
         session = self.session
-        while self.max_rounds is None or rounds < self.max_rounds:
-            rounds += 1
+        self.info.clear()
+        if self.max_rounds is not None and self.rounds >= self.max_rounds:
+            self.info["budget"] = True
+            return
+        self.rounds += 1
+        if self._is_cancelled():
+            return
+        self._inject_pending_prompts()
+        if self.top_level:
+            # sub-agents must not touch the shared context accounting:
+            # their payload (fresh context) is structurally different,
+            # so their ratio/usage would skew the parent's
+            self._update_context_ratio()
+            if self._need_compaction():
+                session.log(f"compacting context {session.context_ratio:.1%}")
+                if self.compact():
+                    self.info["compacted"] = True
+                    return
+
+        def safe_delta(text: str) -> None:
+            if not self._is_cancelled() and session.on_delta is not None:
+                session.on_delta(text)
+
+        try:
+            # sub-agents are one-shot tasks: they must not see (or
+            # call) parent-only tools — Agent (no nesting), Question
+            # and PlanExit (interactive/handoff), TodoWrite (the
+            # parent's own progress tracking) — filtered from the
+            # specs before sending
+            tools = session.tool_specs(
+                exclude=config.SUBAGENT_EXCLUDED_TOOLS if not self.top_level else ()
+            )
+            assistant, usage = session.client.chat(
+                self.messages,
+                tools=tools if session.tools_enabled else None,
+                system=self.system,
+                temperature=session.temperature,
+                max_tokens=session.max_tokens,
+                reasoning_effort=session.reasoning_effort,
+                stream=session.stream,
+                # sub-agents must not stream into the parent's live
+                # stream row — their text is private until returned
+                on_delta=(safe_delta if self.top_level else None),
+                # poll cancellation during retry backoff so Ctrl-C
+                # aborts promptly instead of after the full sleep
+                cancel_check=self._is_cancelled,
+            )
+        except Exception as e:  # noqa: BLE001 - API errors become ERRS
             if self._is_cancelled():
-                return None
-            self._inject_pending_prompts()
-            if self.top_level:
-                # sub-agents must not touch the shared context accounting:
-                # their payload (fresh context) is structurally different,
-                # so their ratio/usage would skew the parent's
-                self._update_context_ratio()
-                if self._need_compaction():
-                    session.log(f"compacting context {session.context_ratio:.1%}")
-                    if self.compact():
-                        continue
+                return  # cancelled (Ctrl-C), not an error
+            self.error = f"Error: {e}"
+            self.info["error"] = self.error
+            session.notify("error")
+            return
 
-            def safe_delta(text: str) -> None:
-                if not self._is_cancelled() and session.on_delta is not None:
-                    session.on_delta(text)
+        if self._is_cancelled():
+            return  # response arrived after cancel: drop it
 
-            try:
-                # sub-agents are one-shot tasks: they must not see (or
-                # call) parent-only tools — Agent (no nesting), Question
-                # and PlanExit (interactive/handoff), TodoWrite (the
-                # parent's own progress tracking) — filtered from the
-                # specs before sending
-                tools = session.tool_specs(
-                    exclude=config.SUBAGENT_EXCLUDED_TOOLS if not self.top_level else ()
-                )
-                assistant, usage = session.client.chat(
-                    self.messages,
-                    tools=tools if session.tools_enabled else None,
-                    system=self.system,
-                    temperature=session.temperature,
-                    max_tokens=session.max_tokens,
-                    reasoning_effort=session.reasoning_effort,
-                    stream=session.stream,
-                    # sub-agents must not stream into the parent's live
-                    # stream row — their text is private until returned
-                    on_delta=(safe_delta if self.top_level else None),
-                    # poll cancellation during retry backoff so Ctrl-C
-                    # aborts promptly instead of after the full sleep
-                    cancel_check=self._is_cancelled,
-                )
-            except Exception as e:  # noqa: BLE001 - API errors become ERRS
-                if self._is_cancelled():
-                    return None  # cancelled (Ctrl-C), not an error
-                self.error = f"Error: {e}"
-                session.notify("error")
-                break
+        # persist the assistant response in the conversation history
+        # (text and/or tool calls) so later turns and the UI see it
+        if assistant.text().strip() or assistant.tool_calls:
+            self.messages.append(assistant)
+            if not assistant.tool_calls and self.top_level:
+                session.last_messages = list(self.messages)
 
-            if self._is_cancelled():
-                return None  # response arrived after cancel: drop it
+        if self.top_level:
+            session.calibrator.update(usage.input_tokens)
+            session.remember_user_text(self.messages)
+            session.auto_save(self.messages, self.system)
 
-            # persist the assistant response in the conversation history
-            # (text and/or tool calls) so later turns and the UI see it
-            if assistant.text().strip() or assistant.tool_calls:
-                self.messages.append(assistant)
-                if not assistant.tool_calls and self.top_level:
-                    session.last_messages = list(self.messages)
+        self.info["assistant"] = assistant
+        self.info["usage"] = usage
+        self.info["tool_calls"] = (
+            list(assistant.tool_calls) if assistant.tool_calls else None
+        )
 
-            if self.top_level:
-                session.calibrator.update(usage.input_tokens)
-                session.remember_user_text(self.messages)
-                session.auto_save(self.messages, self.system)
+    def _handle_tool(self) -> None:
+        """TOOL — run the round's tools concurrently (see
+        ``_execute_pending``); the table routes ABRT on cancel and TRET
+        otherwise."""
+        self.pending = list(self.info["tool_calls"])
+        self.supervisor.reset_nudges()
+        self._execute_pending()
 
-            if assistant.tool_calls:
-                self.pending = list(assistant.tool_calls)
-                self.supervisor.reset_nudges()
-                self._run_tool_round()
-                if self._is_cancelled():
-                    return None
-                continue
+    def _handle_tret(self) -> None:
+        """TRET — deliver the round's results into the conversation
+        (see ``_deliver_results``); the table routes ABRT on cancel and
+        WAIT (next round) otherwise."""
+        self._deliver_results()
 
-            # no tool calls: decide whether to nudge or stop
-            if self.supervisor.supervise(
-                terminal=True,
-                agentic=bool(session.tools_enabled),
-                top_level=self.top_level,
-                pending=bool(self.pending),
-            ):
-                self.messages.append(
-                    Message(role="user", content=config.NUDGE_MESSAGE, injected=True)
-                )
-                continue
-            if self.error:
-                return f"Error: {self.error or 'unknown error'}"
-            return assistant.text()
+    def _handle_supervise(self) -> None:
+        """SUPERVISE — completion supervision.
 
-        # round budget exhausted (sub-agents only), or an API error broke
-        # the loop
+        A terminal response would otherwise end the run; this state
+        nudges the model back to work while the nudge budget lasts
+        (top-level agentic loops only).  The nudge flag routes WAIT,
+        otherwise DONE."""
+        self.terminal_text = self.info["assistant"].text()
+        if self.supervisor.supervise(
+            terminal=True,
+            agentic=bool(self.session.tools_enabled),
+            top_level=self.top_level,
+            pending=bool(self.pending),
+        ):
+            self.messages.append(
+                Message(role="user", content=config.NUDGE_MESSAGE, injected=True)
+            )
+            self.info["nudged"] = True
+
+    def _handle_done(self) -> None:
+        """DONE — record the final answer.
+
+        Precedence mirrors the machine's exit paths: an error beats the
+        terminal text; the terminal response (from SUPERVISE) wins over
+        the budget-exhaustion scan; a run that ended mid-tool-round
+        with no text anywhere reports the exhaustion explicitly; a run
+        that never produced anything (e.g. max_rounds=0) yields None.
+        """
         if self.error:
-            return self.error
-        # best-effort final answer: the last real assistant text.  The
-        # final message at exhaustion is a tool result or an empty-text
-        # tool-call round — surfacing either as the "final answer" would
-        # feed raw tool output (or "") to the parent, so scan backward
-        # for the last actual text instead.
+            self.result = f"Error: {self.error or 'unknown error'}"
+            return
+        if self.terminal_text is not None:
+            self.result = self.terminal_text
+            return
+        # round budget exhausted (sub-agents only): best-effort final
+        # answer — the last real assistant text.  The final message at
+        # exhaustion is a tool result or an empty-text tool-call round:
+        # surfacing either as the "final answer" would feed raw tool
+        # output (or "") to the parent, so scan backward for the last
+        # actual text instead.
         for m in reversed(self.messages):
             if m.role == "assistant" and m.text().strip():
-                return m.text()
+                self.result = m.text()
+                return
         if self.messages and self.messages[-1].role == "tool":
-            return (
+            self.result = (
                 "Error: sub-agent round budget exhausted mid-tool-round; "
                 "no final answer was produced"
             )
-        return None
+            return
+        self.result = None
+
+    def _handle_errs(self) -> None:
+        """ERRS — API error terminal.
+
+        ``self.error`` is already prefixed with "Error: " by the WAIT
+        handler; surface it verbatim (the old loop's break path did the
+        same — no second prefix)."""
+        self.result = self.error or "Error: unknown error"
+
+    def _handle_abrt(self) -> None:
+        """ABRT — cancelled or superseded run: no result."""
+        self.result = None
+
+    # -- handler registry ------------------------------------------------
+    # Every state has a handler; the terminal ones (DONE/ERRS/ABRT)
+    # record self.result, and the driver stops once one is entered.
+    HANDLERS = {
+        WAIT: _handle_wait,
+        TOOL: _handle_tool,
+        TRET: _handle_tret,
+        SUPERVISE: _handle_supervise,
+        DONE: _handle_done,
+        ERRS: _handle_errs,
+        ABRT: _handle_abrt,
+    }
 
 
 def run_agent_loop(
@@ -525,7 +747,7 @@ def run_agent_loop(
     system: str | None = None,
     max_rounds: int = 60,
 ) -> str | None:
-    """Convenience wrapper running a full agent loop."""
+    """Convenience wrapper running a full agent run (FSM)."""
     return AgentLoop(
         session, messages=messages, top_level=top_level,
         system=system, max_rounds=max_rounds,
@@ -550,8 +772,8 @@ class Supervisor:
     def can_nudge(self) -> bool:
         """Fails closed: a dead session has NO nudge budget.
 
-        Mirrors the Emacs logic where a dead buffer can never record
-        nudges and would otherwise loop forever.
+        A dead session can never record nudges, so without this guard
+        the machine could loop forever on terminal responses.
         """
         return self.alive and self.nudge_count < config.MAX_NUDGES
 

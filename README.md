@@ -4,9 +4,11 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
 
 ## Features
 
-- **Agent loop with completion supervision** — the model is nudged (max 2) when it
-  tries to stop before the task is complete; the nudge counter resets on tool
-  calls; tool results are sanitized so a failed call never strands the loop.
+- **FSM-driven agent execution with completion supervision** — the run is
+  driven by a finite state machine (WAIT/TOOL/TRET/SUPERVISE/DONE/ERRS/
+  ABRT); the model is nudged (max 2) when it tries to stop before the task
+  is complete; the nudge counter resets on tool calls; tool results are
+  sanitized so a failed call never strands the machine.
 - **API retry with backoff** — transient failures (HTTP 429 / 5xx, connection
   errors) are retried automatically with exponential backoff + jitter
   (honoring `Retry-After`), so a rate limit or a dropped connection no longer
@@ -37,7 +39,7 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
   prompt; sub-agents in plan mode receive the read-only reminder.
 - **Sessions** — auto-saved after every response to
   `~/.local/share/python-agent-harness/sessions/`, LLM-generated titles
-  (one-shot per session, fired when the agent loop finishes; the file is
+  (one-shot per session, fired when the agent run finishes; the file is
   renamed to `<title>_<TS>.md`), `/restore` (with `--latest`) and
   `/sessions` TUI commands.
 - **Commands** — `/init` (create/update AGENTS.md), `/review` (uncommitted
@@ -152,7 +154,7 @@ clobber the next run's state (per-run cancellation identity).
 
 ```
 python_agent_harness/
-├── agent.py        agent loop (supervision, nudges, compaction)
+├── agent.py        agent FSM (states, transitions, supervision, compaction)
 ├── client.py       OpenAI-compatible streaming client (httpx)
 ├── models.py       Message / ToolCall / ToolSpec data classes
 ├── token_estimator.py  CJK-aware token estimation + calibration
@@ -184,5 +186,5 @@ Python ≥ 3.11 is required (CI runs 3.11 / 3.12 / 3.13).
 - [x] Plan mode: read-only + plan-file writes only
 - [x] Bash: Ctrl-C process-group kill
 - [x] Session metadata round-trip and title sanitization
-- [x] One-shot LLM title generation after the agent loop finishes
+- [x] One-shot LLM title generation after the agent run finishes
 - [x] Ctrl-C cancel: stale workers can't clobber the next run's history
