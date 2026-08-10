@@ -719,10 +719,99 @@ class TestAgentLoop(unittest.TestCase):
                 result = loop.run()
         self.assertEqual(result, "answer after compaction")
         # compaction replaced the conversation with summary frame + request
+        # as USER messages (the system prompt stays untouched)
+        self.assertEqual(loop.messages[0].role, "user")
+        self.assertEqual(loop.messages[1].role, "user")
+        self.assertIn("Compacted Summary", loop.messages[0].text())
         self.assertTrue(any(
-            m.role == "system" and "Compacted Summary" in m.text()
-            for m in loop.messages
+            "Compacted Summary" in m.text() for m in loop.messages
         ))
+
+    def test_compact_resets_nudge_budget(self):
+        """Compaction must reset the nudge budget: a terminal answer right
+        after compaction must not end the run just because the budget was
+        spent before compaction (elisp parity)."""
+        session = RecordingSession()
+        session.client.script = [
+            "premature final answer 1",
+            "premature final answer 2",
+            "premature final answer 3",
+            "answer after compaction",
+        ]
+        session.tools_enabled = True
+        calls = {"n": 0}
+
+        def fake_estimate(*a, **k):
+            calls["n"] += 1
+            return 1_000_000 if calls["n"] == 3 else 100
+
+        with mock.patch(
+            "python_agent_harness.agent.estimate_payload_tokens",
+            side_effect=fake_estimate,
+        ):
+            loop = AgentLoop(session, messages=[Message(role="user", content="long task")])
+            result = loop.run()
+        self.assertEqual(result, "done")
+        self.assertEqual(loop.messages[0].role, "user")
+        self.assertIn("Compacted Summary", loop.messages[0].text())
+        self.assertGreater(loop.supervisor.nudge_count, 0)
+
+    def test_manual_compact_replaces_history_with_summary_only(self):
+        """Manual /compact replaces the history with the summary frame
+        only — re-appending the last user request is the automatic
+        path's resume step, not the manual command's (elisp parity with
+        gptel-agent-harness-commands-compact-buffer, which erases the
+        buffer and inserts just the summary frame)."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.last_messages = [
+            Message(role="user", content="hello"),
+            Message(role="assistant", content="hi"),
+            Message(role="user", content="please continue"),
+        ]
+        ok, msg = session.compact_conversation()
+        self.assertTrue(ok)
+        self.assertEqual(len(session.last_messages), 1)
+        self.assertEqual(session.last_messages[0].role, "user")
+        self.assertIn("Compacted Summary", session.last_messages[0].text())
+
+    def test_manual_compact_does_not_require_user_request(self):
+        """Compacting a summary-only history (e.g. a second /compact)
+        must still work: the manual command no longer needs a user
+        request to resume with."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.last_messages = [
+            Message(role="user", content="**[Compacted Summary]**\n\nold summary"),
+        ]
+        ok, _ = session.compact_conversation()
+        self.assertTrue(ok)
+        self.assertEqual(len(session.last_messages), 1)
+        self.assertEqual(session.last_messages[0].role, "user")
+        self.assertIn("Compacted Summary", session.last_messages[0].text())
+
+    def test_auto_compact_mirrors_shared_history(self):
+        """The in-loop compaction must mirror the compacted conversation
+        onto session.last_messages, so the TUI and a later manual
+        /compact see the summary — not the old full history."""
+        session = RecordingSession()
+        session.client.script = ["answer after compaction"]
+        with mock.patch("python_agent_harness.config.MAX_NUDGES", 0):
+            calls = {"n": 0}
+
+            def fake_estimate(*a, **k):
+                calls["n"] += 1
+                return 1_000_000 if calls["n"] <= 2 else 100
+
+            with mock.patch(
+                "python_agent_harness.agent.estimate_payload_tokens",
+                side_effect=fake_estimate,
+            ):
+                loop = AgentLoop(session, messages=[Message(role="user", content="long task")])
+                loop.run()
+        # the compacted frame reached the shared history as a user message
+        self.assertEqual(session.last_messages[0].role, "user")
+        self.assertIn("Compacted Summary", session.last_messages[0].text())
 
     def test_auto_save_and_last_messages(self):
         session = RecordingSession()
@@ -1263,7 +1352,10 @@ class TestAgentLoop(unittest.TestCase):
         session.compact_conversation()
         self.assertEqual(session.run_generation, gen + 1)
         self.assertEqual(
-            [m.role for m in session.last_messages], ["system", "user"]
+            [m.role for m in session.last_messages], ["user"]
+        )
+        self.assertIn(
+            "Compacted Summary", session.last_messages[0].text()
         )
         session.summarize_conversation()
         self.assertEqual(session.run_generation, gen + 2)

@@ -1378,6 +1378,68 @@ class TestTui(unittest.TestCase):
         tui.console.print(tui._render_frame())
         self.assertNotIn("[!save]", buf.getvalue())
 
+    def test_compacted_summary_renders_as_user_message(self):
+        """The compacted summary lives in the user turn: the frame must
+        render as the dim 📦 row even with role=user (live sessions),
+        not as a normal user body."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(
+                role="user",
+                content="**[Compacted Summary]**\n\nfixed the bug\n\n---\n\n"
+                        "**[Context compacted]**\n\n---\n\n",
+            ),
+        ]
+        tui.console.print(tui._render_frame())
+        out = buf.getvalue()
+        self.assertIn("📦", out)
+        self.assertIn("fixed the bug", out)
+        self.assertNotIn("**user:**", out)
+
+    def test_compact_syncs_tui_conversation_history(self):
+        """/compact replaces the shared conversation with the summary
+        frame: the TUI's own history must follow, or the next run
+        restarts from the old full conversation and immediately
+        re-compacts it."""
+        tui, _ = make_tui()
+        tui.conversation_history = [
+            Message(role="user", content="old full history"),
+        ]
+        compacted = [
+            Message(role="user", content="**[Compacted Summary]**\n\nx"),
+        ]
+        with mock.patch.object(
+            tui.session, "compact_conversation", return_value=(True, "ok"),
+        ), mock.patch.object(
+            tui.session, "last_messages", compacted, create=True,
+        ):
+            tui._run_compact()
+        self.assertEqual(
+            [m.role for m in tui.conversation_history], ["user"]
+        )
+        self.assertEqual(
+            [m.text() for m in tui.conversation_history],
+            [m.text() for m in compacted],
+        )
+
+    def test_summary_syncs_tui_conversation_history(self):
+        tui, _ = make_tui()
+        tui.conversation_history = [Message(role="user", content="hello")]
+        summarized = [
+            Message(role="user", content="hello"),
+            Message(role="assistant", content="summary appended"),
+        ]
+        with mock.patch.object(
+            tui.session, "summarize_conversation", return_value="summary appended",
+        ), mock.patch.object(
+            tui.session, "last_messages", summarized, create=True,
+        ):
+            tui._run_summary()
+        self.assertEqual(
+            [m.text() for m in tui.conversation_history],
+            [m.text() for m in summarized],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

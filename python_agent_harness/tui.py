@@ -493,7 +493,10 @@ class Tui:
                     calls_by_id[tc.id] = tc
 
         for m in self.session.last_messages or []:
-            if m.role == "system" and m.text().startswith("**[Compacted Summary]**"):
+            # compacted summaries live in the user turn (system prompt is
+            # separate); match on content so both live sessions and
+            # restored files (role lost in the markdown round-trip) render
+            if m.text().startswith("**[Compacted Summary]**"):
                 rows.append(Text("📦 " + _tail_chars(m.text(), 200), style="dim italic"))
                 continue
             if m.role == "user":
@@ -1177,12 +1180,22 @@ class Tui:
     # ------------------------------------------------------------------
     def _run_compact(self) -> None:
         """Compact the current conversation directly."""
-        _, msg = self.session.compact_conversation()
+        ok, msg = self.session.compact_conversation()
+        if ok:
+            # The shared conversation was replaced: sync the TUI's own
+            # history too, or the next run would restart from the old
+            # full conversation and immediately re-compact it.
+            self.conversation_history = list(self.session.last_messages)
+            self._history_dirty = True
         self.console.print(msg)
 
     def _run_summary(self) -> None:
         """Append a summary of the conversation (tools disabled)."""
         msg = self.session.summarize_conversation()
+        # A successful summary appended to the shared conversation: keep
+        # the TUI's own history in sync (no-op when nothing changed).
+        self.conversation_history = list(self.session.last_messages)
+        self._history_dirty = True
         self.console.print(msg)
 
     def _run_sessions(self) -> None:

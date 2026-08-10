@@ -459,10 +459,12 @@ class AgentSession:
         Mirrors gptel-agent-harness-commands-compact-buffer: the whole
         conversation is sent as the user message with the compact prompt
         as system (tools/stream disabled); on success the conversation is
-        replaced by the summary frame + the last real user request, and
-        the session file is refreshed.
+        replaced by the summary frame only.  Re-appending the last user
+        request is the automatic path's job (``AgentLoop.compact``),
+        which resumes the run with it; the manual command just replaces
+        the history and waits for the next user message.
         """
-        from .prompts import last_user_request, read_prompt_file
+        from .prompts import read_prompt_file
         from .models import Message as Msg
 
         # Replacing the conversation is a new generation: invalidate any
@@ -474,9 +476,6 @@ class AgentSession:
             return False, "Nothing to compact."
         if self.compacting:
             return False, "Compaction already in progress."
-        request = last_user_request([m.to_api() for m in messages])
-        if not request:
-            return False, "No user request to resume after compaction."
         self.compacting = True
         try:
             conversation = self._conversation_text(messages)
@@ -488,9 +487,13 @@ class AgentSession:
             if not summary:
                 return False, "Compaction failed: empty summary."
             frame = config.COMPACT_HEADER + summary + config.COMPACT_SEPARATOR
+            # The summary is part of the user turn (the original system
+            # prompt is passed separately and stays untouched), so it
+            # replaces the history as a user message — matching the
+            # elisp flow where the compacted summary is plain buffer
+            # text sent as the user prompt.
             self.last_messages = [
-                Msg(role="system", content=frame.strip()),
-                Msg(role="user", content=request),
+                Msg(role="user", content=frame.strip()),
             ]
             self.auto_save(self.last_messages, self.system_prompt)
             self.notify("compact")

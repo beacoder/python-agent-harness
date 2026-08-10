@@ -180,10 +180,27 @@ class AgentLoop:
             if not summary:
                 return False
             frame = config.COMPACT_HEADER + summary + config.COMPACT_SEPARATOR
+            # The summary replaces the whole conversation history EXCEPT
+            # the system prompt (self.system is passed separately and
+            # stays untouched): it is part of the user turn, like elisp
+            # inserts it into the gptel buffer and gptel-send sends the
+            # buffer as the user prompt — never as a system message.
             self.messages = [
-                Message(role="system", content=frame.strip()),
+                Message(role="user", content=frame.strip()),
                 Message(role="user", content=request),
             ]
+            # The shared conversation now is the compacted one: mirror it
+            # onto session.last_messages so the TUI (renders from it) and
+            # a later manual /compact start from the summary, not the old
+            # full history.
+            if self.top_level and not self._is_cancelled():
+                self.session.last_messages = list(self.messages)
+            # Fresh start for the resumed conversation: the pre-compaction
+            # nudge budget must not carry over, or the first terminal
+            # answer after compaction ends the run immediately (elisp
+            # parity: gptel-agent-harness--compact resets the count on
+            # success).
+            self.supervisor.reset_nudges()
             self.session.notify("compact")
             return True
         except Exception as e:  # noqa: BLE001 - compaction failure is non-fatal
