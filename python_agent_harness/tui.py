@@ -110,7 +110,7 @@ def _is_injected_user_text(text: str) -> bool:
     Live sessions flag injected messages directly; these content checks
     cover restored sessions, where the flag is lost in the markdown
     round-trip: the completion nudge, the <system-reminder>-wrapped
-    plan/build-switch prompts (plan.txt, plan-mode.txt, build-switch.txt
+    plan/build-switch prompts (plan.md, plan-mode.md, build-switch.md
     all start with the reminder tag), and the plan-exit approval notice.
     """
     if text == config.NUDGE_MESSAGE:
@@ -236,7 +236,7 @@ class SlashCompleter(Completer):
 
     - A first token starting with ``/`` completes against the known
       slash commands (builtins + custom commands from
-      prompts/commands/*.txt); if no command matches, it is treated as
+      prompts/commands/*.md); if no command matches, it is treated as
       an absolute path.
     - After a slash command's space, Tab completes paths relative to
       the session's project dir (absolute and ``~`` paths work too).
@@ -388,7 +388,6 @@ class Tui:
         session.log_fn = self._on_log
         session.confirm_fn = self._ui_confirm
         session.ask_fn = self._ui_ask
-        session.bash_approval_fn = self._ui_bash_approval
 
     # ------------------------------------------------------------------
     # session callbacks (called from the worker thread)
@@ -458,20 +457,6 @@ class Tui:
                 answer = ", ".join(a.strip() for a in answer.split(",") if a.strip())
             lines.append(f'"{prompt}" = "{answer}"')
         return "\n".join(lines) if lines else "Unanswered"
-
-    def _ui_bash_approval(self, command: str) -> tuple[bool, str]:
-        prompt = (
-            f"[bold yellow]Dangerous Bash command[/bold yellow]\n\n"
-            f"{command}\n\n"
-            "Run it?  [y]es / [n]o / [a]lways allow (session) / [d]eny (session)"
-        )
-        q = UiQuestion(prompt, options=["y", "n", "a", "d"])
-        answer = self._ask_sync(q).strip().lower()
-        if answer in ("y", "yes", "a", "always"):
-            return True, ("allow" if answer.startswith("a") else "run")
-        if answer in ("d", "deny"):
-            return False, "deny"
-        return False, "run"
 
     def _ask_sync(self, q: UiQuestion) -> str:
         """Block the worker thread until the main thread answers."""

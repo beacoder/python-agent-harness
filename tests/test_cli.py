@@ -172,7 +172,7 @@ class TestCommandToolAvailability(unittest.TestCase):
         )
 
         customs = load_custom_commands()
-        self.assertTrue(customs)  # explain.txt etc. bundled
+        self.assertTrue(customs)  # explain.md etc. bundled
         for c in customs:
             self.assertTrue(c.allow_planexit, c.name)
         self.assertTrue(find_command("explain").allow_planexit)

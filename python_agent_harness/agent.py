@@ -168,7 +168,7 @@ class AgentLoop:
             conversation = "\n\n".join(
                 f"{m.role}: {m.text()}" for m in self.messages if m.text()
             )
-            system = read_prompt_file("compact.txt")
+            system = read_prompt_file("compact.md")
             resp, _ = self.session.client.chat_sync(
                 [Message(role="user", content=conversation)], system=system
             )

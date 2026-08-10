@@ -4,9 +4,9 @@ Ported from gptel-agent-harness.el's build/plan mode section.
 
 - Plan mode: read-only except the per-session plan file
   (<tmp>/python-agent-plans-<proj>-<rand>/PLAN.md).
-- Switching to plan truncates the plan file and queues plan.txt +
-  plan-mode.txt (${planInfo} -> plan file path) for injection into the
-  next top-level request; switching back queues build-switch.txt.
+- Switching to plan truncates the plan file and queues plan.md +
+  plan-mode.md (${planInfo} -> plan file path) for injection into the
+  next top-level request; switching back queues build-switch.md.
 - Queued prompts are injected before the last user message (appended
   when the last message is a tool result) and consumed exactly once.
 - Sub-agent requests in plan mode get the plan-mode reminder once per
@@ -26,22 +26,15 @@ from .models import AgentMode
 
 
 def _plan_temp_dir() -> str:
-    """Reliable temp dir, skipping mounted filesystems (e.g. WSL /mnt)."""
-    candidates = [
+    """Reliable temp dir (first candidate that is set, else /tmp)."""
+    for d in (
         os.environ.get("TMPDIR"),
         os.environ.get("TMP"),
         os.environ.get("TEMP"),
         tempfile.gettempdir(),
-    ]
-    for d in candidates:
-        if not d:
-            continue
-        d = os.path.abspath(d)
-        if config.FORBIDDEN_PATHS and any(
-            __import__("re").search(p, d) for p in config.FORBIDDEN_PATHS
-        ):
-            continue
-        return d
+    ):
+        if d:
+            return os.path.abspath(d)
     return "/tmp"
 
 

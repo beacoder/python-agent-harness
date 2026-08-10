@@ -1,10 +1,9 @@
-"""AgentSession: the runtime hub wiring tools, safety, plan mode.
+"""AgentSession: the runtime hub wiring tools, plan mode.
 
-The session implements the ToolContext-facing API (path guards, bash
-verdicts, sub-agents, questions) and the
-agent-loop-facing API (client, calibrator, plan mode, auto-save,
-notifications).  The TUI layer subclasses it to provide interactive
-confirmations.
+The session implements the ToolContext-facing API (sub-agents,
+questions) and the agent-loop-facing API (client, calibrator, plan
+mode, auto-save, notifications).  The TUI layer subclasses it to
+provide interactive confirmations.
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ from . import config
 from .client import Client
 from .models import AgentMode
 from .planmode import PlanMode
-from .safety import BashPolicy, SafetyViolation, check_path
 from .session_store import SessionStore
 from .subagent import run_subagent
 from .token_estimator import TokenCalibrator
@@ -96,7 +94,6 @@ class AgentSession:
         self.registry = registry or Registry()
         self.calibrator = TokenCalibrator()
         self.plan_mode = PlanMode(project_dir)
-        self.bash_policy = BashPolicy()
         self.tool_ctx = ToolContext(self)
         self._tool_diffs: dict[str, str] = {}
         # thread-local: parallel sub-agents each execute tools in their
@@ -145,7 +142,6 @@ class AgentSession:
         self.notify_fn: Callable[[str], None] | None = None
         self.confirm_fn: Callable[[str], bool] | None = None
         self.ask_fn: Callable[[list[dict]], str] | None = None
-        self.bash_approval_fn: Callable[[str], tuple[bool, str]] | None = None
 
     # ------------------------------------------------------------------
     # notifications
@@ -184,7 +180,7 @@ class AgentSession:
     def execute_tool(
         self, name: str, args: dict[str, Any], call_id: str | None = None
     ) -> str:
-        """Execute a tool with safety integration.
+        """Execute a tool.
 
         ``call_id`` (when given) lets Edit/Write attach a unified diff
         for the TUI to render; retrieve it afterwards with
@@ -195,14 +191,6 @@ class AgentSession:
             blocked = self._plan_blocked(name, args)
             if blocked:
                 return blocked
-
-        if name in ("Write", "Edit", "Insert", "Mkdir"):
-            path = self._tool_path(name, args)
-            if path:
-                try:
-                    check_path(path, name)
-                except SafetyViolation as e:
-                    return str(e)
 
         self._active_call.call_id = call_id
         try:
@@ -225,7 +213,10 @@ class AgentSession:
 
     def _plan_blocked(self, name: str, args: dict[str, Any]) -> str | None:
         if name == "Bash":
-            return None  # handled by bash policy below
+            return (
+                "Error: blocked by plan mode (read-only phase); "
+                "Bash is disabled — use Read/Glob/Grep for read-only access"
+            )
         path = self._tool_path(name, args)
         if path and path != self.plan_mode.plan_file:
             return (
@@ -248,54 +239,6 @@ class AgentSession:
     # ------------------------------------------------------------------
     # ToolContext-facing API
     # ------------------------------------------------------------------
-    def guard_path(self, path: str, tool_name: str) -> None:
-        check_path(path, tool_name)
-
-    def verify_bash(self, command: str) -> str | None:
-        """Return an error string to deliver, or None to run.
-
-        The interactive approval prompt is serialized: parallel tool
-        rounds may reach CONFIRM simultaneously, but the user can only
-        answer one question at a time.  Command *execution* stays
-        parallel — the lock is released before the process starts.
-        """
-        with self._interactive_lock:
-            self.bash_policy.plan_mode = self.plan_mode.is_plan
-            verdict = self.bash_policy.verdict(command)
-            if verdict != "CONFIRM":
-                return verdict
-            if self.bash_approval_fn:
-                run, answer = self.bash_approval_fn(command)
-            else:
-                run, answer = self._ask_via_tui(command)
-            if answer == "allow":
-                self.bash_policy.record(command, "allow")
-                return None
-            if answer == "deny":
-                self.bash_policy.record(command, "deny")
-                return "Error: Bash command rejected by user approval (denied for this session)."
-            if run:
-                return None
-            return "Error: Bash command rejected by user approval."
-
-    def _ask_via_tui(self, command: str) -> tuple[bool, str]:
-        prompt = (
-            "Dangerous Bash command:\n\n"
-            f"{command}\n\n"
-            "Run it? [y]es / [n]o / [a]lways allow (session) / [d]eny (session)"
-        )
-        if self.ask_fn is None:
-            # headless fallback: run once (matches confirm-tool-calls opt-out)
-            return True, "run"
-        answer = self.ask_fn([{"question": prompt}])
-        if answer.startswith("a"):
-            return True, "allow"
-        if answer.startswith("d"):
-            return False, "deny"
-        if answer.startswith("y") or "Yes" in answer:
-            return True, "run"
-        return False, "run"
-
     def update_todos(self, todos: list[dict]) -> None:
         """Store TODOS so the pinned TUI panel shows the current list."""
         self.todos = list(todos)
@@ -376,9 +319,9 @@ class AgentSession:
         from .prompts import read_prompt_file
 
         return {
-            "plan": read_prompt_file("plan.txt"),
-            "plan-mode": read_prompt_file("plan-mode.txt"),
-            "build-switch": read_prompt_file("build-switch.txt"),
+            "plan": read_prompt_file("plan.md"),
+            "plan-mode": read_prompt_file("plan-mode.md"),
+            "build-switch": read_prompt_file("build-switch.md"),
         }
 
     # ------------------------------------------------------------------
@@ -408,7 +351,7 @@ class AgentSession:
             self.log(f"auto-save failed: {e}")
 
     def generate_session_title(self) -> None:
-        """Generate a title from the first real user message (title.txt).
+        """Generate a title from the first real user message (title.md).
 
         Mirrors gptel-agent-harness--generate-session-title: one-shot per
         session (guarded by store.title / title_pending); on success the
@@ -432,7 +375,7 @@ class AgentSession:
             from .prompts import read_prompt_file
             from .models import Message as Msg
 
-            system = read_prompt_file("title.txt")
+            system = read_prompt_file("title.md")
             resp, _ = self.client.chat_sync(
                 [Msg(role="user", content=first)],
                 system=system,
@@ -523,7 +466,7 @@ class AgentSession:
         self.compacting = True
         try:
             conversation = self._conversation_text(messages)
-            system = read_prompt_file("compact.txt")
+            system = read_prompt_file("compact.md")
             resp, _ = self.client.chat_sync(
                 [Msg(role="user", content=conversation)], system=system
             )
@@ -562,7 +505,7 @@ class AgentSession:
         if not messages:
             return "Nothing to summarize."
         conversation = self._conversation_text(messages)
-        system = read_prompt_file("summary.txt")
+        system = read_prompt_file("summary.md")
         try:
             resp, _ = self.client.chat_sync(
                 [Msg(role="user", content=conversation)], system=system

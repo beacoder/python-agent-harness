@@ -76,7 +76,7 @@ class TestSubagentPromptSelection(unittest.TestCase):
         self.assertNotIn("MAIN AGENT PROMPT", session.client.systems[0])
 
     def test_subagent_prompt_never_includes_rules_or_context(self):
-        """The sub-agent's system prompt is subagent.txt ONLY — no
+        """The sub-agent's system prompt is subagent.md ONLY — no
         task-completion rules and no project context, even when the
         parent's system prompt carries both."""
         parent = (

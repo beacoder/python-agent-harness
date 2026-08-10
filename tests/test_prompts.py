@@ -58,7 +58,7 @@ class TestLoadAgentPrompt(unittest.TestCase):
             self.assertIsNone(load_agent_prompt(path))
 
     def test_bundled_agent_files_present(self):
-        """The package-bundled prompts (prompts/agent.txt, prompts/subagent.txt)
+        """The package-bundled prompts (prompts/agent.md, prompts/subagent.md)
         must load cleanly and differ from each other."""
         main = load_agent_prompt(config.DEFAULT_AGENT_PROMPT_FILE)
         sub = load_agent_prompt(config.DEFAULT_SUBAGENT_PROMPT_FILE)

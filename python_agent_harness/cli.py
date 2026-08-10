@@ -4,7 +4,7 @@ Commands:
   run [project]            interactive TUI agent session (default)
   config [--init]          show effective LLM config / write a template file
 
-Custom commands (prompts/commands/*.txt) — like init, review,
+Custom commands (prompts/commands/*.md) — like init, review,
 sessions, restore and summary/explain — are TUI slash commands only;
 they are NOT registered as CLI subcommands.
 

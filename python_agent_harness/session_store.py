@@ -5,7 +5,7 @@ Ported from gptel-agent-harness-session.el.
 - Auto-save the conversation after each LLM response to
   ~/.local/share/python-agent-harness/sessions/<name>_<YYMMDDHHMMSS>.md
   with a trailing metadata block (;; Local Variables: ...).
-- Async title generation from the first user message (title.txt);
+- Async title generation from the first user message (title.md);
   on success the file is renamed to <title>_<TS>.md.
 - restore / restore-latest commands re-load a session.
 """

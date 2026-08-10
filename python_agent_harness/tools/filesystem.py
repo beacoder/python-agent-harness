@@ -30,7 +30,6 @@ from pathlib import Path
 
 from .base import Tool, ToolContext
 from ..diffrender import unified_diff
-from ..safety import path_forbidden
 
 MAX_OUTPUT = 20_000   # spill threshold (chars), matching gptel-agent--truncate-buffer
 SPOOL_LINES = 50      # preview lines kept when results are spilled
@@ -46,20 +45,15 @@ def _truncate(text: str, label: str = "output") -> str:
 
 
 def _spool_dir() -> str:
-    """Reliable temp dir for spilled results, skipping forbidden mounts."""
-    candidates = [
+    """Reliable temp dir for spilled results (first candidate set, else /tmp)."""
+    for d in (
         os.environ.get("TMPDIR"),
         os.environ.get("TMP"),
         os.environ.get("TEMP"),
         tempfile.gettempdir(),
-    ]
-    for d in candidates:
-        if not d:
-            continue
-        d = os.path.abspath(d)
-        if path_forbidden(d):
-            continue
-        return d
+    ):
+        if d:
+            return os.path.abspath(d)
     return "/tmp"
 
 
@@ -121,7 +115,6 @@ class Read(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         path = args["file_path"]
-        ctx.guard_path(path, "Read")
         full = os.path.realpath(os.path.abspath(path))
         if os.path.isdir(full):
             return f"Error: cannot read {path}: is a directory"
@@ -205,7 +198,6 @@ class GlobTool(Tool):
         base = os.path.abspath(args.get("path") or ctx.cwd)
         if not os.path.isdir(base):
             return f"Error: path {args.get('path') or ctx.cwd} is not readable"
-        ctx.guard_path(base, "Glob")
         depth = args.get("depth")
         if depth is not None:
             depth = int(depth)
@@ -315,7 +307,6 @@ class Grep(Tool):
         path = os.path.abspath(args["path"])
         if not os.path.isdir(path) and not os.path.isfile(path):
             return f"Error: path {args['path']} is not readable"
-        ctx.guard_path(path, "Grep")
         glob = args.get("glob")
         context = args.get("context_lines")
         if context is not None:
@@ -401,7 +392,6 @@ class Mkdir(Tool):
         parent = args["parent"]
         name = args["name"]
         path = os.path.abspath(os.path.join(parent, name))
-        ctx.guard_path(path, "Mkdir")
         try:
             os.makedirs(path, exist_ok=True)
             return f"Directory {name} created/verified in {parent}"
@@ -427,7 +417,6 @@ class Write(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         path = os.path.abspath(os.path.join(args["path"], args["filename"]))
-        ctx.guard_path(path, "Write")
         existed = os.path.exists(path)
         old_content = ""
         if existed:
@@ -468,7 +457,6 @@ class Edit(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         path = os.path.abspath(args["path"])
-        ctx.guard_path(path, "Edit")
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -621,7 +609,6 @@ class Insert(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         path = os.path.abspath(args["path"])
-        ctx.guard_path(path, "Insert")
         try:
             with open(path, "r", encoding="utf-8") as f:
                 lines = f.read().splitlines(keepends=True)

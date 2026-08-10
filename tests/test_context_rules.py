@@ -1,7 +1,7 @@
-"""task-completion-rules.txt must be auto-injected into the system prompt:
+"""task-completion-rules.md must be auto-injected into the system prompt:
 it is the LAST context piece, immediately before the actual agent prompt —
 for the main agent, session commands, and the TUI slash path.  Sub-agents
-are excluded by design: their system prompt is subagent.txt ONLY.
+are excluded by design: their system prompt is subagent.md ONLY.
 """
 
 import tempfile
@@ -43,7 +43,7 @@ class TestTaskCompletionRules(unittest.TestCase):
 
     def test_assemble_rules_before_agent_without_context(self):
         """include_context=False keeps the rules (this path is NOT used
-        for sub-agents — they get subagent.txt only)."""
+        for sub-agents — they get subagent.md only)."""
         prompt = assemble_agent_prompt("/tmp", "AGENT PROMPT", include_context=False)
         self.assertLess(
             prompt.index("Task Completion Rules"), prompt.index("AGENT PROMPT")

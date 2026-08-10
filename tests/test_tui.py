@@ -127,8 +127,8 @@ class TestTui(unittest.TestCase):
         plan_file = "/tmp/python-agent-plans-proj-ab12cd/PLAN.md"
         tui.session.last_messages = [
             Message(role="user", content="real typed request"),
-            Message(role="user", content="plan.txt contents", injected=True),
-            Message(role="user", content="plan-mode.txt contents", injected=True),
+            Message(role="user", content="plan.md contents", injected=True),
+            Message(role="user", content="plan-mode.md contents", injected=True),
             Message(
                 role="user",
                 content=config.PLAN_EXIT_APPROVED_MESSAGE % plan_file,
@@ -138,8 +138,8 @@ class TestTui(unittest.TestCase):
         tui.console.print(tui._render_conversation())
         out = buf.getvalue()
         self.assertIn("real typed request", out)
-        self.assertNotIn("plan.txt contents", out)
-        self.assertNotIn("plan-mode.txt contents", out)
+        self.assertNotIn("plan.md contents", out)
+        self.assertNotIn("plan-mode.md contents", out)
         self.assertNotIn("plan at ", out)
         self.assertNotIn(plan_file, out)
         # the stored messages are untouched
@@ -161,7 +161,7 @@ class TestTui(unittest.TestCase):
                 role="user",
                 content=(
                     "<system-reminder>\n# Plan Mode - System Reminder\n\n"
-                    "plan.txt body"
+                    "plan.md body"
                 ),
             ),
             Message(

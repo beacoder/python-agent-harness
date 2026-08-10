@@ -7,14 +7,13 @@ from dataclasses import field
 from typing import Any
 
 from ..models import ToolSpec
-from ..safety import SafetyViolation
 
 
 class ToolContext:
     """Runtime context handed to tools.
 
-    Tools may call back into the session for approvals, user questions,
-    plan-mode checks, and safety guards.  All methods
+    Tools may call back into the session for user questions,
+    plan-mode checks, and sub-agent delegation.  All methods
     proxy to the session when present; defaults are safe no-ops.
     """
 
@@ -29,21 +28,6 @@ class ToolContext:
         if self.session and hasattr(self.session, "ask_questions"):
             return self.session.ask_questions(questions)
         return "Unanswered"
-
-    def guard_path(self, path: str, tool_name: str) -> None:
-        if self.session and hasattr(self.session, "guard_path"):
-            self.session.guard_path(path, tool_name)
-
-    def verify_bash(self, command: str) -> str | None:
-        if self.session and hasattr(self.session, "verify_bash"):
-            return self.session.verify_bash(command)
-        return None
-
-    @property
-    def bash_timeout(self) -> int:
-        if self.session and hasattr(self.session, "bash_policy"):
-            return self.session.bash_policy.timeout
-        return 300
 
     def record_diff(self, diff_text: str) -> None:
         """Attach a unified diff to the currently-executing tool call."""
@@ -120,8 +104,5 @@ class Registry:
             return f"Error: unknown tool {name!r}"
         try:
             return tool.run(args, ctx)
-        except SafetyViolation as e:
-            # deliver the guard's message verbatim (matches elisp behavior)
-            return str(e)
         except Exception as e:  # noqa: BLE001 - errors become tool results
             return f"Error: tool {name} failed — {e}"

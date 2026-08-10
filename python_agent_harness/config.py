@@ -44,64 +44,6 @@ COMPACT_SEPARATOR = "\n\n---\n\n**[Context compacted]**\n\n---\n\n"
 CALIBRATION_MIN = 0.5
 CALIBRATION_MAX = 3.0
 
-# ---- safety ----------------------------------------------------------------
-FORBIDDEN_PATHS: list[str] = [r"^\s*/mnt/"]
-BASH_TIMEOUT = 300
-BASH_APPROVAL = "confirm"  # "nil" | "confirm" | "block"
-
-DANGEROUS_PATTERNS: list[str] = [
-    r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|[^\s]*\s+-[a-zA-Z]*r\b)",
-    r"\bgit\s+push\s+--force",
-    r"\bgit\s+reset\s+--hard",
-    r"\bchmod\s+-R\s+[0-7][0-7][0-7]",
-    r"\bchown\s+-R\b",
-    r"\bsu\s+-",
-    r"\btar\s+--remove-files",
-]
-
-DESTRUCTIVE_PATTERNS: list[str] = [
-    r"\bkillall\b",
-    r"\bpkill\b",
-    r"\bsudo\b",
-]
-
-CATASTROPHIC_PATTERNS: list[str] = [
-    r"\brm\s+-rf\s+/",
-    r"\bmkfs\b",
-    r"\bdd\s+if=",
-    r":\(\)\s*\{",
-    r"\bshutdown\b",
-    r"\breboot\b",
-    r">\s*/dev/sd[a-z]",
-    r"\bmv\s+/\s",
-    r"\brmdir\s+/",
-]
-
-PLAN_READONLY_COMMANDS: set[str] = {
-    "ls", "cat", "head", "tail", "less", "more", "pwd", "echo", "printf",
-    "find", "grep", "rg", "git", "git-status", "git-diff", "git-log",
-    "git-show", "git-branch", "git-blame", "git-ls-files", "wc", "sort",
-    "uniq", "cut", "tr", "sed", "awk", "file", "stat", "du", "df", "env",
-    "which", "whereis", "type", "python", "python3", "node", "jq", "yq",
-    "date", "cal", "tree", "basename", "dirname", "readlink", "realpath",
-    "xargs", "test", "[", "true", "false", "git-grep", "git-log",
-}
-
-GIT_MUTATING_SUBCOMMANDS: set[str] = {
-    "add", "rm", "mv", "commit", "rebase", "reset", "checkout", "switch",
-    "restore", "merge", "cherry-pick", "revert", "push", "pull", "fetch",
-    "clone", "init", "clean", "stash", "tag", "branch", "apply", "am",
-    "format-patch", "archive", "bundle", "worktree", "maintenance",
-    "update-index", "update-ref", "symbolic-ref", "config",
-}
-
-BASH_ARG_DENYLIST: list[tuple[str, set[str]]] = [
-    ("find", {"-delete", "-exec", "-execdir", "-ok", "-okdir"}),
-    ("sort", {"-o", "--output"}),
-    ("yq", {"-i", "--inplace"}),
-    ("jq", {"-i", "--in-place"}),
-]
-
 # ---- sessions ---------------------------------------------------------------
 SESSION_DIR = Path(
     os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
@@ -176,11 +118,11 @@ TOOL_RESULT_PREVIEW_CHARS = 500  # max chars of that preview (long single lines)
 
 # ---- default agent prompts -----------------------------------------------------
 # Ported system prompts (opencode-style) for the main agent and sub-agents,
-# bundled with the package (prompts/agent.txt, prompts/subagent.txt).
+# bundled with the package (prompts/agent.md, prompts/subagent.md).
 # Missing files are tolerated: callers fall back to no system prompt.
 PROMPTS_DIR = Path(__file__).parent / "prompts"
-DEFAULT_AGENT_PROMPT_FILE = PROMPTS_DIR / "agent.txt"
-DEFAULT_SUBAGENT_PROMPT_FILE = PROMPTS_DIR / "subagent.txt"
+DEFAULT_AGENT_PROMPT_FILE = PROMPTS_DIR / "agent.md"
+DEFAULT_SUBAGENT_PROMPT_FILE = PROMPTS_DIR / "subagent.md"
 
 # ---- configuration file ---------------------------------------------------------
 CONFIG_DIR = Path(

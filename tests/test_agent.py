@@ -124,8 +124,8 @@ class ParallelToolSession(RecordingSession):
 
 class SerialPromptSession(RecordingSession):
     """Session whose interactive prompt handlers (Question / PlanExit
-    confirm / dangerous-Bash approval) each block DURATION seconds while
-    tracking peak concurrency — to verify the session serializes them."""
+    confirm) each block DURATION seconds while tracking peak
+    concurrency — to verify the session serializes them."""
 
     def __init__(self, duration=0.3):
         super().__init__()
@@ -135,7 +135,6 @@ class SerialPromptSession(RecordingSession):
         self._lock = threading.Lock()
         self.ask_fn = self._prompt
         self.confirm_fn = self._prompt
-        self.bash_approval_fn = lambda cmd: (self._prompt(cmd), "run")
 
     def _prompt(self, prompt):
         with self._lock:
@@ -457,14 +456,13 @@ class TestAgentLoop(unittest.TestCase):
         self.assertIn("boom", tool_rows[2][1])
 
     def test_interactive_prompts_serialized_under_parallel_rounds(self):
-        """Interactive prompts (Question tool, PlanExit confirmation,
-        dangerous-Bash approval) must be strictly serialized: concurrent
-        calls never present more than one prompt at a time."""
+        """Interactive prompts (Question tool, PlanExit confirmation)
+        must be strictly serialized: concurrent calls never present more
+        than one prompt at a time."""
         session = SerialPromptSession(duration=0.3)
         threads = [
             threading.Thread(target=lambda: session.ask_questions([{"question": "q1"}])),
             threading.Thread(target=lambda: session.confirm("switch?")),
-            threading.Thread(target=lambda: session.verify_bash("chmod -R 755 /tmp/x")),
             threading.Thread(target=lambda: session.ask_questions([{"question": "q2"}])),
         ]
         start = time.monotonic()
@@ -473,9 +471,9 @@ class TestAgentLoop(unittest.TestCase):
         for t in threads:
             t.join()
         elapsed = time.monotonic() - start
-        # 4 prompts x 0.3s, one at a time
+        # 3 prompts x 0.3s, one at a time
         self.assertEqual(session.max_active, 1)
-        self.assertGreaterEqual(elapsed, 0.8)
+        self.assertGreaterEqual(elapsed, 0.6)
 
     def test_parallel_edits_attach_diffs_to_their_own_call(self):
         """Two real Edit calls running in parallel must attach each
@@ -605,8 +603,7 @@ class TestAgentLoop(unittest.TestCase):
 
     def test_real_bash_commands_run_in_parallel(self):
         """Two REAL Bash invocations in one round complete in ~one sleep
-        duration, not two: the serialization lock covers only the
-        approval prompt, never command execution."""
+        duration, not two: execution is not serialized."""
         with tempfile.TemporaryDirectory(prefix="pah-bash-") as tmpdir:
             session = RecordingSession(project_dir=tmpdir)
             session.tools_enabled = False

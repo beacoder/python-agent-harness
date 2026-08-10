@@ -37,9 +37,6 @@ class FakeSession:
     def project_dir(self) -> str:
         return "/tmp"
 
-    def guard_path(self, path: str, tool_name: str) -> None:
-        pass
-
     def record_diff(self, diff_text: str) -> None:
         self.recorded_diffs.append(diff_text)
 

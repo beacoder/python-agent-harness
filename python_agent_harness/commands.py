@@ -9,7 +9,7 @@ the run's user text.
 Tool availability per command:
 - init/review: all tools EXCEPT PlanExit (they are one-shot runs that
   must not end in a plan/build handoff)
-- custom commands (prompts/commands/*.txt): all tools, incl. PlanExit
+- custom commands (prompts/commands/*.md): all tools, incl. PlanExit
 - compact/summary: no tools at all (direct chat_sync calls, like the
   session-title generation)
 """
@@ -89,7 +89,7 @@ class SessionCommand:
 def initialize_command() -> SessionCommand:
     return SessionCommand(
         name="initialize",
-        prompt_file="initialize.txt",
+        prompt_file="initialize.md",
         kickoff="Analyze the repository at ${path} and create/update AGENTS.md.\n",
         buffer_name="*gptel-agent-init:*",
         status=" Initializing...",
@@ -101,7 +101,7 @@ def initialize_command() -> SessionCommand:
 def review_command() -> SessionCommand:
     return SessionCommand(
         name="review",
-        prompt_file="review.txt",
+        prompt_file="review.md",
         kickoff="Review the requested code changes.",
         buffer_name="*gptel-agent-review*",
         status=" Reviewing...",
@@ -144,7 +144,7 @@ def load_custom_commands() -> list[SessionCommand]:
     if not COMMANDS_DIR.is_dir():
         return []
     commands = []
-    for f in sorted(COMMANDS_DIR.glob("*.txt")):
+    for f in sorted(COMMANDS_DIR.glob("*.md")):
         name = custom_name(f.name)
         if not name:
             continue
