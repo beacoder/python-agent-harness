@@ -166,11 +166,30 @@ class TestSpool(unittest.TestCase):
 
     def tearDown(self):
         self.fs._spool_dir = self.orig_dir
+        self.fs._spooled_files.clear()
         self.tmp.cleanup()
 
     def test_small_output_passes_through(self):
         text = "small result\n"
         self.assertEqual(self.fs._spool(text, "grep"), text)
+
+    def test_cleanup_spooled_files(self):
+        big = _big_output()
+        result = self.fs._spool(big, "grep")
+        m = re.search(r'file_path="([^"]+)"', result)
+        self.assertIsNotNone(m, result)
+        self.assertTrue(os.path.exists(m.group(1)))
+        self.fs.cleanup_spooled_files()
+        self.assertFalse(os.path.exists(m.group(1)))
+        self.assertEqual(self.fs._spooled_files, [])
+
+    def test_cleanup_skips_missing_files(self):
+        big = _big_output()
+        result = self.fs._spool(big, "grep")
+        m = re.search(r'file_path="([^"]+)"', result)
+        os.remove(m.group(1))
+        self.fs.cleanup_spooled_files()  # must not raise
+        self.assertEqual(self.fs._spooled_files, [])
 
     def test_large_output_spills_to_temp_file(self):
         big = _big_output()

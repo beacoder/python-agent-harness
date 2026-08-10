@@ -20,6 +20,7 @@ from .session_store import SessionStore
 from .subagent import run_subagent
 from .token_estimator import TokenCalibrator
 from .tools import Registry, ToolContext
+from .tools.filesystem import cleanup_spooled_files
 
 
 def find_skill_dir(project_dir: str, configured: str | None = None) -> str | None:
@@ -413,6 +414,7 @@ class AgentSession:
         self.cancel()
         self.alive = False
         self.plan_mode.cleanup_plan_file()
+        cleanup_spooled_files()
         if hasattr(self.client, "close"):
             self.client.close()
 

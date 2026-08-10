@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import unittest
 
@@ -121,6 +122,25 @@ class TestPlanExitConfirm(unittest.TestCase):
         self.assertIn("Not in plan mode", result)
         self.assertFalse(s.plan_mode.is_plan)
         s.close()
+
+    def test_close_cleans_spooled_files(self):
+        import python_agent_harness.tools.filesystem as fs
+
+        s = self.make_session()
+        with tempfile.TemporaryDirectory() as d:
+            orig = fs._spool_dir
+            fs._spool_dir = lambda: d
+            try:
+                big = "x" * (fs.MAX_OUTPUT + 1)
+                result = fs._spool(big, "grep")
+            finally:
+                fs._spool_dir = orig
+            m = re.search(r'file_path="([^"]+)"', result)
+            self.assertIsNotNone(m, result)
+            self.assertTrue(os.path.exists(m.group(1)))
+            s.close()
+            self.assertFalse(os.path.exists(m.group(1)))
+            self.assertEqual(fs._spooled_files, [])
 
 
 if __name__ == "__main__":

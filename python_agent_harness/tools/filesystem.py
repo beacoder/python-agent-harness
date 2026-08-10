@@ -36,6 +36,9 @@ SPOOL_LINES = 50      # preview lines kept when results are spilled
 READ_SIZE_LIMIT = 400 * 1024  # whole-file reads above this are refused
                               # (mirrors gptel-agent-read-file-size-threshold)
 
+_spooled_files: list[str] = []  # temp files created by _spool, cleaned
+                                # up by cleanup_spooled_files on session close
+
 
 def _truncate(text: str, label: str = "output") -> str:
     """In-memory truncation fallback (used when spooling to disk fails)."""
@@ -77,6 +80,7 @@ def _spool(text: str, label: str) -> str:
         )
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
+        _spooled_files.append(temp_file)
     except OSError:
         return _truncate(text, label)
     lines = text.splitlines()
@@ -89,6 +93,24 @@ def _spool(text: str, label: str) -> str:
         f"{preview}\n\n"
         f'[Use Read tool with file_path="{temp_file}" to view full results]'
     )
+
+
+def cleanup_spooled_files() -> None:
+    """Delete all tracked spooled temp files (best effort).
+
+    Mirrors ``PlanMode.cleanup_plan_file``: called from
+    ``AgentSession.close`` so oversized tool results do not accumulate
+    in the temp dir.  Files already removed (e.g. by a restored
+    session) are skipped.
+    """
+    paths = _spooled_files[:]
+    _spooled_files.clear()
+    for path in paths:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
 
 
 class Read(Tool):
