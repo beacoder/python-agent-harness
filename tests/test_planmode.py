@@ -2,9 +2,10 @@ import os
 import re
 import tempfile
 import unittest
+from unittest import mock
 
 from python_agent_harness.models import AgentMode
-from python_agent_harness.planmode import PlanMode
+from python_agent_harness.planmode import PlanMode, _plan_temp_dir
 
 PROMPTS = {
     "plan": "PLAN-PROMPT",
@@ -64,6 +65,42 @@ class TestPlanMode(unittest.TestCase):
         reminder = pm.plan_reminder()
         self.assertIn("READ-ONLY", reminder)
         self.assertIn(pm.plan_file, reminder)
+
+
+class TestPlanTempDir(unittest.TestCase):
+    def test_tmpdir_env_wins(self):
+        with mock.patch.dict(os.environ, {"TMPDIR": "/custom/tmp"}, clear=False):
+            self.assertEqual(_plan_temp_dir(), "/custom/tmp")
+
+    def test_falls_back_to_plain_tmp(self):
+        """With no TMPDIR/TMP/TEMP and an empty gettempdir(), the
+        hard-coded /tmp fallback is used."""
+        saved = {k: os.environ.pop(k, None) for k in ("TMPDIR", "TMP", "TEMP")}
+        try:
+            with mock.patch(
+                "python_agent_harness.planmode.tempfile.gettempdir",
+                return_value="",
+            ):
+                self.assertEqual(_plan_temp_dir(), "/tmp")
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_cleanup_tolerates_oserror(self):
+        """A failing os.remove must not propagate: the file is left in
+        place but the tracked plan_file is cleared."""
+        with tempfile.TemporaryDirectory() as d:
+            pm = PlanMode(d)
+            pm.set_mode(AgentMode.PLAN, PROMPTS)
+            path = pm.plan_file
+            with mock.patch(
+                "python_agent_harness.planmode.os.remove",
+                side_effect=OSError("permission denied"),
+            ):
+                pm.cleanup_plan_file()
+            self.assertIsNone(pm.plan_file)
+            self.assertTrue(os.path.exists(path))
 
 
 class TestPlanExitConfirm(unittest.TestCase):

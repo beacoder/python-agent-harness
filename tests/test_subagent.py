@@ -122,6 +122,21 @@ class TestSubagentPromptSelection(unittest.TestCase):
         session = make_session("MAIN AGENT PROMPT", None, self._tmp.name)
         self.assertIsNone(session.subagent_system_prompt)
 
+    def test_unexpected_result_shape_becomes_error(self):
+        """run_agent_loop returning a non-string must become an error
+        string for the parent, never crash the parent."""
+        from unittest import mock
+
+        session = make_session("MAIN", "SUB", self._tmp.name)
+        with mock.patch(
+            "python_agent_harness.subagent.run_agent_loop",
+            return_value={"choices": []},
+        ):
+            result = run_subagent(session, "weird task", "do it")
+        self.assertTrue(result.startswith("Error:"))
+        self.assertIn("weird task", result)
+        self.assertIn("unexpected response", result)
+
 
 if __name__ == "__main__":
     unittest.main()

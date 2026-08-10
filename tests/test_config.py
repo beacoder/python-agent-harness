@@ -116,6 +116,58 @@ class TestConfigFile(unittest.TestCase):
         self.assertEqual(config.mask_secret(None), "(unset)")
         self.assertEqual(config.mask_secret(""), "(unset)")
 
+    def test_config_path_defaults_to_global(self):
+        """No explicit path and no env var -> the default config file."""
+        self.assertEqual(config._config_path(), config.CONFIG_FILE)
+
+    def test_config_path_expands_user(self):
+        self.assertEqual(
+            config._config_path("~/custom.json"),
+            Path("~/custom.json").expanduser(),
+        )
+
+    def test_llm_must_be_object(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"llm": "not-an-object"}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                config.load_llm_config(p)
+
+    def test_paths_bad_json_returns_defaults(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text("not {valid json", encoding="utf-8")
+            self.assertEqual(config.load_paths_config(p), config.DEFAULT_PATHS)
+
+    def test_paths_not_object_returns_defaults(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"paths": "nope"}', encoding="utf-8")
+            self.assertEqual(config.load_paths_config(p), config.DEFAULT_PATHS)
+
+    def test_paths_expanded_to_absolute(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"paths": {"context_path": "~/ctx", "skill_path": "rel/skills"}}',
+                encoding="utf-8",
+            )
+            settings = config.load_paths_config(p)
+            self.assertEqual(
+                settings["context_path"],
+                os.path.abspath(os.path.expanduser("~/ctx")),
+            )
+            self.assertEqual(settings["skill_path"], os.path.abspath("rel/skills"))
+
+    def test_paths_empty_values_stay_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"paths": {"context_path": "   ", "skill_path": null}}',
+                         encoding="utf-8")
+            settings = config.load_paths_config(p)
+            self.assertIsNone(settings["context_path"])
+            self.assertIsNone(settings["skill_path"])
+
     def test_template_contains_llm(self):
         self.assertIn('"llm"', config.CONFIG_TEMPLATE)
         self.assertIn("base_url", config.CONFIG_TEMPLATE)
@@ -157,6 +209,23 @@ class TestConfigCli(unittest.TestCase):
             self.assertEqual(rc, 1)
             rc = main(["config", "--init", "--force", "--path", str(p)])
             self.assertEqual(rc, 0)
+
+    def test_config_show_missing_file_message(self):
+        """config with a nonexistent path prints a hint, falls back to
+        defaults, and still exits 0."""
+        import io
+        from contextlib import redirect_stdout
+
+        from python_agent_harness.cli import main
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "missing.json"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main(["config", "--path", str(p)])
+            self.assertEqual(rc, 0)
+            self.assertIn("file does not exist yet", buf.getvalue())
+            self.assertIn("gpt-5-mini", buf.getvalue())  # default model shown
 
     def test_config_flag_both_positions(self):
         """--config must work both before and after the subcommand."""

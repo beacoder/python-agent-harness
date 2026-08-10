@@ -1440,6 +1440,679 @@ class TestTui(unittest.TestCase):
             [m.text() for m in summarized],
         )
 
+    # ------------------------------------------------------------------
+    # key-binding handlers (Tab / Shift+Tab with an open completion menu)
+    # ------------------------------------------------------------------
+    def _kb_handlers(self):
+        from python_agent_harness.tui import _make_key_bindings
+
+        return {b.keys: b.handler for b in _make_key_bindings().bindings}
+
+    def test_complete_handler_with_menu_cycles_forward(self):
+        """Tab while a completion menu is open cycles to the next entry."""
+        buffer = mock.Mock()
+        buffer.complete_state = object()  # menu open
+        self._kb_handlers()[("c-i",)](mock.Mock(current_buffer=buffer))
+        buffer.complete_next.assert_called_once_with()
+        buffer.start_completion.assert_not_called()
+
+    def test_complete_handler_starts_menu(self):
+        """Tab with no menu open starts completion with the common part."""
+        buffer = mock.Mock()
+        buffer.complete_state = None
+        self._kb_handlers()[("c-i",)](mock.Mock(current_buffer=buffer))
+        buffer.start_completion.assert_called_once_with(insert_common_part=True)
+
+    def test_complete_backward_handler_cycles(self):
+        """Shift+Tab while a menu is open cycles to the previous entry."""
+        buffer = mock.Mock()
+        buffer.complete_state = object()
+        self._kb_handlers()[("s-tab",)](mock.Mock(current_buffer=buffer))
+        buffer.complete_previous.assert_called_once_with()
+        buffer.start_completion.assert_not_called()
+
+    def test_complete_backward_handler_starts_menu(self):
+        """Shift+Tab with no menu open starts completion selecting the first."""
+        buffer = mock.Mock()
+        buffer.complete_state = None
+        self._kb_handlers()[("s-tab",)](mock.Mock(current_buffer=buffer))
+        buffer.start_completion.assert_called_once_with(select_first=True)
+
+    # ------------------------------------------------------------------
+    # completer edge cases
+    # ------------------------------------------------------------------
+    def test_completer_absolute_path_fallback(self):
+        """A /-token matching no slash command completes as an absolute
+        path (and yields nothing when nothing matches)."""
+        from prompt_toolkit.document import Document
+
+        from python_agent_harness.tui import SlashCompleter
+
+        c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
+        completions = list(
+            c.get_completions(Document(text="/zzzz-no-such", cursor_position=13), None)
+        )
+        self.assertEqual(completions, [])
+
+    def test_completer_unlistable_directory_no_crash(self):
+        """A path whose directory cannot be listed yields no completions
+        instead of raising."""
+        from prompt_toolkit.document import Document
+
+        from python_agent_harness.tui import SlashCompleter
+
+        c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
+        completions = list(
+            c.get_completions(
+                Document(text="/init /no/such/dir/", cursor_position=16), None
+            )
+        )
+        self.assertEqual(completions, [])
+
+    # ------------------------------------------------------------------
+    # notify / log status updates
+    # ------------------------------------------------------------------
+    def test_on_notify_compact(self):
+        tui, _ = make_tui()
+        tui._on_notify("compact")
+        self.assertEqual(tui.status, " compacted")
+        self.assertTrue(tui._history_dirty)
+
+    def test_on_notify_save_error(self):
+        tui, _ = make_tui()
+        tui._on_notify("save-error")
+        self.assertEqual(tui.status, " auto-save failed")
+
+    def test_on_notify_default_status(self):
+        tui, _ = make_tui()
+        tui._on_notify("some-other-kind")
+        self.assertEqual(tui.status, " running")
+        self.assertTrue(tui._data_event.is_set())
+
+    def test_on_log_sets_status(self):
+        tui, _ = make_tui()
+        tui._on_log("checking files")
+        self.assertEqual(tui.status, " checking files")
+
+    def test_on_log_truncates_long_messages(self):
+        tui, _ = make_tui()
+        tui._on_log("x" * 100)
+        self.assertEqual(tui.status, " " + "x" * 60)
+
+    # ------------------------------------------------------------------
+    # _ui_ask (Question tool)
+    # ------------------------------------------------------------------
+    def test_ui_ask_single_question(self):
+        """A single Question returns one 'prompt' = 'answer' line."""
+        tui, _ = make_tui()
+        with mock.patch.object(tui, "_ask_sync", return_value="42"):
+            result = tui._ui_ask(
+                [{"question": "How many?", "options": ["one", "two"]}]
+            )
+        self.assertEqual(result, '"How many?" = "42"')
+
+    def test_ui_ask_multiple_questions(self):
+        tui, _ = make_tui()
+        with mock.patch.object(tui, "_ask_sync", side_effect=["x", "y"]):
+            result = tui._ui_ask([{"question": "Q1"}, {"question": "Q2"}])
+        self.assertEqual(result, '"Q1" = "x"\n"Q2" = "y"')
+
+    def test_ui_ask_multiple_joins_and_cleans_answers(self):
+        """Multiple-select answers are joined, dropping empty parts."""
+        tui, _ = make_tui()
+        with mock.patch.object(tui, "_ask_sync", return_value="a, , b"):
+            result = tui._ui_ask(
+                [{"question": "Pick", "multiple": True, "options": ["a", "b"]}]
+            )
+        self.assertEqual(result, '"Pick" = "a, b"')
+
+    def test_ui_ask_no_questions_returns_unanswered(self):
+        tui, _ = make_tui()
+        self.assertEqual(tui._ui_ask([]), "Unanswered")
+
+    # ------------------------------------------------------------------
+    # tool-call argument rendering edge cases
+    # ------------------------------------------------------------------
+    def test_tool_call_bad_json_arguments(self):
+        """Unparseable tool-call JSON renders as a bare tool label."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="go"),
+            Message(
+                role="assistant", content="",
+                tool_calls=[ToolCall(id="1", name="Read", arguments="{oops")],
+            ),
+            Message(role="tool", content="x", tool_call_id="1", name="Read"),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("🤖 Read", out)
+
+    def test_tool_call_non_dict_arguments(self):
+        """A JSON array of arguments renders as a bare tool label."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="go"),
+            Message(
+                role="assistant", content="",
+                tool_calls=[
+                    ToolCall(id="1", name="Bash", arguments='["ls", "-la"]')
+                ],
+            ),
+            Message(role="tool", content="x", tool_call_id="1", name="Bash"),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("🤖 Bash", out)
+        self.assertNotIn("ls", out)
+
+    # ------------------------------------------------------------------
+    # row budget: visible-row cap and line estimates
+    # ------------------------------------------------------------------
+    def test_visible_row_cap_defaults_without_height(self):
+        """Without a terminal height the cap falls back to 60 rows."""
+        from types import SimpleNamespace
+
+        tui, _ = make_tui()
+        tui.console = SimpleNamespace(height=0, width=80)
+        self.assertEqual(tui._visible_row_cap(), 60)
+
+    def test_est_lines_for_panels(self):
+        """Panel rows estimate 3 lines plus their inner renderables."""
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.text import Text
+
+        from python_agent_harness.tui import Tui
+
+        self.assertEqual(Tui._est_lines(Panel("short"), 80), 4)
+        self.assertEqual(
+            Tui._est_lines(Panel(Group(Text("a"), Text("b"))), 80), 5
+        )
+
+    # ------------------------------------------------------------------
+    # the main run loop
+    # ------------------------------------------------------------------
+    def test_run_quits_on_eof(self):
+        """Ctrl-D at the prompt exits the app after showing the banner."""
+        tui, buf = make_tui()
+        with mock.patch.object(tui, "_read_multiline", return_value=None):
+            tui.run()
+        out = buf.getvalue()
+        self.assertIn("python-agent-harness — agent execution harness", out)
+        self.assertIn("Commands:", out)
+
+    def test_run_handles_empty_and_slash_input(self):
+        """Blank lines are skipped, non-exit slashes continue the loop,
+        /exit breaks it and plain text starts a run."""
+        tui, buf = make_tui()
+        with mock.patch.object(
+            tui, "_read_multiline", side_effect=["", "hello", "/help", "/exit"]
+        ), mock.patch.object(tui, "_start_agent") as start:
+            tui.run()
+        start.assert_called_once_with("hello")
+        self.assertIn("/sessions", buf.getvalue())  # /help rendered
+
+    def test_run_keyboard_interrupt_stays_open(self):
+        """A stray Ctrl-C outside input prints a hint and keeps looping."""
+        tui, buf = make_tui()
+        with mock.patch.object(
+            tui, "_read_multiline", side_effect=[KeyboardInterrupt, None]
+        ):
+            tui.run()
+        self.assertIn("cancelled", buf.getvalue())
+
+    def test_run_services_pending_question_first(self):
+        """A pending question is answered before reading new input."""
+        tui, _ = make_tui()
+        tui.question = UiQuestion("Approve?")
+        with mock.patch.object(
+            tui, "_ask_question_blocking",
+            side_effect=lambda: setattr(tui, "question", None),
+        ), mock.patch.object(tui, "_read_multiline", return_value=None):
+            tui.run()
+        self.assertIsNone(tui.question)
+
+    def test_run_shows_llm_log_path(self):
+        """With LLM logging enabled the log path is printed at startup."""
+        import python_agent_harness.tui as tui_mod
+
+        tui, buf = make_tui()
+        tui.session.client.log_path = "/tmp/llm.log"
+        with mock.patch.object(tui_mod.config, "LLM_LOG_ENABLED", True), \
+             mock.patch.object(tui, "_read_multiline", return_value=None):
+            tui.run()
+        self.assertIn("/tmp/llm.log", buf.getvalue())
+
+    # ------------------------------------------------------------------
+    # question prompt variants
+    # ------------------------------------------------------------------
+    def test_ask_question_keyed_multiple_custom_hints(self):
+        """A keyed list with multiple+custom shows both hint extensions
+        and resolves comma-separated keys."""
+        tui, buf = make_tui()
+        q = UiQuestion(
+            "Approve?", multiple=True,
+            options=["Yes, switch", "No, refine"], keys=["y", "n"], custom=True,
+        )
+        tui.question = q
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="y,n"):
+            tui._ask_question_blocking()
+        self.assertEqual(q.answer, "Yes, switch, No, refine")
+        out = buf.getvalue()
+        self.assertIn("Enter keys, comma-separated", out)
+        self.assertIn("or type your own answer", out)
+
+    def test_ask_question_plain_prompt(self):
+        """A question without options uses a bare 'prompt > ' line."""
+        tui, _ = make_tui()
+        q = UiQuestion("What is your name?")
+        tui.question = q
+        with mock.patch.object(
+            tui.prompt_session, "prompt", return_value="Ada"
+        ) as m:
+            tui._ask_question_blocking()
+        m.assert_called_once_with("What is your name? > ", multiline=False)
+        self.assertEqual(q.answer, "Ada")
+
+    def test_ask_question_eof_returns_empty(self):
+        """Ctrl-D/Ctrl-C at a question prompt answers with an empty string."""
+        tui, _ = make_tui()
+        q = UiQuestion("Pick", options=["a", "b"])
+        tui.question = q
+        with mock.patch.object(
+            tui.prompt_session, "prompt", side_effect=EOFError
+        ):
+            tui._ask_question_blocking()
+        self.assertEqual(q.answer, "")
+        self.assertIsNone(tui.question)
+
+    # ------------------------------------------------------------------
+    # _read_multiline
+    # ------------------------------------------------------------------
+    def test_read_multiline_returns_text(self):
+        tui, _ = make_tui()
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="hello"):
+            self.assertEqual(tui._read_multiline(), "hello")
+
+    def test_read_multiline_eof_quits(self):
+        tui, _ = make_tui()
+        with mock.patch.object(
+            tui.prompt_session, "prompt", side_effect=EOFError
+        ):
+            self.assertIsNone(tui._read_multiline())
+
+    def test_read_multiline_interrupt_cancels_input(self):
+        tui, buf = make_tui()
+        with mock.patch.object(
+            tui.prompt_session, "prompt", side_effect=KeyboardInterrupt
+        ):
+            self.assertEqual(tui._read_multiline(), "")
+        self.assertIn("input cancelled", buf.getvalue())
+
+    # ------------------------------------------------------------------
+    # _start_agent / run loops
+    # ------------------------------------------------------------------
+    def test_start_agent_normal_completion(self):
+        """A normal run starts a worker, renders live and clears the
+        running flag when done."""
+        import threading
+
+        tui, _ = make_tui()
+        gen = tui.session.run_generation
+        done = threading.Event()
+
+        def boom(*a, **k):
+            done.set()
+            raise RuntimeError("stop")
+
+        with mock.patch("python_agent_harness.tui.run_agent_loop",
+                        side_effect=boom), \
+             mock.patch.object(tui, "_run_live", return_value=False) as live:
+            tui._start_agent("hello")
+        self.assertTrue(done.wait(2.0), "worker thread never ran")
+        self.assertEqual(tui.session.run_generation, gen + 1)
+        self.assertEqual(tui.run_seq, 1)
+        self.assertFalse(tui.agent_running)
+        live.assert_called_once()
+
+    def test_start_agent_dumb_terminal(self):
+        """Dumb terminals use the line-printing fallback display."""
+        from types import SimpleNamespace
+
+        tui, _ = make_tui()
+        tui.console = SimpleNamespace(
+            is_dumb_terminal=True, print=lambda *a, **k: None,
+            file=io.StringIO(),
+        )
+        with mock.patch("python_agent_harness.tui.run_agent_loop",
+                        side_effect=RuntimeError("stop")), \
+             mock.patch.object(tui, "_run_dumb", return_value=False) as dumb:
+            tui._start_agent("hello")
+        dumb.assert_called_once()
+        self.assertFalse(tui.agent_running)
+
+    def test_start_agent_keyboard_interrupt(self):
+        """Ctrl-C during execution cancels the run and releases pending
+        questions and borrowed state (the worker's own finally may also
+        fire the idempotent restore later)."""
+        tui, buf = make_tui()
+        released = []
+        q = UiQuestion("Approve?")
+        tui.question = q
+        with mock.patch("python_agent_harness.tui.run_agent_loop",
+                        side_effect=RuntimeError("stop")), \
+             mock.patch.object(tui, "_run_live", side_effect=KeyboardInterrupt):
+            tui._start_agent("hello", restore=lambda: released.append(1))
+        self.assertIn("execution cancelled", buf.getvalue())
+        self.assertIsNone(tui.question)
+        self.assertTrue(q.event.is_set())
+        self.assertIsNone(tui._restore)
+        self.assertGreaterEqual(len(released), 1)  # released synchronously
+        self.assertTrue(tui.session.cancel_event.is_set())
+        self.assertFalse(tui.agent_running)
+
+    def test_run_live_services_question_while_running(self):
+        """A pending question pauses the Live display, is answered, and
+        rendering resumes."""
+        from types import SimpleNamespace
+
+        tui, _ = make_tui()
+        tui.question = UiQuestion("Approve?")
+        tui._data_event.set()  # render loop wakes without sleeping
+        worker = SimpleNamespace(is_alive=iter([True, True, False]).__next__)
+        answered = []
+
+        def ask():
+            answered.append(1)
+            tui.question = None  # the question is now answered
+
+        with mock.patch.object(tui, "_ask_question_blocking", side_effect=ask), \
+             mock.patch.object(tui, "_dump_conversation"):
+            tui._run_live(worker)
+        self.assertEqual(answered, [1])
+
+    def test_run_dumb_services_question_and_prints_frames(self):
+        """The dumb-terminal loop prints frames as lines and answers
+        pending questions."""
+        from types import SimpleNamespace
+
+        tui, buf = make_tui()
+        tui.question = UiQuestion("Approve?")
+        tui._data_event.set()
+        worker = SimpleNamespace(is_alive=iter([True, True, False]).__next__)
+        answered = []
+
+        def ask():
+            answered.append(1)
+            tui.question = None
+
+        with mock.patch.object(tui, "_ask_question_blocking", side_effect=ask), \
+             mock.patch.object(tui, "_dump_conversation"):
+            result = tui._run_dumb(worker)
+        self.assertFalse(result)
+        self.assertEqual(answered, [1])
+        self.assertIn("[BUILD]", buf.getvalue())
+
+    def test_flush_tolerates_flush_errors(self):
+        """A failing stdout flush must not crash the render loop."""
+        tui, _ = make_tui()
+        with mock.patch.object(
+            tui.console.file, "flush", side_effect=OSError("boom")
+        ):
+            tui._flush()  # must not raise
+
+    def test_run_agent_error_logged(self):
+        """An agent-loop exception on the current run is surfaced in the
+        status bar."""
+        tui, _ = make_tui()
+        with mock.patch("python_agent_harness.tui.run_agent_loop",
+                        side_effect=RuntimeError("boom")):
+            tui._run_agent("hi", tui.run_seq)
+        self.assertIn("agent error: boom", tui.status)
+
+    def test_run_agent_calls_restore(self):
+        """The current run's finally fires the restore callback."""
+        tui, _ = make_tui()
+        restored = []
+        with mock.patch("python_agent_harness.tui.run_agent_loop",
+                        side_effect=RuntimeError("boom")):
+            tui._run_agent("hi", tui.run_seq, restore=lambda: restored.append(1))
+        self.assertEqual(restored, [1])
+
+    # ------------------------------------------------------------------
+    # remaining slash commands
+    # ------------------------------------------------------------------
+    def test_exit_slash(self):
+        tui, _ = make_tui()
+        self.assertTrue(tui._handle_slash("/exit"))
+
+    def test_plan_and_build_slashes(self):
+        tui, buf = make_tui()
+        self.assertFalse(tui._handle_slash("/plan"))
+        self.assertEqual(tui.session.plan_mode.mode.value, "plan")
+        self.assertIn("Plan mode", buf.getvalue())
+        self.assertFalse(tui._handle_slash("/build"))
+        self.assertEqual(tui.session.plan_mode.mode.value, "build")
+        self.assertIn("Build mode", buf.getvalue())
+
+    def test_save_slash(self):
+        tui, buf = make_tui()
+        with mock.patch.object(
+            tui.session.store, "save", return_value="/tmp/x.md"
+        ):
+            self.assertFalse(tui._handle_slash("/save"))
+        self.assertIn("saved: /tmp/x.md", buf.getvalue())
+
+    def test_compact_and_summary_slashes_dispatch(self):
+        tui, _ = make_tui()
+        with mock.patch.object(tui, "_run_compact") as c, \
+             mock.patch.object(tui, "_run_summary") as s:
+            tui._handle_slash("/compact")
+            tui._handle_slash("/summary")
+        c.assert_called_once_with()
+        s.assert_called_once_with()
+
+    def test_sessions_and_restore_slashes_dispatch(self):
+        tui, _ = make_tui()
+        with mock.patch.object(tui, "_run_sessions") as s, \
+             mock.patch.object(tui, "_run_restore") as r:
+            tui._handle_slash("/sessions")
+            tui._handle_slash("/restore foo.md")
+        s.assert_called_once_with()
+        r.assert_called_once_with("foo.md")
+
+    def test_split_args_unbalanced_quote_falls_back(self):
+        """An unterminated quote falls back to whitespace splitting."""
+        tui, _ = make_tui()
+        self.assertEqual(
+            tui._split_args('unterminated "quote'), ['unterminated', '"quote']
+        )
+
+    def test_command_args_init_invalid_returns_none(self):
+        """/init with a non-project token after the project is invalid."""
+        tui, _ = make_tui()
+        self.assertEqual(tui._command_args("init", "proj --extra"), ("proj", None))
+        self.assertEqual(tui._command_args("init", "a b"), (None, None))
+
+    def test_run_slash_command_unknown(self):
+        """A slash command with no registered SessionCommand is reported."""
+        tui, buf = make_tui()
+        with mock.patch("python_agent_harness.tui.find_command", return_value=None):
+            tui._run_slash_command("bogus", "")
+        self.assertIn("unknown command: /bogus", buf.getvalue())
+
+    def test_planexit_restore_idempotent_with_prev_restore(self):
+        """The planexit-restore wrapper undoes the project borrow first
+        and ignores repeat invocations."""
+        tui, _ = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            tui.session.switch_to_plan()
+            seen = []
+
+            def fake_start(text, system=None, restore=None):
+                restore()
+                restore()  # second call must be a no-op
+                seen.append(tui.session.project_dir)
+
+            with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+                tui._handle_slash(f"/init {d}")
+        self.assertEqual(tui.session.project_dir, "/tmp/fakeproj")
+        self.assertEqual(seen, ["/tmp/fakeproj"])
+        self.assertIsNotNone(tui.session.registry.get("PlanExit"))
+
+    def test_conversation_text(self):
+        """_conversation_text renders non-empty messages, skipping blanks."""
+        tui, _ = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="hello"),
+            Message(role="assistant", content=""),
+            Message(role="tool", content="result"),
+        ]
+        self.assertEqual(
+            tui._conversation_text(),
+            "**user**: hello\n\n**tool**: result",
+        )
+
+    def test_conversation_text_empty(self):
+        tui, _ = make_tui()
+        tui.session.last_messages = []
+        self.assertEqual(tui._conversation_text(), "")
+
+    def test_run_sessions_empty(self):
+        tui, buf = make_tui()
+        with mock.patch(
+            "python_agent_harness.tui.SessionStore.list_sessions", return_value=[]
+        ):
+            tui._run_sessions()
+        self.assertIn("no saved sessions", buf.getvalue())
+
+    def test_run_sessions_lists_metadata(self):
+        tui, buf = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "my session_250101120000.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**user**: hello\n\n;; Local Variables:\n"
+                    ";; gptel-model: gpt-4\n"
+                    ";; python-agent-harness--project-dir: /tmp/p\n"
+                    ";; End:\n"
+                )
+            with mock.patch(
+                "python_agent_harness.tui.SessionStore.list_sessions",
+                return_value=[path],
+            ):
+                tui._run_sessions()
+        out = buf.getvalue()
+        self.assertIn("my session_250101120000.md", out)
+        self.assertIn("gpt-4", out)
+        self.assertIn("/tmp/p", out)
+
+    def test_run_sessions_skips_unreadable_files(self):
+        tui, buf = make_tui()
+        with mock.patch(
+            "python_agent_harness.tui.SessionStore.list_sessions",
+            return_value=["/nonexistent/session.md"],
+        ):
+            tui._run_sessions()  # must not raise
+        self.assertEqual(buf.getvalue(), "")
+
+    # ------------------------------------------------------------------
+    # /restore paths
+    # ------------------------------------------------------------------
+    def test_restore_no_session_found(self):
+        """/restore with nothing to restore prints the yellow hint."""
+        tui, buf = make_tui()
+        with mock.patch(
+            "python_agent_harness.tui.SessionStore.latest_session",
+            return_value=None,
+        ):
+            tui._run_restore("")
+        self.assertIn("no session found", buf.getvalue())
+
+    def test_restore_latest_session(self):
+        """/restore --latest loads the most recent session file."""
+        tui, buf = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("**user**: hello\n\n**assistant**: hi")
+            with mock.patch(
+                "python_agent_harness.tui.SessionStore.latest_session",
+                return_value=path,
+            ):
+                tui._run_restore("--latest")
+        out = buf.getvalue()
+        self.assertIn("restored:", out)
+        self.assertIn("session.md", out)
+        self.assertEqual(
+            [m.text() for m in tui.session.last_messages], ["hello", "hi"]
+        )
+
+    def test_restore_resolved_path_not_a_file(self):
+        """A resolved path that is not a file reports an error."""
+        tui, buf = make_tui()
+        with mock.patch(
+            "python_agent_harness.tui.SessionStore.latest_session",
+            return_value="/nonexistent/session.md",
+        ):
+            tui._run_restore("--latest")
+        self.assertIn("file not found", buf.getvalue())
+
+    def test_restore_unreadable_file(self):
+        tui, buf = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("**user**: hello")
+            with mock.patch("builtins.open", side_effect=OSError("denied")):
+                tui._run_restore(path)
+        self.assertIn("cannot read", buf.getvalue())
+
+    def test_restore_by_title_match(self):
+        """A non-path /restore arg matches session filenames/titles, and a
+        title-bearing filename sets the store title."""
+        tui, buf = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "my session_250101120000.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("**user**: hello\n\n**assistant**: hi")
+            with mock.patch(
+                "python_agent_harness.tui.SessionStore.list_sessions",
+                return_value=[path],
+            ):
+                tui._run_restore("MY SESSION")
+        self.assertIn("restored:", buf.getvalue())
+        self.assertEqual(tui.session.store.title, "my session")
+
+    def test_find_session_by_title(self):
+        """Title lookup: exact basename, .md-less, substring and
+        derived-title matches; unmatched queries return None."""
+        with tempfile.TemporaryDirectory() as d:
+            dash = os.path.join(d, "fix-bugs_250101000000.md")
+            spaced = os.path.join(d, "Add feature_250101000001.md")
+            for f in (dash, spaced):
+                open(f, "w", encoding="utf-8").close()
+            files = [dash, spaced]
+            with mock.patch(
+                "python_agent_harness.tui.SessionStore.list_sessions",
+                return_value=files,
+            ):
+                # exact basename match (with and without .md)
+                self.assertEqual(
+                    Tui._find_session_by_title("Add feature_250101000001.md"),
+                    spaced,
+                )
+                self.assertEqual(
+                    Tui._find_session_by_title("add feature_250101000001"), spaced
+                )
+                # filename substring match
+                self.assertEqual(Tui._find_session_by_title("fix-bugs"), dash)
+                self.assertEqual(Tui._find_session_by_title("feature"), spaced)
+                # derived-title match (dashes -> spaces)
+                self.assertEqual(Tui._find_session_by_title("fix bugs"), dash)
+                self.assertIsNone(Tui._find_session_by_title("nothing here"))
+
 
 if __name__ == "__main__":
     unittest.main()

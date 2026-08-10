@@ -6,10 +6,14 @@ from python_agent_harness.token_estimator import (
     estimate_payload_tokens,
     estimate_tokens,
     is_cjk_char,
+    payload_text,
 )
 
 
 class TestTokenizer(unittest.TestCase):
+    def test_empty_text_zero_tokens(self):
+        self.assertEqual(estimate_tokens(""), 0)
+
     def test_latin_estimate(self):
         self.assertEqual(estimate_tokens("abcd"), 1)
         self.assertEqual(estimate_tokens("abcdefgh"), 2)
@@ -51,6 +55,41 @@ class TestTokenizer(unittest.TestCase):
         ]
         tools = [{"type": "function", "function": {"name": "read"}}]
         self.assertGreater(estimate_payload_tokens("system", msgs, tools), 5)
+
+    def test_payload_text_system_dict_parts(self):
+        """A system prompt given as {parts: [...]} (Gemini shape) has
+        every text part included."""
+        text = payload_text(
+            {"parts": [{"text": "alpha"}, {"text": "beta"}, {"other": 1}]},
+            [],
+            [],
+        )
+        self.assertEqual(text, "alpha\nbeta")
+
+    def test_payload_text_system_list(self):
+        """A system prompt given as a list of strings/dicts is
+        flattened."""
+        text = payload_text(
+            ["one", {"text": "two"}, {"other": "ignored"}],
+            [],
+            [],
+        )
+        self.assertEqual(text, "one\ntwo")
+
+    def test_payload_text_content_list_and_reasoning(self):
+        """Message content lists (text parts, plain strings, thinking,
+        arguments) and reasoning_content all land in the buffer."""
+        msgs = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "hello"},
+                " world",
+                {"thinking": "ponder"},
+                {"arguments": "{}"},
+                {"other": 42},
+            ], "reasoning_content": "deep thought"},
+        ]
+        text = payload_text(None, msgs, [])
+        self.assertEqual(text, "hello\n world\nponder\n{}\ndeep thought")
 
 
 if __name__ == "__main__":

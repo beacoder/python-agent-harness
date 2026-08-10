@@ -746,5 +746,350 @@ class TestMkdirTool(unittest.TestCase):
         self.assertIn("created/verified", out)
 
 
+class TestSpoolDirAndTruncate(unittest.TestCase):
+    """_truncate small-text passthrough and _spool_dir candidate selection."""
+
+    def test_truncate_small_text_passes_through(self):
+        from python_agent_harness.tools.filesystem import _truncate
+
+        self.assertEqual(_truncate("small"), "small")
+
+    def test_spool_dir_prefers_tmpdir_env(self):
+        import python_agent_harness.tools.filesystem as fs
+
+        with mock.patch.dict(os.environ, {"TMPDIR": "/custom/tmp"}, clear=True):
+            self.assertEqual(fs._spool_dir(), "/custom/tmp")
+
+    def test_spool_dir_falls_back_to_system_tempdir(self):
+        import python_agent_harness.tools.filesystem as fs
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(fs._spool_dir(), os.path.abspath(tempfile.gettempdir()))
+
+    def test_spool_dir_last_resort_slash_tmp(self):
+        import python_agent_harness.tools.filesystem as fs
+
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
+            "tempfile.gettempdir", return_value=""
+        ):
+            self.assertEqual(fs._spool_dir(), "/tmp")
+
+
+class TestCleanupSpoolErrors(unittest.TestCase):
+    """cleanup_spooled_files must swallow OSError from os.remove."""
+
+    def test_cleanup_ignores_remove_oserror(self):
+        import python_agent_harness.tools.filesystem as fs
+
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            p = f.name
+        try:
+            fs._spooled_files.append(p)
+            with mock.patch("os.remove", side_effect=OSError("busy")):
+                fs.cleanup_spooled_files()  # must not raise
+            self.assertEqual(fs._spooled_files, [])
+        finally:
+            fs._spooled_files.clear()
+            if os.path.exists(p):
+                os.remove(p)
+
+
+class TestReadErrorPaths(unittest.TestCase):
+    """Read streaming-open failure (range reads)."""
+
+    def test_range_read_open_oserror_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "f.txt")
+            with open(p, "w") as f:
+                f.write("a\nb\nc\n")
+            with mock.patch("builtins.open", side_effect=OSError("boom")):
+                out = Read().run({"file_path": p, "start_line": 1}, ToolContext())
+            self.assertIn("Error: cannot read", out)
+
+
+class TestGlobErrorPaths(unittest.TestCase):
+    """Glob git-ls-files / tree error paths and the empty-result branch."""
+
+    def setUp(self):
+        self.ctx = ToolContext()
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _git_repo(self) -> str:
+        repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(repo)
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        with open(os.path.join(repo, "a.py"), "w") as f:
+            f.write("hello\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        return repo
+
+    def test_git_lsfiles_error_and_tree_error_fall_through(self):
+        """git ls-files crashing (OSError/TimeoutExpired) sets git_err; a
+        crashing tree then leaves the tool with the not-found error."""
+        repo = self._git_repo()
+        with mock.patch(
+            "python_agent_harness.tools.filesystem.subprocess.run",
+            side_effect=subprocess.TimeoutExpired("git ls-files", 60),
+        ), mock.patch("shutil.which", return_value="/usr/bin/tree"):
+            out = GlobTool().run({"pattern": "*.py", "path": repo}, self.ctx)
+        self.assertIn("Executable `tree` not found", out)
+
+    def test_git_lsfiles_nonzero_exit_reported(self):
+        repo = self._git_repo()
+        proc = subprocess.CompletedProcess(
+            [], returncode=128, stdout="fatal: bad pathspec\n"
+        )
+        with mock.patch(
+            "python_agent_harness.tools.filesystem.subprocess.run",
+            return_value=proc,
+        ):
+            out = GlobTool().run({"pattern": "*.py", "path": repo}, self.ctx)
+        self.assertIn("Glob failed with exit code 128", out)
+
+    def test_git_lsfiles_missing_then_tree_fallback_succeeds(self):
+        """git_err containing 'No such file' falls through to the tree
+        backend, which succeeds."""
+        repo = self._git_repo()
+        real_run = subprocess.run
+        calls = {"n": 0}
+
+        def fake_run(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("No such file or directory")
+            return real_run(*args, **kwargs)
+
+        with mock.patch(
+            "python_agent_harness.tools.filesystem.subprocess.run",
+            side_effect=fake_run,
+        ):
+            out = GlobTool().run({"pattern": "*.py", "path": repo}, self.ctx)
+        self.assertIn("a.py", out)
+        self.assertNotIn("Glob failed", out)
+
+    def test_tree_nonzero_exit_reported(self):
+        d = os.path.join(self.tmp.name, "plain")
+        os.makedirs(d)
+        proc = subprocess.CompletedProcess([], returncode=1, stdout="tree stderr\n")
+        with mock.patch("shutil.which", return_value="/usr/bin/tree"), mock.patch(
+            "python_agent_harness.tools.filesystem.subprocess.run",
+            return_value=proc,
+        ):
+            out = GlobTool().run({"pattern": "*", "path": d}, self.ctx)
+        self.assertIn("Glob failed with exit code 1", out)
+
+    def test_git_glob_results_empty_returns_empty_string(self):
+        from python_agent_harness.tools.filesystem import _git_glob_results
+
+        self.assertEqual(_git_glob_results("", "/repo", "/repo", None, "*"), "")
+
+
+class TestGrepFallbackBranches(unittest.TestCase):
+    """Grep git/rg/grep backend error paths and the rg fallback."""
+
+    def setUp(self):
+        self.ctx = ToolContext()
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_git_grep_error_falls_to_unavailable_error(self):
+        repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(repo)
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        with open(os.path.join(repo, "a.py"), "w") as f:
+            f.write("hello\n")
+        with mock.patch(
+            "python_agent_harness.tools.filesystem.subprocess.run",
+            side_effect=OSError("git missing"),
+        ), mock.patch("shutil.which", return_value=None):
+            out = Grep().run({"regex": "hello", "path": repo}, self.ctx)
+        self.assertIn("ripgrep/grep/git-grep not available", out)
+
+    def test_rg_fallback_success_with_context_and_glob(self):
+        d = os.path.join(self.tmp.name, "plain")
+        os.makedirs(d)
+        proc = subprocess.CompletedProcess([], returncode=0, stdout="f.txt:1:needle\n")
+        with mock.patch("shutil.which", return_value="/usr/bin/rg"), mock.patch(
+            "python_agent_harness.tools.filesystem.subprocess.run",
+            return_value=proc,
+        ):
+            out = Grep().run(
+                {"regex": "needle", "path": d, "glob": "*.py", "context_lines": 2},
+                self.ctx,
+            )
+        self.assertIn("f.txt:1:needle", out)
+        self.assertNotIn("Error", out)
+
+    def test_rg_fallback_error_then_grep_unavailable(self):
+        d = os.path.join(self.tmp.name, "plain")
+        os.makedirs(d)
+        with mock.patch(
+            "shutil.which",
+            side_effect=lambda n: "/usr/bin/rg" if n == "rg" else None,
+        ), mock.patch(
+            "python_agent_harness.tools.filesystem.subprocess.run",
+            side_effect=OSError("boom"),
+        ):
+            out = Grep().run({"regex": "x", "path": d}, self.ctx)
+        self.assertIn("ripgrep/grep/git-grep not available", out)
+
+    def test_grep_fallback_error_then_unavailable(self):
+        d = os.path.join(self.tmp.name, "plain")
+        os.makedirs(d)
+        with mock.patch(
+            "shutil.which",
+            side_effect=lambda n: "/usr/bin/grep" if n == "grep" else None,
+        ), mock.patch(
+            "python_agent_harness.tools.filesystem.subprocess.run",
+            side_effect=OSError("boom"),
+        ):
+            out = Grep().run({"regex": "x", "path": d}, self.ctx)
+        self.assertIn("ripgrep/grep/git-grep not available", out)
+
+    def test_git_grep_with_glob_filter(self):
+        repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(repo)
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        with open(os.path.join(repo, "a.py"), "w") as f:
+            f.write("needle here\n")
+        with open(os.path.join(repo, "b.md"), "w") as f:
+            f.write("needle here\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        out = Grep().run({"regex": "needle", "path": repo, "glob": "*.py"}, self.ctx)
+        self.assertIn("a.py", out)
+        self.assertNotIn("b.md", out)
+
+
+class TestWriteEditInsertMkdirErrors(unittest.TestCase):
+    """OSError paths in Mkdir/Write/Edit/Insert (read and write sides)."""
+
+    def setUp(self):
+        self.ctx = ToolContext()
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_mkdir_oserror_reported(self):
+        with mock.patch("os.makedirs", side_effect=PermissionError("denied")):
+            out = Mkdir().run({"parent": self.tmp.name, "name": "sub"}, self.ctx)
+        self.assertIn("Error", out)
+
+    def test_write_existing_unreadable_falls_back_to_blank(self):
+        p = os.path.join(self.tmp.name, "f.txt")
+        with open(p, "w") as f:
+            f.write("secret\n")
+        real_open = open
+
+        def fake_open(path, mode="r", *args, **kwargs):
+            if "r" in mode:
+                raise OSError("permission denied")
+            return real_open(path, mode, *args, **kwargs)
+
+        with mock.patch("builtins.open", side_effect=fake_open):
+            out = Write().run(
+                {"path": self.tmp.name, "filename": "f.txt", "content": "new\n"},
+                self.ctx,
+            )
+        self.assertIn("Created file", out)
+        with open(p) as f:
+            self.assertEqual(f.read(), "new\n")
+
+    def test_write_open_failure_reported(self):
+        with mock.patch("builtins.open", side_effect=OSError("disk full")):
+            out = Write().run(
+                {"path": self.tmp.name, "filename": "never.txt", "content": "x"},
+                self.ctx,
+            )
+        self.assertIn("Error", out)
+
+    def test_edit_read_oserror_reported(self):
+        p = os.path.join(self.tmp.name, "f.txt")
+        with open(p, "w") as f:
+            f.write("a\n")
+        with mock.patch("builtins.open", side_effect=OSError("boom")):
+            out = Edit().run({"path": p, "old_str": "a", "new_str": "b"}, self.ctx)
+        self.assertIn("Error: cannot read", out)
+
+    def test_edit_missing_old_str_rejected(self):
+        p = os.path.join(self.tmp.name, "f.txt")
+        with open(p, "w") as f:
+            f.write("a\n")
+        out = Edit().run({"path": p, "new_str": "b"}, self.ctx)
+        self.assertIn("old_str is required", out)
+
+    def test_edit_write_oserror_reported(self):
+        p = os.path.join(self.tmp.name, "f.txt")
+        with open(p, "w") as f:
+            f.write("a\n")
+        real_open = open
+
+        def fake_open(path, mode="r", *args, **kwargs):
+            if "w" in mode:
+                raise OSError("disk full")
+            return real_open(path, mode, *args, **kwargs)
+
+        with mock.patch("builtins.open", side_effect=fake_open):
+            out = Edit().run({"path": p, "old_str": "a", "new_str": "b"}, self.ctx)
+        self.assertIn("Error: disk full", out)
+
+    def test_insert_read_oserror_reported(self):
+        p = os.path.join(self.tmp.name, "f.txt")
+        with open(p, "w") as f:
+            f.write("a\n")
+        with mock.patch("builtins.open", side_effect=OSError("boom")):
+            out = Insert().run({"path": p, "line_number": 0, "new_str": "x"}, self.ctx)
+        self.assertIn("Error: cannot read", out)
+
+    def test_insert_write_oserror_reported(self):
+        p = os.path.join(self.tmp.name, "f.txt")
+        with open(p, "w") as f:
+            f.write("a\n")
+        real_open = open
+
+        def fake_open(path, mode="r", *args, **kwargs):
+            if "w" in mode:
+                raise OSError("disk full")
+            return real_open(path, mode, *args, **kwargs)
+
+        with mock.patch("builtins.open", side_effect=fake_open):
+            out = Insert().run({"path": p, "line_number": 0, "new_str": "x"}, self.ctx)
+        self.assertIn("Error: disk full", out)
+
+
+class TestApplyDiffMoreBranches(unittest.TestCase):
+    """Remaining _parse_unified_diff / _apply_diff branches."""
+
+    def test_parse_blank_line_becomes_context_op(self):
+        from python_agent_harness.tools.filesystem import _parse_unified_diff
+
+        hunks = _parse_unified_diff("@@ -1,1 +1,2 @@\n a\n\n")
+        self.assertEqual(hunks[0].ops[-1], (" ", "\n"))
+
+    def test_parse_malformed_line_raises(self):
+        from python_agent_harness.tools.filesystem import _parse_unified_diff
+
+        with self.assertRaises(ValueError) as cm:
+            _parse_unified_diff("@@ -1,1 +1,1 @@\n a\ngarbage\n")
+        self.assertIn("malformed diff line", str(cm.exception))
+
+    def test_apply_overlapping_hunks_raise(self):
+        diff = "@@ -1,1 +1,1 @@\n-a\n+A\n@@ -1,1 +1,1 @@\n-a\n+B\n"
+        with self.assertRaises(ValueError) as cm:
+            _apply_diff("a\nb\n", diff)
+        self.assertIn("overlap or are out of order", str(cm.exception))
+
+    def test_apply_context_line_mismatch_raises(self):
+        diff = "@@ -1,2 +1,2 @@\n ZZZ\n b\n"
+        with self.assertRaises(ValueError) as cm:
+            _apply_diff("a\nb\n", diff)
+        self.assertIn("context line mismatch", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

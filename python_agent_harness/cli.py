@@ -81,7 +81,7 @@ def make_session(
 def cmd_run(args: argparse.Namespace) -> int:
     from .tui import Tui
 
-    project_dir = args.project or os.getcwd()
+    project_dir = getattr(args, "project", None) or os.getcwd()
     session = make_session(
         project_dir, config_path=args.config,
         stream=False if getattr(args, "no_stream", False) else None,

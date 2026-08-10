@@ -1384,6 +1384,63 @@ class TestAgentLoop(unittest.TestCase):
         self.assertIsNone(loop1.run())
         self.assertEqual(deltas, [])
 
+    def test_compact_no_user_request_returns_false(self):
+        """Compaction needs a real (non-nudge) user request to resume
+        with; without one it must fail cleanly."""
+        session = RecordingSession()
+        loop = AgentLoop(session, messages=[Message(role="assistant", content="hi")])
+        self.assertFalse(loop.compact())
+
+    def test_compact_empty_summary_returns_false(self):
+        """A compaction response with no text must not replace the
+        conversation (fail cleanly, reset the compacting flag)."""
+        session = RecordingSession()
+
+        def empty_chat_sync(messages, system=None, temperature=None,
+                            max_tokens=None, reasoning_effort=None):
+            return Message(role="assistant", content=""), Usage()
+
+        session.client.chat_sync = empty_chat_sync
+        loop = AgentLoop(session, messages=[Message(role="user", content="do it")])
+        self.assertFalse(loop.compact())
+        self.assertFalse(session.compacting)
+
+    def test_compact_client_error_returns_false(self):
+        """A failing compaction request is non-fatal: it is logged and
+        the loop continues without replacing the history."""
+        session = RecordingSession()
+
+        def boom_chat_sync(messages, system=None, temperature=None,
+                           max_tokens=None, reasoning_effort=None):
+            raise RuntimeError("compaction API down")
+
+        session.client.chat_sync = boom_chat_sync
+        loop = AgentLoop(session, messages=[Message(role="user", content="do it")])
+        self.assertFalse(loop.compact())
+        self.assertFalse(session.compacting)
+
+    def test_error_state_beats_terminal_response(self):
+        """If the loop carries an error state, the error text wins over
+        a terminal response (defensive path for the post-supervision
+        error check)."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.client.script = ["hello"]
+        loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
+        loop.error = "boom"
+        self.assertEqual(loop.run(), "Error: boom")
+
+    def test_zero_budget_subagent_returns_none(self):
+        """A sub-agent loop with max_rounds=0 and no assistant text has
+        nothing to surface: run() returns None."""
+        session = RecordingSession()
+        loop = AgentLoop(
+            session,
+            messages=[Message(role="user", content="hi")],
+            top_level=False, max_rounds=0,
+        )
+        self.assertIsNone(loop.run())
+
 
 class TestParallelToolRounds(unittest.TestCase):
     def test_cancel_before_round_skips_all_tools(self):

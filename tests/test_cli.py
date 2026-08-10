@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -209,6 +210,91 @@ class TestCommandToolAvailability(unittest.TestCase):
             self.assertIsNotNone(s.registry.get("PlanExit"))
         finally:
             s.close()
+
+
+class TestCliEntryPoints(unittest.TestCase):
+    """main()/cmd_run(): TUI startup and exit-path handling, with the
+    heavy dependencies (Tui, make_session) mocked out so the tests are
+    fast and never start a real TUI."""
+
+    def test_main_run_starts_tui_and_closes_session(self):
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        with mock.patch(
+            "python_agent_harness.cli.make_session", return_value=session
+        ) as ms, mock.patch("python_agent_harness.tui.Tui") as tui_cls:
+            rc = cli.main(["run", "/tmp/proj"])
+        self.assertEqual(rc, 0)
+        ms.assert_called_once()
+        self.assertEqual(ms.call_args.args[0], "/tmp/proj")
+        tui_cls.assert_called_once_with(session)
+        tui_cls.return_value.run.assert_called_once()
+        session.close.assert_called_once()
+
+    def test_main_no_command_defaults_to_run(self):
+        """With no subcommand, main() dispatches to cmd_run and the
+        project defaults to the current directory (the run subparser
+        attrs are absent when argv is empty, so cmd_run must not touch
+        args.project blindly)."""
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        with mock.patch(
+            "python_agent_harness.cli.make_session", return_value=session
+        ) as ms, mock.patch("python_agent_harness.tui.Tui") as tui_cls:
+            rc = cli.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(ms.call_args.args[0], os.getcwd())
+        tui_cls.return_value.run.assert_called_once()
+        session.close.assert_called_once()
+
+    def test_run_no_stream_flag_forwarded(self):
+        """--no-stream on run must reach make_session as stream=False."""
+        import unittest.mock as mock
+
+        with mock.patch("python_agent_harness.cli.make_session") as ms, \
+             mock.patch("python_agent_harness.tui.Tui"):
+            rc = cli.main(["run", "/tmp/proj", "--no-stream"])
+        self.assertEqual(rc, 0)
+        self.assertIs(ms.call_args.kwargs["stream"], False)
+
+    def test_main_unknown_command_prints_help_and_returns_1(self):
+        """An unhandled command must print the parser help and exit 1
+        (argparse normally rejects unknown subcommands before this)."""
+        import argparse
+        import unittest.mock as mock
+
+        parser = mock.Mock()
+        parser.parse_args.return_value = argparse.Namespace(command="bogus")
+        with mock.patch.object(cli, "build_parser", return_value=parser):
+            rc = cli.main([])
+        self.assertEqual(rc, 1)
+        parser.print_help.assert_called_once()
+
+    def test_module_main_calls_sys_exit(self):
+        """`python -m python_agent_harness.cli` must call sys.exit(main()).
+        The module is executed as __main__ with main() stubbed out so no
+        session or TUI machinery runs; the exit code is the stub's."""
+        src = Path(cli.__file__).read_text(encoding="utf-8")
+        # stub the module's own main so nothing real is started
+        src = src.replace("sys.exit(main())", "sys.exit(__test_main__())")
+        calls = []
+
+        def __test_main__(argv=None):
+            calls.append(argv)
+            return 7
+
+        ns = {
+            "__name__": "__main__",
+            "__file__": str(cli.__file__),
+            "__package__": "python_agent_harness",
+            "__test_main__": __test_main__,
+        }
+        with self.assertRaises(SystemExit) as cm:
+            exec(compile(src, str(cli.__file__), "exec"), ns)
+        self.assertEqual(cm.exception.code, 7)
+        self.assertEqual(calls, [None])
 
 
 def _load(path, project_dir=None, with_context=False):

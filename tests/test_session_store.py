@@ -120,6 +120,126 @@ class TestSession(unittest.TestCase):
             finally:
                 config.SESSION_DIR = old_dir
 
+    def test_save_returns_none_without_file_path(self):
+        """Defensive path: if session_file() cannot produce a path, save
+        must return None instead of writing anywhere."""
+        import unittest.mock as mock
+
+        store = SessionStore(project_dir="/tmp/proj", model="m", backend="b")
+        with mock.patch.object(SessionStore, "session_file", return_value=None):
+            self.assertIsNone(store.save("hello"))
+
+    def test_apply_title_requires_nonempty_sanitized_title(self):
+        """A title that sanitizes to '' must not rename anything and must
+        not be recorded."""
+        store = SessionStore(project_dir="/tmp/proj", model="m", backend="b")
+        store.apply_title("   ---   ")  # sanitizes to ""
+        self.assertIsNone(store.title)
+        self.assertIsNone(store.file_path)
+
+    def test_apply_title_oserror_keeps_original_file(self):
+        """A failed rename (OSError) must keep the original file and not
+        record the title (the pending title retries on the next save)."""
+        import os
+        import tempfile
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as d:
+            from python_agent_harness import config
+
+            old_dir = config.SESSION_DIR
+            config.SESSION_DIR = __import__("pathlib").Path(d)
+            try:
+                store = SessionStore(project_dir="/tmp/proj", model="m", backend="b")
+                store.save("x")
+                before = store.file_path
+                with mock.patch(
+                    "python_agent_harness.session_store.os.replace",
+                    side_effect=OSError("permission denied"),
+                ):
+                    store.apply_title("New Title")
+                self.assertEqual(store.file_path, before)
+                self.assertIsNone(store.title)
+                self.assertTrue(os.path.exists(before))
+            finally:
+                config.SESSION_DIR = old_dir
+
+    def test_parse_metadata_without_block(self):
+        self.assertEqual(SessionStore.parse_metadata("just a conversation"), {})
+
+    def test_parse_metadata_skips_foreign_lines_and_unparsable_values(self):
+        text = (
+            "conversation\n"
+            ";; Local Variables:\n"
+            "plain line without marker\n"
+            ";; no-colon-here\n"
+            ";; gptel-model: 'm'\n"
+            ";; gptel--tool-names: ['a', 'b']\n"
+            ";; gptel-system-prompt: unquoted-value\n"
+            ";; End:\n"
+        )
+        parsed = SessionStore.parse_metadata(text)
+        self.assertEqual(parsed["gptel-model"], "m")
+        self.assertEqual(parsed["gptel--tool-names"], "a b")
+        self.assertEqual(parsed["gptel-system-prompt"], "unquoted-value")
+        self.assertNotIn("plain line without marker", parsed)
+
+    def test_strip_metadata_without_block(self):
+        self.assertEqual(SessionStore.strip_metadata("plain"), "plain")
+
+    def test_strip_metadata_without_end_marker(self):
+        text = "conversation\n;; Local Variables:\n;; gptel-model: 'm'\n"
+        self.assertEqual(SessionStore.strip_metadata(text), "conversation")
+
+    def test_latest_session_missing_dir(self):
+        import tempfile
+        from pathlib import Path
+
+        from python_agent_harness import config
+
+        with tempfile.TemporaryDirectory() as d:
+            old_dir = config.SESSION_DIR
+            config.SESSION_DIR = Path(d) / "does-not-exist"
+            try:
+                self.assertIsNone(SessionStore.latest_session())
+            finally:
+                config.SESSION_DIR = old_dir
+
+    def test_list_sessions_newest_first(self):
+        import os
+        import tempfile
+        from pathlib import Path
+
+        from python_agent_harness import config
+
+        with tempfile.TemporaryDirectory() as d:
+            old_dir = config.SESSION_DIR
+            config.SESSION_DIR = Path(d)
+            try:
+                s1 = SessionStore(project_dir="/tmp/proj", model="m", backend="b")
+                p1 = s1.save("one")
+                s2 = SessionStore(project_dir="/tmp/proj", model="m", backend="b")
+                p2 = s2.save("two")
+                os.utime(p1, (1_000_000, 1_000_000))  # make p1 the older file
+                sessions = SessionStore.list_sessions()
+                self.assertEqual(sessions, [p2, p1])
+            finally:
+                config.SESSION_DIR = old_dir
+
+    def test_list_sessions_missing_dir(self):
+        import tempfile
+        from pathlib import Path
+
+        from python_agent_harness import config
+
+        with tempfile.TemporaryDirectory() as d:
+            old_dir = config.SESSION_DIR
+            config.SESSION_DIR = Path(d) / "nope"
+            try:
+                self.assertEqual(SessionStore.list_sessions(), [])
+            finally:
+                config.SESSION_DIR = old_dir
+
 
 if __name__ == "__main__":
     unittest.main()
