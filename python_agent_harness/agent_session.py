@@ -121,7 +121,6 @@ class AgentSession:
         self.compacting = False
         self.todos: list[dict] = []
         self.pending_user_prompts: list[str] = []
-        self._pending_execute_prompt: str | None = None
         self.last_messages: list = []
         self.cancel_event = threading.Event()
         # Monotonic cancel identity: cancel() bumps this counter, so a

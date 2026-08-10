@@ -71,7 +71,7 @@ class TestSubagentIsolation(unittest.TestCase):
             "parent done",                                                    # parent
         ])
         s = make_session(client)
-        result = run_agent_loop(
+        run_agent_loop(
             s, messages=[Message(role="user", content="delegate")], top_level=True
         )
         texts = [m.text() for m in s.last_messages]

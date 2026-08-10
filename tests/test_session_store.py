@@ -61,7 +61,7 @@ class TestSession(unittest.TestCase):
             config.SESSION_DIR = __import__("pathlib").Path(d)
             try:
                 store = SessionStore(project_dir="/tmp/proj", model="m", backend="b")
-                path = store.save("x")
+                store.save("x")
                 store.apply_title("My Great Session")
                 self.assertTrue(os.path.exists(store.file_path))
                 self.assertEqual(os.path.basename(store.file_path).startswith("My-Great-Session_"), True)

@@ -603,7 +603,8 @@ class TestAgentLoop(unittest.TestCase):
 
     def test_real_bash_commands_run_in_parallel(self):
         """Two REAL Bash invocations in one round complete in ~one sleep
-        duration, not two: execution is not serialized."""
+        duration, not two: execution is not serialized (async delivery,
+        no pool slot held while waiting)."""
         with tempfile.TemporaryDirectory(prefix="pah-bash-") as tmpdir:
             session = RecordingSession(project_dir=tmpdir)
             session.tools_enabled = False
@@ -1545,6 +1546,92 @@ class TestSanitizeToolResult(unittest.TestCase):
 
     def test_non_string_str_converted(self):
         self.assertEqual(sanitize_tool_result(42), "42")
+
+
+class TestBashAsync(unittest.TestCase):
+    """Async Bash contract: run() returns a PendingToolResult and the
+    result is delivered when the process exits (mirrors :async t in
+    gptel-agent-tools.el — no thread-pool slot held while waiting)."""
+
+    def make_round(self, tmpdir):
+        from python_agent_harness.agent import AgentLoop
+
+        session = RecordingSession(project_dir=tmpdir)
+        session.tools_enabled = False
+
+        def real_execute(name, args, call_id=None):
+            return AgentSession.execute_tool(session, name, args, call_id=call_id)
+
+        session.execute_tool = real_execute
+        loop = AgentLoop(session, messages=[Message(role="user", content="run")])
+        return session, loop
+
+    def test_run_returns_pending_result(self):
+        from python_agent_harness.tools import PendingToolResult, ToolContext
+        from python_agent_harness.tools.bash import Bash
+
+        with tempfile.TemporaryDirectory(prefix="pah-bash-") as tmpdir:
+            session = RecordingSession(project_dir=tmpdir)
+            result = Bash().run({"command": "echo hello"}, ToolContext(session))
+            self.assertIsInstance(result, PendingToolResult)
+            self.assertEqual(result.wait().strip(), "hello")
+
+    def test_round_delivers_async_result(self):
+        with tempfile.TemporaryDirectory(prefix="pah-bash-") as tmpdir:
+            with open(os.path.join(tmpdir, "x.txt"), "w") as f:
+                f.write("file content\n")
+            session, loop = self.make_round(tmpdir)
+            loop.pending = [
+                ToolCall(id="b1", name="Bash", arguments=json.dumps(
+                    {"command": "echo one"})),
+                ToolCall(id="b2", name="Read", arguments=json.dumps(
+                    {"file_path": os.path.join(tmpdir, "x.txt")})),
+            ]
+            loop._run_tool_round()
+            by_id = {m.tool_call_id: m.text().strip() for m in loop.messages if m.role == "tool"}
+            self.assertEqual(by_id["b1"], "one")
+            # sync sibling delivered alongside the async one
+            self.assertEqual(by_id["b2"], "file content")
+            self.assertEqual(
+                [m.tool_call_id for m in loop.messages if m.role == "tool"],
+                ["b1", "b2"],  # original order preserved
+            )
+
+    def test_cancel_kills_process_and_delivers_error(self):
+        from python_agent_harness.tools import PendingToolResult, ToolContext
+        from python_agent_harness.tools.bash import Bash
+
+        with tempfile.TemporaryDirectory(prefix="pah-bash-") as tmpdir:
+            session = RecordingSession(project_dir=tmpdir)
+            result = Bash().run({"command": "sleep 30"}, ToolContext(session))
+            self.assertIsInstance(result, PendingToolResult)
+            threading.Timer(0.5, session.cancel).start()
+            start = time.monotonic()
+            delivered = result.wait()
+            elapsed = time.monotonic() - start
+            self.assertLess(elapsed, 5)  # killpg unblocked the wait promptly
+            self.assertIn("cancelled", delivered)
+
+    def test_deliver_is_idempotent(self):
+        from python_agent_harness.tools import PendingToolResult
+
+        p = PendingToolResult()
+        p.deliver("first")
+        p.deliver("second")  # late duplicate must be a no-op
+        self.assertEqual(p.wait(), "first")
+
+    def test_bad_command_returns_error_string_not_pending(self):
+        from python_agent_harness.tools import ToolContext
+        from python_agent_harness.tools.bash import Bash
+
+        # Popen with shell=True never fails on syntax; simulate the
+        # OSError path via an impossible cwd instead
+        class FakeSess:
+            project_dir = "/nonexistent-pah-dir"
+
+        result = Bash().run({"command": "echo hi"}, ToolContext(FakeSess()))
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,10 @@
 """Agent tool: spawn sub-agents for delegated work.
 
+Asynchronous (mirrors ``:async t``): ``run`` returns a
+``PendingToolResult`` immediately and a background thread runs the
+sub-agent loop, delivering the result string when it finishes — a
+long-running sub-agent never occupies a thread-pool slot.
+
 Sub-agents run the same agent loop with a fresh loop instance; their
 backend/model can be overridden (see config).  Results flow back to the
 parent as a single tool result string.  Errors are contained: an
@@ -13,7 +18,9 @@ independent tasks can be delegated in parallel.
 
 from __future__ import annotations
 
-from .base import Tool, ToolContext
+import threading
+
+from .base import PendingToolResult, Tool, ToolContext
 
 DESCRIPTION = (
     "Launch a specialized sub-agent to handle complex, multi-step tasks "
@@ -44,11 +51,23 @@ class AgentTool(Tool):
     description = DESCRIPTION
     parameters = PARAMETERS
 
-    def run(self, args: dict, ctx: ToolContext) -> str:
+    def run(self, args: dict, ctx: ToolContext) -> str | PendingToolResult:
         prompt = args.get("prompt", "")
         description = args.get("description", "task")
         subagent_type = args.get("subagent_type", "subagent")
         if not prompt:
             return "Error: prompt must not be empty"
-        result = ctx.run_subagent(subagent_type, description, prompt)
-        return result
+
+        pending = PendingToolResult()
+
+        def worker() -> None:
+            # containment boundary: a sub-agent failure becomes an error
+            # string for the parent, never a crash in the delivery thread
+            try:
+                result = ctx.run_subagent(subagent_type, description, prompt)
+            except Exception as e:  # noqa: BLE001 - error string for the parent
+                result = f"Error: Task {description!r} failed — {e}"
+            pending.deliver(result)
+
+        threading.Thread(target=worker, daemon=True, name="subagent-tool").start()
+        return pending

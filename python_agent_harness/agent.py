@@ -10,7 +10,10 @@ Implements the gptel-agent-harness supervision semantics:
 - tool results are sanitized (None -> error placeholder, non-str -> str)
 - tool-call batches never strand the loop: failures become error results
 - every tool call in a round runs concurrently in a thread pool (results
-  delivered in original order); interactive prompts stay serialized
+  delivered in original order); async tools (e.g. Bash) return a
+  ``PendingToolResult`` and deliver their result when the work completes,
+  without occupying a pool slot while waiting; interactive prompts stay
+  serialized
 - token calibration is updated from API-reported input tokens
 - sessions are auto-saved after each response
 - a cancelled run with no successor salvages its partial history
@@ -27,6 +30,7 @@ from . import config
 from .prompts import last_user_request, read_prompt_file
 from .models import Message, ToolCall
 from .token_estimator import context_window_for, estimate_payload_tokens
+from .tools.base import PendingToolResult
 
 
 class AgentLoop:
@@ -263,7 +267,14 @@ class AgentLoop:
             for fut in as_completed(futures):
                 p = futures[fut]
                 try:
-                    results[p.id] = sanitize_tool_result(fut.result())
+                    result = fut.result()
+                    if isinstance(result, PendingToolResult):
+                        # async tool (e.g. Bash): the worker returned
+                        # its handle as soon as the work was spawned and
+                        # freed its pool slot; wait for the real result
+                        # here (delivered when the process exits)
+                        result = result.wait()
+                    results[p.id] = sanitize_tool_result(result)
                 except Exception as e:  # noqa: BLE001 - containment boundary
                     results[p.id] = (
                         f"Error: tool {p.name!r} crashed in a worker "

@@ -106,7 +106,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     paths = config.load_paths_config(args.path)
     print(f"config file: {path}")
     if not path.exists():
-        print(f"(file does not exist yet — run `python-agent-harness config --init` to create it)")
+        print("(file does not exist yet — run `python-agent-harness config --init` to create it)")
     for key in ("base_url", "model", "backend"):
         print(f"{key}: {settings[key]}")
     print(f"api_key: {config.mask_secret(settings['api_key'])}")

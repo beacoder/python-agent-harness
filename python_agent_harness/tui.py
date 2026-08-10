@@ -21,7 +21,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -579,8 +579,6 @@ class Tui:
         return Text(f"assistant: {preview}", style=ASSISTANT_STYLE)
 
     def _render_conversation(self) -> Panel:
-        from rich.console import Group
-
         rows = self._history_rows()
         stream_row = self._stream_row()
         if stream_row is not None:
@@ -667,8 +665,6 @@ class Tui:
         is pinned like a second mode line instead of competing with the
         conversation rows for the visible budget.
         """
-        from rich.console import Group
-
         parts: list[Any] = [self._status_bar()]
         todos = self._todos_panel()
         if todos is not None:
@@ -683,7 +679,6 @@ class Tui:
         ctx = ""
         if ratio is not None:
             pct = round(ratio * 100)
-            style = "red" if pct >= 80 else ("yellow" if pct >= 50 else "green")
             ctx = f" [Ctx:{pct}%/{round(config.CONTEXT_TRIGGER * 100)}%]"
         t = Text()
         t.append(f" [{mode.upper()}]", style=mode_style)
@@ -1164,7 +1159,7 @@ class Tui:
     # ------------------------------------------------------------------
     def _run_compact(self) -> None:
         """Compact the current conversation directly."""
-        ok, msg = self.session.compact_conversation()
+        _, msg = self.session.compact_conversation()
         self.console.print(msg)
 
     def _run_summary(self) -> None:
@@ -1217,7 +1212,6 @@ class Tui:
             return
         if not os.path.isfile(path):
             self.console.print(f"[red]file not found: {path}[/red]")
-            return
             return
         try:
             text = open(path, encoding="utf-8").read()

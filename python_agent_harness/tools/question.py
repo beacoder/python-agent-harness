@@ -1,10 +1,16 @@
-"""Question tool: ask the user one or more questions during execution."""
+"""Question tool: ask the user one or more questions during execution.
+
+Asynchronous (mirrors ``:async t``): ``run`` returns a
+``PendingToolResult`` immediately and a background thread presents the
+questions, delivering the answers when the user responds — the wait for
+user input never occupies a thread-pool slot.
+"""
 
 from __future__ import annotations
 
-from .base import Tool, ToolContext
+import threading
 
-CUSTOM_OPTION = "[Type your own answer]"
+from .base import PendingToolResult, Tool, ToolContext
 
 DESCRIPTION = (
     "Ask the user one or more questions during execution.\n\n"
@@ -49,7 +55,7 @@ class Question(Tool):
     description = DESCRIPTION
     parameters = PARAMETERS
 
-    def run(self, args: dict, ctx: ToolContext) -> str:
+    def run(self, args: dict, ctx: ToolContext) -> str | PendingToolResult:
         raw = args.get("questions")
         if isinstance(raw, list):
             questions = raw
@@ -57,4 +63,17 @@ class Question(Tool):
             questions = raw["questions"]
         else:
             return "Error: questions must be an array"
-        return ctx.ask_questions(questions)
+
+        pending = PendingToolResult()
+
+        def worker() -> None:
+            # containment boundary: a failure in the interactive prompt
+            # becomes an error string for the model, never a crash
+            try:
+                result = ctx.ask_questions(questions)
+            except Exception as e:  # noqa: BLE001 - error string for the model
+                result = f"Error: Question failed — {e}"
+            pending.deliver(result)
+
+        threading.Thread(target=worker, daemon=True, name="question-tool").start()
+        return pending

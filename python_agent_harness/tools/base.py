@@ -2,11 +2,39 @@
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import field
 from typing import Any
 
 from ..models import ToolSpec
+
+
+class PendingToolResult:
+    """Handle for an asynchronous tool result (mirrors ``:async t``).
+
+    An async tool's ``run`` returns this handle instead of a string: it
+    starts its background work (e.g. a spawned process) and returns
+    immediately, then delivers the final result string later via
+    ``deliver`` — so the wait never occupies a thread-pool slot.
+
+    ``deliver`` is idempotent (first delivery wins, late duplicates are
+    no-ops — mirroring the gptel-agent FSM's idempotent-result advice);
+    ``wait`` blocks until the result has been delivered.
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._result: str | None = None
+
+    def deliver(self, result: str) -> None:
+        if not self._event.is_set():
+            self._result = result
+            self._event.set()
+
+    def wait(self) -> str:
+        self._event.wait()
+        return self._result or ""
 
 
 class ToolContext:
@@ -67,8 +95,13 @@ class Tool(ABC):
     parameters: dict[str, Any] = field(default_factory=dict)
 
     @abstractmethod
-    def run(self, args: dict[str, Any], ctx: ToolContext) -> str:
-        """Execute the tool and return the result string."""
+    def run(self, args: dict[str, Any], ctx: ToolContext) -> str | PendingToolResult:
+        """Execute the tool and return the result string.
+
+        Async tools return a ``PendingToolResult`` instead (see
+        ``Bash``): the background work is spawned here and the final
+        string is delivered later via ``PendingToolResult.deliver``.
+        """
 
     def spec(self) -> ToolSpec:
         return ToolSpec(
@@ -97,7 +130,7 @@ class Registry:
 
     def execute(
         self, name: str, args: dict[str, Any], ctx: ToolContext
-    ) -> str:
+    ) -> str | PendingToolResult:
         tool = self._tools.get(name)
         if tool is None:
             return f"Error: unknown tool {name!r}"

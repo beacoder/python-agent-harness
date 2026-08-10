@@ -1,8 +1,16 @@
-"""PlanExit tool: ask the user to approve switching from plan to build."""
+"""PlanExit tool: ask the user to approve switching from plan to build.
+
+Asynchronous (mirrors ``:async t``): ``run`` returns a
+``PendingToolResult`` immediately and a background thread asks for the
+approval, delivering the outcome when the user responds — the wait for
+user input never occupies a thread-pool slot.
+"""
 
 from __future__ import annotations
 
-from .base import Tool, ToolContext
+import threading
+
+from .base import PendingToolResult, Tool, ToolContext
 
 DESCRIPTION = (
     "Use this tool when you have completed the planning phase and are "
@@ -30,5 +38,17 @@ class PlanExit(Tool):
     description = DESCRIPTION
     parameters = {"type": "object", "properties": {}}
 
-    def run(self, args: dict, ctx: ToolContext) -> str:
-        return ctx.plan_exit()
+    def run(self, args: dict, ctx: ToolContext) -> str | PendingToolResult:
+        pending = PendingToolResult()
+
+        def worker() -> None:
+            # containment boundary: a failure in the approval prompt
+            # becomes an error string for the model, never a crash
+            try:
+                result = ctx.plan_exit()
+            except Exception as e:  # noqa: BLE001 - error string for the model
+                result = f"Error: PlanExit failed — {e}"
+            pending.deliver(result)
+
+        threading.Thread(target=worker, daemon=True, name="planexit-tool").start()
+        return pending

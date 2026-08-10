@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import Registry, Tool, ToolContext
+from .base import PendingToolResult, Registry, Tool, ToolContext
 from .agent_tool import AgentTool
 from .bash import Bash
 from .filesystem import Edit, GlobTool, Grep, Insert, Mkdir, Read, Write
@@ -12,7 +12,7 @@ from .skill import Skill
 from .todo import TodoWrite
 
 __all__ = [
-    "Registry", "Tool", "ToolContext",
+    "PendingToolResult", "Registry", "Tool", "ToolContext",
     "AgentTool", "Bash", "Edit", "GlobTool", "Grep", "Insert",
     "Mkdir", "PlanExit", "Question", "Read", "Skill", "TodoWrite", "Write",
 ]
