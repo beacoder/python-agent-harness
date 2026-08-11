@@ -52,7 +52,7 @@ SESSION_SUBDIR = "python-agent-harness/sessions"
 AUTO_SAVE_SESSION = True
 
 # ---- LLM interaction logs ---------------------------------------------------
-LLM_LOG_ENABLED = False
+LLM_LOG_ENABLED = True
 
 # ---- plan mode ---------------------------------------------------------------
 PLAN_FILE_NAME = "PLAN.md"
@@ -86,7 +86,7 @@ DEFAULT_TOOLS: list[str] = [
 # ---- LLM client ----------------------------------------------------------------
 DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
-MAX_TOKENS = 8192
+MAX_TOKENS = None   # use None to avoid write tool failure
 TEMPERATURE = 0.0
 
 # ---- API retry / backoff -------------------------------------------------------
