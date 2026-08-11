@@ -533,8 +533,8 @@ class Client:
 
 def _default_api_key() -> str | None:
     return (
-        __import__("os").environ.get("OPENAI_API_KEY")
-        or __import__("os").environ.get("DEEPSEEK_API_KEY")
+        os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("DEEPSEEK_API_KEY")
         or None
     )
 
