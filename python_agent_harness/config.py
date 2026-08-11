@@ -52,7 +52,7 @@ SESSION_SUBDIR = "python-agent-harness/sessions"
 AUTO_SAVE_SESSION = True
 
 # ---- LLM interaction logs ---------------------------------------------------
-LLM_LOG_ENABLED = True
+LLM_LOG_ENABLED = False
 
 # ---- plan mode ---------------------------------------------------------------
 PLAN_FILE_NAME = "PLAN.md"
