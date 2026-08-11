@@ -98,15 +98,13 @@ class AgentSession:
         self.plan_mode = PlanMode(project_dir)
         self.tool_ctx = ToolContext(self)
         self._tool_diffs: dict[str, str] = {}
-        # thread-local: parallel sub-agents each execute tools in their
-        # own pool thread; the "currently executing call" that Edit/Write
-        # attach their diff to must be per-thread, or concurrent
-        # sub-agents would clobber each other's diff slot
+        # thread-local: sub-agents each execute tools in their own
+        # background thread; the "currently executing call" that
+        # Edit/Write attach their diff to must be per-thread, or
+        # concurrent sub-agents would clobber each other's diff slot
         self._active_call = threading.local()
         # serializes interactive prompts (Question tool, PlanExit
-        # confirmation): parallel tool rounds may hit them
-        # simultaneously, but the TUI can only ask one question at a
-        # time
+        # confirmation): the TUI can only ask one question at a time
         self._interactive_lock = threading.Lock()
         self.store = SessionStore(
             project_dir=project_dir,

@@ -3,7 +3,7 @@
 Asynchronous (mirrors ``:async t``): ``run`` returns a
 ``PendingToolResult`` immediately and a background thread runs the
 sub-agent loop, delivering the result string when it finishes — a
-long-running sub-agent never occupies a thread-pool slot.
+long-running sub-agent never blocks the parent's sequential tool loop.
 
 Sub-agents run the same agent loop with a fresh loop instance; their
 backend/model can be overridden (see config).  Results flow back to the
@@ -11,9 +11,11 @@ parent as a single tool result string.  Errors are contained: an
 unexpected sub-agent response becomes an error string fed to the parent,
 never a crash.
 
-Every tool call in a round — Agent calls included — runs CONCURRENTLY:
-each sub-agent is fully isolated (own loop, own history, own stream), so
-independent tasks can be delegated in parallel.
+Tool execution mirrors gptel: synchronous tools (Read, Edit, ...) run
+ONE AT A TIME in model-emitted order, while asynchronous tools — Agent
+and Bash — are dispatched in line and run concurrently in the
+background.  Each sub-agent is fully isolated (own loop, own history,
+own stream), so independent tasks can be delegated in parallel.
 """
 
 from __future__ import annotations
@@ -27,9 +29,9 @@ DESCRIPTION = (
     "autonomously. Sub-agents run independently and return results in one "
     "message. Use for open-ended searches, complex research, or when "
     "uncertain about finding results in the first few tries.\n\n"
-    "Tool calls issued in the same round — including multiple Agent "
-    "calls — run concurrently, so delegate independent tasks in parallel "
-    "for efficiency."
+    "Multiple Agent calls issued in the same round run concurrently (like "
+    "Bash), while other tools execute one by one — delegate independent "
+    "tasks in parallel for efficiency."
 )
 
 PARAMETERS = {

@@ -1,16 +1,14 @@
 """Question tool: ask the user one or more questions during execution.
 
-Asynchronous (mirrors ``:async t``): ``run`` returns a
-``PendingToolResult`` immediately and a background thread presents the
-questions, delivering the answers when the user responds — the wait for
-user input never occupies a thread-pool slot.
+Synchronous (mirrors gptel's Question tool, which is NOT ``:async t``):
+``run`` blocks until the user answers and returns the answers as a
+plain string — it executes one at a time, in call order, like every
+other non-Bash/non-Agent tool.
 """
 
 from __future__ import annotations
 
-import threading
-
-from .base import PendingToolResult, Tool, ToolContext
+from .base import Tool, ToolContext
 
 DESCRIPTION = (
     "Ask the user one or more questions during execution.\n\n"
@@ -55,7 +53,7 @@ class Question(Tool):
     description = DESCRIPTION
     parameters = PARAMETERS
 
-    def run(self, args: dict, ctx: ToolContext) -> str | PendingToolResult:
+    def run(self, args: dict, ctx: ToolContext) -> str:
         raw = args.get("questions")
         if isinstance(raw, list):
             questions = raw
@@ -64,16 +62,9 @@ class Question(Tool):
         else:
             return "Error: questions must be an array"
 
-        pending = PendingToolResult()
-
-        def worker() -> None:
-            # containment boundary: a failure in the interactive prompt
-            # becomes an error string for the model, never a crash
-            try:
-                result = ctx.ask_questions(questions)
-            except Exception as e:  # noqa: BLE001 - error string for the model
-                result = f"Error: Question failed — {e}"
-            pending.deliver(result)
-
-        threading.Thread(target=worker, daemon=True, name="question-tool").start()
-        return pending
+        # containment boundary: a failure in the interactive prompt
+        # becomes an error string for the model, never a crash
+        try:
+            return ctx.ask_questions(questions)
+        except Exception as e:  # noqa: BLE001 - error string for the model
+            return f"Error: Question failed — {e}"

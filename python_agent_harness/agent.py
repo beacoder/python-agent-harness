@@ -17,11 +17,11 @@ completion supervision as an extension:
 - tool results are sanitized (None -> error placeholder, non-str -> str)
 - tool-call batches never strand the machine: failures become error
   results
-- every tool call in a round runs concurrently in a thread pool (results
-  delivered in original order); async tools (e.g. Bash) return a
-  ``PendingToolResult`` and deliver their result when the work completes,
-  without occupying a pool slot while waiting; interactive prompts stay
-  serialized
+- tool execution mirrors gptel's `gptel--handle-tool-use': synchronous
+  tools (Read, Edit, Glob, ...) run ONE AT A TIME in model-emitted
+  order; asynchronous tools (Bash, Agent) return a ``PendingToolResult``
+  and run concurrently in the background, their results awaited
+  afterwards in original call order; interactive prompts stay serialized
 - token calibration is updated from API-reported input tokens
 - sessions are auto-saved after each response
 - a cancelled run with no successor salvages its partial history
@@ -303,7 +303,7 @@ class AgentLoop:
     # ------------------------------------------------------------------
     # tool execution
     # ------------------------------------------------------------------
-    def _execute_tool_call(self, call: ToolCall) -> str:
+    def _execute_tool_call(self, call: ToolCall) -> str | PendingToolResult:
         if not self.top_level and call.name in config.SUBAGENT_EXCLUDED_TOOLS:
             # defense in depth: a hallucinated call must never reach the
             # registry — the spec was filtered, so refuse it here too
@@ -351,64 +351,69 @@ class AgentLoop:
             # conversation history (the TUI renders from it)
             self.session.last_messages = list(self.messages)
 
-    def _run_tools_parallel(
+    def _run_tools(
         self, calls: list[ToolCall], results: dict[str, str]
     ) -> None:
-        """Run CALLS concurrently in a thread pool, filling RESULTS.
+        """Run CALLS in model-emitted order, filling RESULTS.
 
-        Each call executes in its own worker thread: the session's
-        shared state is concurrency-safe (thread-local diff slots,
-        serialized interactive prompts), so every
-        tool issued in the same round — Agent calls included, whose
-        sub-agents are isolated by design — runs in parallel.  Delivery
-        happens later, in original tool-call order, by the parent
-        thread.
+        Mirrors gptel's `gptel--handle-tool-use': synchronous tools
+        (Read, Edit, Glob, ...) execute ONE AT A TIME, in call order;
+        asynchronous tools (Bash, Agent — those whose ``run`` returns a
+        ``PendingToolResult``) are dispatched in line and run
+        concurrently in the background, their results awaited
+        afterwards, again in original call order.  Delivery happens
+        later, in original tool-call order, by the caller.
+
+        A cancel landing before a call starts skips it (tools have side
+        effects); a call already running — or an async tool already
+        dispatched — cannot be stopped, but its result stays local to
+        the (dead) run.
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        def run_one(p: ToolCall) -> str:
-            # A cancel landing while the task is still QUEUED must skip
-            # it (tools have side effects): the sequential loop used to
-            # check before every call, so keep that guarantee — a
-            # task already RUNNING cannot be stopped, but one that has
-            # not started yet must not run after Ctrl-C.
+        async_calls: list[tuple[ToolCall, PendingToolResult]] = []
+        for p in calls:
+            # A cancel landing while a call is still QUEUED must skip
+            # it (tools have side effects): the sequential loop checks
+            # before every call, so a call that has not started yet must
+            # not run after Ctrl-C.
             if self._is_cancelled():
-                return "Error: tool call cancelled (user aborted the run)."
-            return self._execute_tool_call(p)
-
-        with ThreadPoolExecutor(
-            max_workers=min(len(calls), config.PARALLEL_TOOL_MAX),
-            thread_name_prefix="tool",
-        ) as pool:
-            futures = {pool.submit(run_one, p): p for p in calls}
-            for fut in as_completed(futures):
-                p = futures[fut]
-                try:
-                    result = fut.result()
-                    if isinstance(result, PendingToolResult):
-                        # async tool (e.g. Bash): the worker returned
-                        # its handle as soon as the work was spawned and
-                        # freed its pool slot; wait for the real result
-                        # here (delivered when the process exits)
-                        result = result.wait()
-                    results[p.id] = sanitize_tool_result(result)
-                except Exception as e:  # noqa: BLE001 - containment boundary
-                    results[p.id] = (
-                        f"Error: tool {p.name!r} crashed in a worker "
-                        f"thread — {e}"
-                    )
+                results[p.id] = (
+                    "Error: tool call cancelled (user aborted the run)."
+                )
+                continue
+            try:
+                result = self._execute_tool_call(p)
+            except Exception as e:  # noqa: BLE001 - containment boundary
+                results[p.id] = (
+                    f"Error: tool {p.name!r} crashed during execution — {e}"
+                )
+                continue
+            if isinstance(result, PendingToolResult):
+                # async tool (e.g. Bash): run() spawned the work and
+                # returned its handle immediately; await the real result
+                # after the sequential loop so sibling calls keep
+                # executing in the meantime
+                async_calls.append((p, result))
+            else:
+                results[p.id] = sanitize_tool_result(result)
+        for p, pending in async_calls:
+            try:
+                results[p.id] = sanitize_tool_result(pending.wait())
+            except Exception as e:  # noqa: BLE001 - containment boundary
+                results[p.id] = (
+                    f"Error: tool {p.name!r} crashed during execution — {e}"
+                )
 
     def _execute_pending(self) -> None:
-        """TOOL state: run the round's pending tool calls concurrently.
+        """TOOL state: run the round's pending tool calls.
 
         The assistant message carrying the tool calls was already
         appended by the WAIT state.  Results land in
         ``self.info["tool_result"]`` and are delivered by the TRET
         state in original tool-call order.
 
-        All tools issued in the round run CONCURRENTLY in a thread
-        pool — the session's shared state is concurrency-safe
-        (thread-local diff slots, serialized interactive prompts).
+        Synchronous tools run ONE AT A TIME in model-emitted order
+        (gptel-style); asynchronous tools (Bash, Agent) are dispatched
+        in line and run concurrently in the background.
         """
         pending = list(self.pending)
         if not pending:
@@ -420,7 +425,7 @@ class AgentLoop:
             # run's `session.last_messages`.
             return
         results: dict[str, str] = {}
-        self._run_tools_parallel(pending, results)
+        self._run_tools(pending, results)
         if self._is_cancelled():
             # cancelled mid-round: tools already submitted may have run
             # (their side effects are done), but the results stay local
@@ -457,7 +462,8 @@ class AgentLoop:
         self.pending = []
 
     def _run_tool_round(self) -> None:
-        """Execute all pending tool calls concurrently; deliver results.
+        """Execute all pending tool calls (sync one at a time, async
+        dispatched); deliver results.
 
         Convenience wrapper around the FSM's TOOL (execute) and TRET
         (deliver) handlers, kept for direct callers and tests; the
@@ -663,9 +669,8 @@ class AgentLoop:
         )
 
     def _handle_tool(self) -> None:
-        """TOOL — run the round's tools concurrently (see
-        ``_execute_pending``); the table routes ABRT on cancel and TRET
-        otherwise."""
+        """TOOL — run the round's tools (see ``_execute_pending``); the
+        table routes ABRT on cancel and TRET otherwise."""
         self.pending = list(self.info["tool_calls"])
         self.supervisor.reset_nudges()
         # Notify the TUI that tool execution is starting: this clears

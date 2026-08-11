@@ -146,8 +146,9 @@ class TestRegistry(unittest.TestCase):
 
 
 class TestQuestionTool(unittest.TestCase):
-    """Question async contract: run() returns a PendingToolResult and the
-    answer is delivered from a background thread."""
+    """Question sync contract (mirrors gptel's non-``:async t``
+    Question tool): run() blocks and returns the answers as a plain
+    string — it executes one at a time, in call order."""
 
     def test_list_questions_delivers_answer(self):
         sess = FakeSession()
@@ -155,14 +156,13 @@ class TestQuestionTool(unittest.TestCase):
         result = Question().run(
             {"questions": [{"question": "q1"}]}, ToolContext(sess)
         )
-        self.assertIsInstance(result, PendingToolResult)
-        self.assertEqual(result.wait(), "42")
+        self.assertEqual(result, "42")
 
     def test_dict_wrapped_questions_without_session(self):
         result = Question().run(
             {"questions": {"questions": [{"question": "q"}]}}, ToolContext()
         )
-        self.assertEqual(result.wait(), "Unanswered")
+        self.assertEqual(result, "Unanswered")
 
     def test_invalid_questions_returns_error(self):
         result = Question().run({"questions": "nope"}, ToolContext())
@@ -181,24 +181,24 @@ class TestQuestionTool(unittest.TestCase):
         result = Question().run(
             {"questions": [{"question": "q"}]}, ToolContext(sess)
         )
-        self.assertIn("Error: Question failed", result.wait())
+        self.assertIn("Error: Question failed", result)
 
 
 class TestPlanExitTool(unittest.TestCase):
-    """PlanExit async contract: approval outcome delivered from a
-    background thread; failures contained as error strings."""
+    """PlanExit sync contract (mirrors gptel's non-``:async t``
+    PlanExit tool): run() blocks and returns the outcome as a plain
+    string; failures contained as error strings."""
 
     def test_plan_exit_success(self):
         sess = FakeSession()
         sess.plan_exit = lambda: "approved"
         result = PlanExit().run({}, ToolContext(sess))
-        self.assertIsInstance(result, PendingToolResult)
-        self.assertEqual(result.wait(), "approved")
+        self.assertEqual(result, "approved")
 
     def test_plan_exit_without_session(self):
         result = PlanExit().run({}, ToolContext())
         self.assertEqual(
-            result.wait(),
+            result,
             "Not in plan mode; PlanExit has no effect.  Continue as normal.",
         )
 
@@ -209,7 +209,7 @@ class TestPlanExitTool(unittest.TestCase):
         sess = FakeSession()
         sess.plan_exit = boom
         result = PlanExit().run({}, ToolContext(sess))
-        self.assertIn("Error: PlanExit failed", result.wait())
+        self.assertIn("Error: PlanExit failed", result)
 
 
 class TestSkillTool(unittest.TestCase):

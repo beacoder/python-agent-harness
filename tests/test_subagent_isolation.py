@@ -233,12 +233,13 @@ class TestSubagentIsolation(unittest.TestCase):
         # spawned an additional nested loop's chat call
         self.assertEqual(len(client.sent), 2)
 
-    def test_parallel_tool_round_inside_subagent_loop(self):
-        """A sub-agent's OWN multi-tool round runs through the same
-        parallel executor as the parent's: sibling tools execute
-        concurrently, a hallucinated parent-only call is refused inline
-        while its siblings still run, results arrive in original order,
-        and nothing leaks into the parent's shared history."""
+    def test_tool_round_inside_subagent_loop(self):
+        """A sub-agent's OWN multi-tool round runs with the same
+        gptel-style semantics as the parent's: sync tools execute one
+        at a time in call order, a hallucinated parent-only call is
+        refused inline while its siblings still run, results arrive in
+        original order, and nothing leaks into the parent's shared
+        history."""
         import threading
         import time
 
@@ -283,9 +284,9 @@ class TestSubagentIsolation(unittest.TestCase):
         )
         result = loop.run()
         self.assertEqual(result, "sub done")
-        # the two healthy tools ran CONCURRENTLY (the refused Agent call
-        # returned inline, so the pool still held two sleeping calls)
-        self.assertGreaterEqual(s.max_active, 2)
+        # the fake session treats every tool as sync, so the round is
+        # fully sequential: never more than one tool at a time
+        self.assertEqual(s.max_active, 1)
         # refused call first (original order), siblings after it
         tool_rows = [(m.tool_call_id, m.text()) for m in loop.messages if m.role == "tool"]
         self.assertEqual(

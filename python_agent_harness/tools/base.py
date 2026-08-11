@@ -15,7 +15,7 @@ class PendingToolResult:
     An async tool's ``run`` returns this handle instead of a string: it
     starts its background work (e.g. a spawned process) and returns
     immediately, then delivers the final result string later via
-    ``deliver`` — so the wait never occupies a thread-pool slot.
+    ``deliver`` — so the wait never blocks the sequential tool loop.
 
     ``deliver`` is idempotent (first delivery wins, late duplicates are
     no-ops — mirroring the gptel-agent FSM's idempotent-result advice);

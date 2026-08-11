@@ -100,10 +100,11 @@ API_RETRY_MAX_DELAY = 30.0   # per-attempt backoff cap (seconds)
 
 # ---- tool execution ----------------------------------------------------------
 SUBAGENT_MAX_ROUNDS = 60
-# Max tool calls that may run CONCURRENTLY in one tool round (all tools
-# issued together in a round — Agent calls included — execute in
-# parallel; excess calls queue).
-PARALLEL_TOOL_MAX = 8
+# Tool execution mirrors gptel's `gptel--handle-tool-use': synchronous
+# tools (Read, Edit, Glob, ...) run ONE AT A TIME in model-emitted
+# order; asynchronous tools (Bash, Agent) are dispatched in line and
+# run concurrently in the background, their results awaited afterwards
+# in original call order.
 # Tools a sub-agent must NOT see or call: it runs autonomously as a
 # one-shot task inside the parent's tool round, so it cannot spawn
 # further sub-agents (Agent), ask the user questions (Question), nor

@@ -22,10 +22,11 @@ A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gpt
 - **Tools** — Agent (sub-agents), TodoWrite, Glob (git-aware), Grep
   (git grep → rg → grep), Read, Insert, Edit (incl. unified diffs), Write,
   Mkdir, Bash, Skill, Question, and PlanExit (registered while in plan
-  mode) — all OpenAI-compatible tool schemas.  Every tool call issued
-  in one round runs concurrently in a thread pool (up to
-  `PARALLEL_TOOL_MAX`, default 8) — Agent calls included — with results
-  delivered in the original call order.
+  mode) — all OpenAI-compatible tool schemas.  Tool execution mirrors
+  gptel's `gptel--handle-tool-use`: synchronous tools (Read, Edit,
+  Glob, ...) run ONE AT A TIME in model-emitted order, while the
+  asynchronous tools (Bash, Agent) are dispatched and run concurrently
+  in the background — results are delivered in the original call order.
 - **Default agent prompts** — the main agent and sub-agents each get a
   distinct default system prompt bundled with the package
   (`prompts/agent.md`, `prompts/subagent.md`), with YAML frontmatter

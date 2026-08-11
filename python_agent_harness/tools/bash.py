@@ -3,9 +3,9 @@
 Asynchronous (mirrors ``:async t`` in gptel-agent-tools): ``run``
 spawns the process and returns a ``PendingToolResult`` immediately; a
 background thread collects the output and delivers it when the process
-exits.  A long-running command therefore never occupies a thread-pool
-slot — sibling tools keep their slots and the round completes by
-delivery, not by thread blocking.
+exits.  A long-running command therefore never blocks the parent's
+sequential tool loop — it runs concurrently with sibling async tools
+(Agent) while sync tools execute one at a time.
 
 A session cancel (Ctrl-C) kills the process group and delivers a
 cancelled error.
