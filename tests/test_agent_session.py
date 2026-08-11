@@ -338,7 +338,7 @@ class TestTodos(unittest.TestCase):
     def test_update_todos_stores_and_notifies(self):
         session = RecordingSession()
         notified = []
-        session.notify_fn = notified.append
+        session.notify_fn = lambda kind, data=None: notified.append(kind)
         session.update_todos([{"task": "a"}, {"task": "b"}])
         self.assertEqual(session.todos, [{"task": "a"}, {"task": "b"}])
         self.assertEqual(notified, ["todos"])
@@ -346,7 +346,7 @@ class TestTodos(unittest.TestCase):
     def test_clear_todos_drops_and_notifies(self):
         session = RecordingSession()
         notified = []
-        session.notify_fn = notified.append
+        session.notify_fn = lambda kind, data=None: notified.append(kind)
         session.todos = [{"task": "a"}]
         session.clear_todos()
         self.assertEqual(session.todos, [])
