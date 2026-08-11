@@ -141,16 +141,16 @@ class AgentSession:
         # TUI hooks (overridden by the UI)
         self.on_delta: Callable[[str], None] | None = None
         self.log_fn: Callable[[str], None] | None = None
-        self.notify_fn: Callable[[str], None] | None = None
+        self.notify_fn: Callable[[str, Any], None] | None = None
         self.confirm_fn: Callable[[str], bool] | None = None
         self.ask_fn: Callable[[list[dict]], str] | None = None
 
     # ------------------------------------------------------------------
     # notifications
     # ------------------------------------------------------------------
-    def notify(self, kind: str) -> None:
+    def notify(self, kind: str, data: Any = None) -> None:
         if self.notify_fn:
-            self.notify_fn(kind)
+            self.notify_fn(kind, data)
 
     def log(self, msg: str) -> None:
         if self.log_fn:
