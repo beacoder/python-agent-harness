@@ -275,7 +275,9 @@ class GlobTool(Tool):
 def _git_root(path: str) -> str | None:
     d = Path(path).resolve()
     for parent in [d, *d.parents]:
-        if (parent / ".git").exists() or (parent / ".git").is_dir():
+        # .git is a directory in a normal clone and a file in worktrees
+        # / submodules; exists() covers both.
+        if (parent / ".git").exists():
             return str(parent)
     return None
 
