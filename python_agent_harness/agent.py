@@ -319,6 +319,16 @@ class AgentLoop:
                 args = {}
         if not isinstance(args, dict):
             args = {}
+        # Validate required parameters from the tool schema
+        tool = self.session.registry.get(call.name)
+        if tool is not None:
+            required = tool.parameters.get("required", [])
+            missing = [k for k in required if k not in args]
+            if missing:
+                return (
+                    f"Error: {call.name} is missing required argument(s): "
+                    f"{', '.join(missing)}"
+                )
         return self.session.execute_tool(call.name, args, call_id=call.id)
 
     def _deliver_tool_result(self, p: ToolCall, result: str) -> None:
