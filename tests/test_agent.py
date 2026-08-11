@@ -2003,7 +2003,7 @@ class TestAutoSave(unittest.TestCase):
         session.logs = []
         session.log_fn = session.logs.append
         session.notified = []
-        session.notify_fn = session.notified.append
+        session.notify_fn = lambda kind, data=None: session.notified.append(kind)
         return session
 
     def test_retry_then_persistent_error(self):
