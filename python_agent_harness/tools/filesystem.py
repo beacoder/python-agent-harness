@@ -440,7 +440,16 @@ class Write(Tool):
     }
 
     def run(self, args: dict, ctx: ToolContext) -> str:
-        path = os.path.abspath(os.path.join(args["path"], args["filename"]))
+        dir_path = args.get("path") or "."
+        filename = args.get("filename") or ""
+        content = args.get("content") or ""
+        # LLM may put the full file path in "filename" or in "path"
+        if filename:
+            path = os.path.abspath(os.path.join(dir_path, filename))
+        else:
+            path = os.path.abspath(dir_path)
+        if not filename:
+            filename = os.path.basename(path) or os.path.basename(dir_path)
         existed = os.path.exists(path)
         old_content = ""
         if existed:
@@ -450,15 +459,17 @@ class Write(Tool):
             except OSError:
                 old_content = ""
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
-                f.write(args["content"])
+                f.write(content)
         except OSError as e:
             return f"Error: {e}"
-        diff_text = unified_diff(old_content, args["content"], path)
+        diff_text = unified_diff(old_content, content, path)
         if diff_text:
             ctx.record_diff(diff_text)
-        return f"Created file {args['filename']} in {args['path']}"
+        return f"Created file {filename} in {dir_path}"
 
 
 class Edit(Tool):
