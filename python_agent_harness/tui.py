@@ -402,8 +402,19 @@ class Tui:
         # display without waiting for the next fixed tick
         self._data_event.set()
 
-    def _on_notify(self, kind: str) -> None:
-        if kind == "tools":
+    def _on_notify(self, kind: str, data: Any = None) -> None:
+        if kind == "tool_start":
+            # Tool execution is starting: clear the stale stream text
+            # (the assistant message is committed to messages and will
+            # appear in history once delivered) and show which tools are
+            # running, so the display stays alive during long operations.
+            with self.lock:
+                self.stream_text = ""
+            names = data if isinstance(data, list) else []
+            label = ", ".join(names) if names else "tools"
+            self.status = f" ⏳ {label}"
+            self._history_dirty = True
+        elif kind == "tools":
             self.status = " running tools"
             # tool round finished: session.last_messages now contains the
             # tool-call + result rows — rebuild the cached history so
