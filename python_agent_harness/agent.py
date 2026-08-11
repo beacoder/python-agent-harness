@@ -449,8 +449,12 @@ class AgentLoop:
                 self.pending = []
                 return
             self._deliver_tool_result(p, results[p.id])
+            # Notify per-tool so the TUI rebuilds history progressively
+            # (each tool result appears as soon as it is committed to
+            # the conversation, instead of all at once at the end)
+            if self.top_level:
+                self.session.notify("tools")
         self.pending = []
-        self.session.notify("tools")
 
     def _run_tool_round(self) -> None:
         """Execute all pending tool calls concurrently; deliver results.
@@ -664,6 +668,18 @@ class AgentLoop:
         otherwise."""
         self.pending = list(self.info["tool_calls"])
         self.supervisor.reset_nudges()
+        # Notify the TUI that tool execution is starting: this clears
+        # the stale stream text (which duplicates the now-committed
+        # assistant message) and shows which tools are about to run,
+        # so the display stays alive instead of appearing frozen.
+        # Mirror messages first so the history includes the assistant
+        # message (with tool calls) — without this the text would
+        # briefly vanish between stream-clear and the first tool
+        # result delivery.
+        if self.top_level:
+            self.session.last_messages = list(self.messages)
+            names = [tc.name for tc in self.pending]
+            self.session.notify("tool_start", names)
         self._execute_pending()
 
     def _handle_tret(self) -> None:
