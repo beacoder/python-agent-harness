@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
-from dataclasses import field
 from typing import Any
 
 from ..models import ToolSpec
@@ -92,7 +91,12 @@ class ToolContext:
 class Tool(ABC):
     name: str = ""
     description: str = ""
-    parameters: dict[str, Any] = field(default_factory=dict)
+    # NB: Tool is an ABC, not a dataclass, so this is a plain class-level
+    # default (never mutated in place — every concrete tool overrides it
+    # with its own schema).  It must be a real dict: a dataclasses.field()
+    # sentinel here would silently become the "parameters" of any tool
+    # that forgot to override it and then fail JSON serialization.
+    parameters: dict[str, Any] = {}
 
     @abstractmethod
     def run(self, args: dict[str, Any], ctx: ToolContext) -> str | PendingToolResult:
