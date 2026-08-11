@@ -59,6 +59,56 @@ class TestMessageToApi(unittest.TestCase):
         api = Message(role="assistant").to_api()
         self.assertEqual(api, {"role": "assistant"})
 
+    def test_reasoning_prefix_stripped_from_api_content(self):
+        """The client merges reasoning ahead of the answer into content;
+        to_api() must not re-send that reasoning over the wire."""
+        reasoning = "Let me think about this carefully."
+        m = Message(
+            role="assistant",
+            content=reasoning + "\n\nThe answer is 42.",
+            reasoning=reasoning,
+        )
+        # stored content keeps the reasoning (TUI strips it for display)
+        self.assertTrue(m.content.startswith(reasoning))
+        # wire content drops it
+        self.assertEqual(m.to_api()["content"], "The answer is 42.")
+
+    def test_reasoning_stripped_when_not_exact_prefix(self):
+        """Leading whitespace/newlines before the reasoning block are
+        tolerated, and the newline separator after it is removed."""
+        reasoning = "thinking"
+        m = Message(
+            role="assistant",
+            content="\n\n" + reasoning + "\n\nanswer",
+            reasoning=reasoning,
+        )
+        self.assertEqual(m.to_api()["content"], "answer")
+
+    def test_no_reasoning_leaves_content_untouched(self):
+        m = Message(role="assistant", content="plain answer")
+        self.assertEqual(m.to_api()["content"], "plain answer")
+
+    def test_reasoning_only_content_becomes_empty_over_wire(self):
+        """A reasoning-only message (no answer) sends empty content, not
+        the reasoning text."""
+        reasoning = "just thinking, no answer"
+        m = Message(role="assistant", content=reasoning, reasoning=reasoning)
+        self.assertEqual(m.to_api()["content"], "")
+
+
+class TestToolParameters(unittest.TestCase):
+    def test_tool_parameters_default_is_a_plain_dict(self):
+        """Tool is an ABC, not a dataclass: the parameters default must
+        be a real dict, not a dataclasses.field() sentinel (which would
+        break JSON serialization for any tool that forgot to override
+        it)."""
+        import dataclasses
+
+        from python_agent_harness.tools.base import Tool
+
+        self.assertIsInstance(Tool.parameters, dict)
+        self.assertFalse(isinstance(Tool.parameters, dataclasses.Field))
+
 
 class TestToolSpecAndUsage(unittest.TestCase):
     def test_tool_spec_to_api(self):
