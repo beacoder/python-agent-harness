@@ -429,9 +429,8 @@ class TestAgentLoop(unittest.TestCase):
 
     def test_malformed_tool_arguments_do_not_break_round(self):
         """A tool call whose arguments are not valid JSON (or parse to a
-        non-object) must not break the round: the arguments degrade to
-        {} (an error result for the tool), sibling calls still run, and
-        all results are delivered."""
+        non-object) must not break the round: the call gets an error
+        result, sibling calls still run, and all results are delivered."""
         session = RecordingSession()
         session.tools_enabled = False
         session.client.script = [
@@ -446,16 +445,15 @@ class TestAgentLoop(unittest.TestCase):
         loop = AgentLoop(session, messages=[Message(role="user", content="go")])
         result = loop.run()
         self.assertEqual(result, "done")
-        # the malformed calls degraded to empty args (never the raw
-        # string / raw list); the healthy siblings ran with theirs intact
+        # only the well-formed calls reached execute_tool
         read_args = [args for name, args in session.executed if name == "Read"]
         bash_args = [args for name, args in session.executed if name == "Bash"]
         self.assertEqual(
-            sorted(str(a["file_path"]) for a in read_args if a),
+            sorted(str(a["file_path"]) for a in read_args),
             ["/tmp/a.py", "/tmp/c.py"],
         )
-        self.assertEqual([a for a in read_args if not a], [{}])
-        self.assertEqual(bash_args, [{}])
+        # malformed calls never reached the tool
+        self.assertEqual(bash_args, [])
         # all four results delivered in original order
         self.assertEqual(
             [m.tool_call_id for m in loop.messages if m.role == "tool"],
@@ -464,7 +462,9 @@ class TestAgentLoop(unittest.TestCase):
         by_id = {m.tool_call_id: m.text() for m in loop.messages if m.role == "tool"}
         self.assertEqual(by_id["1"], "file content")
         self.assertEqual(by_id["3"], "file content")
-        self.assertEqual(by_id["4"], "file content")
+        # malformed args get clear error messages
+        self.assertIn("missing required argument", by_id["2"])
+        self.assertIn("missing required argument", by_id["4"])
 
     def test_parallel_round_contains_tool_crash(self):
         """A tool that raises inside a parallel round must not kill the
