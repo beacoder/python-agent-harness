@@ -46,7 +46,7 @@ class Message:
     def to_api(self) -> dict[str, Any]:
         d: dict[str, Any] = {"role": self.role}
         if self.content is not None:
-            d["content"] = self.content
+            d["content"] = self._api_content()
         if self.tool_calls:
             d["tool_calls"] = [
                 {
@@ -66,6 +66,27 @@ class Message:
         if self.name:
             d["name"] = self.name
         return d
+
+    def _api_content(self) -> str | list[Any] | None:
+        """Content as sent over the wire, with the reasoning preamble removed.
+
+        The client merges streamed ``reasoning_content`` ahead of the
+        answer into ``content`` (so the live stream and stored history
+        show the model's thinking).  That reasoning is bookkeeping for
+        the current turn only — re-sending it on later turns just
+        inflates the context (and skews token estimation) and can
+        confuse the model, so it is stripped here at the API boundary.
+        The stored ``content`` is left untouched (the TUI collapses the
+        reasoning for display via its own helper).
+        """
+        content = self.content
+        if self.reasoning and isinstance(content, str):
+            if content.startswith(self.reasoning):
+                return content[len(self.reasoning):].lstrip("\n")
+            stripped = content.lstrip()
+            if stripped.startswith(self.reasoning):
+                return stripped[len(self.reasoning):].lstrip("\n")
+        return content
 
     def text(self) -> str:
         """Plain text of the message; empty when no text parts exist."""
