@@ -127,7 +127,7 @@ def _add_config_arg(
         "--config",
         metavar="PATH",
         default=argparse.SUPPRESS if suppress else None,
-        help="path to config.toml (default: ~/.config/python-agent-harness/config.toml)",
+        help="path to config.json (default: ~/.config/python-agent-harness/config.json)",
     )
 
 
