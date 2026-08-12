@@ -1,8 +1,26 @@
 """Filesystem tools: Read, Write, Edit, Insert, Mkdir, Glob, Grep.
 
-Glob is git-aware (git ls-files, .gitignore-respecting) with a tree
-fallback; Grep prefers rg, then git grep, then plain grep — mirroring
-gptel-agent-harness-tools.el.
+Glob mirrors `gptel-agent-harness-tools--glob`: inside a git repository
+it uses `git ls-files` (fast, .gitignore-respecting), and falls back to
+the `tree` command outside git.  Grep mirrors
+`gptel-agent-harness-tools--grep`: git grep (passing the regex via
+`-e`), then rg, then plain grep.
+
+Edit mirrors `gptel-agent--edit-files` (inherited unchanged by the
+harness): a string-replacement mode (exact unique `old_str` → `new_str`,
+single files only) and a diff/patch mode that shells out to
+`patch --forward` and works on both single files and whole directories
+(multi-file unified diffs), with ```diff code-fence removal and
+hunk-header line-count fixing.
+
+NOTE: these filesystem tools are intentionally SYNCHRONOUS.  Only Bash
+and Agent are `:async t` in gptel-agent; sync tools run one at a time in
+the model-emitted order.  Do NOT be tempted to port every tool to async
+for parallelism: tools can depend on one another's side effects within a
+single round (e.g. Write/Mkdir then Read/Edit the same path, or Edit then
+Grep the just-changed file).  Running them concurrently would introduce
+read-after-write races and non-deterministic results.  Keep filesystem
+tools synchronous so ordering — and therefore correctness — is preserved.
 
 Oversized Glob/Grep results are spilled to a temp file (mirroring
 `gptel-agent--truncate-buffer` in gptel-agent-tools.el): the tool
@@ -25,7 +43,6 @@ import shutil
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 from .base import Tool, ToolContext
@@ -198,38 +215,68 @@ class Read(Tool):
 class GlobTool(Tool):
     name = "Glob"
     description = (
-        "Find files by glob pattern (e.g. '*.py' or 'src/**/test*.py'). "
-        "Returns absolute paths. Git-aware: respects .gitignore. "
-        "Oversized results are spilled to a temp file (see the 'Stored in:' "
+        "Recursively find files matching a provided glob pattern.\n\n"
+        "- Supports glob patterns like \"*.md\" or \"*test*.py\".\n"
+        "- Inside a git repository, matching respects .gitignore and covers "
+        "both tracked and untracked files.\n"
+        "- Returns matching file paths (absolute) at all depths.  Limit the "
+        "depth of the search by providing the `depth` argument.\n"
+        "- When you are doing an open ended search that may require multiple "
+        "rounds of globbing and grepping, use the \"Agent\" tool instead.\n"
+        "- Oversized results are spilled to a temp file (see the 'Stored in:' "
         "path); use Read to view the full output."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Glob pattern, e.g. *.py"},
-            "path": {"type": "string", "description": "Directory to search in (default: cwd)"},
-            "depth": {"type": "integer", "description": "Maximum directory depth (0 or omitted = no limit)"},
+            "pattern": {
+                "type": "string",
+                "description": (
+                    "Glob pattern to match, for example \"*.el\". Must not be "
+                    "empty.\nUse \"*\" to list all files in a directory."
+                ),
+            },
+            "path": {
+                "type": "string",
+                "description": (
+                    "Directory to search in.  Supports relative paths and "
+                    "defaults to \".\""
+                ),
+            },
+            "depth": {
+                "type": "integer",
+                "description": (
+                    "Limit directory depth of search, 1 or higher. Defaults "
+                    "to no limit."
+                ),
+            },
         },
         "required": ["pattern"],
     }
 
     def run(self, args: dict, ctx: ToolContext) -> str:
-        pattern = args["pattern"]
+        # Mirrors `gptel-agent-harness-tools--glob': `git ls-files' inside a
+        # git repository (fast, .gitignore-respecting), `tree' as a fallback
+        # outside git.
+        pattern = args.get("pattern") or ""
         if not pattern:
             return "Error: pattern must not be empty"
-        base = os.path.abspath(args.get("path") or ctx.cwd)
-        if not os.path.isdir(base):
-            return f"Error: path {args.get('path') or ctx.cwd} is not readable"
+        path = args.get("path")
+        if path:
+            if not (os.path.isdir(path) and os.access(path, os.R_OK)):
+                return f"Error: path {path} is not readable"
+        else:
+            path = ctx.cwd
+        base = os.path.abspath(path)  # directory-file-name + expand-file-name
         depth = args.get("depth")
-        if depth is not None:
-            depth = int(depth)
 
         git_root = _git_root(base)
-        git_err = None
+        if not git_root and not shutil.which("tree"):
+            return "Error: Executable `tree` not found.  This tool cannot be used"
+
         if git_root:
             rel = os.path.relpath(base, git_root)
-            pathspec = pattern if rel == "." else os.path.join(rel, pattern)
-            pathspec = pathspec.replace(os.sep, "/")
+            pathspec = pattern if rel == "." else f"{rel}/{pattern}".replace(os.sep, "/")
             try:
                 proc = subprocess.run(
                     ["git", "ls-files", "-z", "--full-name", "--cached",
@@ -238,38 +285,34 @@ class GlobTool(Tool):
                     encoding="utf-8", errors="replace", timeout=60,
                 )
             except (OSError, subprocess.TimeoutExpired) as e:
-                proc = None
-                git_err = str(e)
-            else:
-                git_err = None
-            if proc is not None:
-                out = proc.stdout
-                if proc.returncode != 0:
-                    out += f"Glob failed with exit code {proc.returncode}\n.STDOUT:\n\n"
-                return _git_glob_results(out, git_root, base, depth, pattern)
+                return f"Error: {e}"
+            if proc.returncode != 0:
+                # Failure banner is prepended to whatever git emitted.
+                banner = f"Glob failed with exit code {proc.returncode}\n.STDOUT:\n\n"
+                return _spool(banner + (proc.stdout or "") + (proc.stderr or ""), "glob")
+            return _git_glob_results(proc.stdout, git_root, base, depth)
 
-        if git_err and "No such file" in git_err:
-            pass  # fall through to tree / python glob
-        if shutil.which("tree"):
-            cmd = ["tree", "-l", "-f", "-i", "-I", ".git",
-                   "--sort=mtime", "--ignore-case", "--prune", "-P", pattern, base]
-            if depth is not None and depth > 0:
-                cmd += ["-L", str(depth)]
-            try:
-                proc = subprocess.run(
-                    cmd, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=60,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                proc = None
-            if proc is not None and proc.returncode == 0:
-                return _spool(proc.stdout, "glob")
-            if proc is not None and proc.returncode != 0:
-                return _spool(
-                    proc.stdout + f"Glob failed with exit code {proc.returncode}\n.STDOUT:\n\n",
-                    "glob",
-                )
-        return "Error: Executable `tree` not found.  This tool cannot be used"
+        # --- Tree strategy (fallback outside git) ---
+        cmd = ["tree", "-l", "-f", "-i", "-I", ".git",
+               "--sort=mtime", "--ignore-case", "--prune", "-P", pattern, base]
+        if _natnump(depth):
+            cmd += ["-L", str(depth)]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return f"Error: {e}"
+        out = proc.stdout
+        if proc.returncode != 0:
+            out = f"Glob failed with exit code {proc.returncode}\n.STDOUT:\n\n" + out
+        return _spool(out, "glob")
+
+
+def _natnump(n: object) -> bool:
+    """True for a non-negative integer (Emacs `natnump' semantics)."""
+    return isinstance(n, int) and not isinstance(n, bool) and n >= 0
 
 
 def _git_root(path: str) -> str | None:
@@ -282,25 +325,19 @@ def _git_root(path: str) -> str | None:
     return None
 
 
-def _git_glob_results(
-    raw: str, git_root: str, base: str, depth: int | None, pattern: str
-) -> str:
+def _git_glob_results(raw: str, git_root: str, base: str, depth: object) -> str:
+    """Format `git ls-files -z` output into absolute paths, depth-filtered.
+
+    Mirrors the git branch of `gptel-agent-harness-tools--glob': split on
+    NUL, drop entries whose slash-count reaches ``base_depth + depth``
+    (only when DEPTH is a non-negative integer — `natnump'), then prefix
+    each remaining entry with GIT-ROOT.
+    """
     lines = [l for l in raw.split("\0") if l]
-    # depth <= 0 means "no limit" (matches `tree -L 0`), so an explicit
-    # 0 never produces a confusingly empty result
-    if depth is not None and depth > 0:
-        base_depth = 0
+    if _natnump(depth):
         rel_base = os.path.relpath(base, git_root)
-        if rel_base != ".":
-            base_depth = 1 + rel_base.count(os.sep)
-        filtered = []
-        for l in lines:
-            if rel_base != "." and not (l == rel_base or l.startswith(rel_base + "/")):
-                continue  # outside the search base subtree
-            if l.count("/") >= base_depth + depth:
-                continue
-            filtered.append(l)
-        lines = filtered
+        base_depth = 0 if rel_base == "." else 1 + rel_base.count("/")
+        lines = [l for l in lines if l.count("/") < base_depth + depth]
     out = "\n".join(os.path.join(git_root, l) for l in lines)
     if not out:
         return ""
@@ -321,7 +358,7 @@ class Grep(Tool):
             "regex": {"type": "string", "description": "Regular expression to search for"},
             "path": {"type": "string", "description": "File or directory to search in"},
             "glob": {"type": "string", "description": "Optional file pattern filter (e.g. *.py)"},
-            "context_lines": {"type": "integer", "description": "Lines of context (0-15)"},
+            "context_lines": {"type": "integer", "description": "Lines of context (0-15)", "maximum": 15},
         },
         "required": ["regex", "path"],
     }
@@ -475,42 +512,90 @@ class Write(Tool):
 class Edit(Tool):
     name = "Edit"
     description = (
-        "Replace text in an existing file. "
-        "old_str must exactly match one unique section of the file. "
-        "Alternatively provide a unified diff via the diff parameter."
+        "Replace text in one or more files.\n\n"
+        "To edit a single file, provide the file `path`.\n\n"
+        "For the replacement, there are two methods:\n"
+        "- Short replacements: Provide both `old_str` and `new_str`, in which "
+        "case `old_str` needs to exactly match one unique section of the "
+        "original file, including any whitespace.  Make sure to include "
+        "enough context that the match is not ambiguous.  The entire original "
+        "string will be replaced with `new_str`.\n"
+        "- Long or involved replacements: set the `diff` parameter to true and "
+        "provide a unified diff in `new_str`. `old_str` can be ignored.\n\n"
+        "To edit multiple files,\n"
+        "- provide the directory path,\n"
+        "- set the `diff` parameter to true\n"
+        "- and provide a unified diff in `new_str`.\n\n"
+        "Diff instructions:\n"
+        "- The diff must be in unified format (optionally within a ```diff "
+        "fenced code block).\n"
+        "- The file paths within the diff (e.g. '--- a/filename' "
+        "'+++ b/filename') must be appropriate for the `path`.\n\n"
+        "To simply insert text at some line, use the \"Insert\" tool instead."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "File path"},
-            "old_str": {"type": "string", "description": "Exact text to replace"},
-            "new_str": {"type": "string", "description": "Replacement text"},
-            "diff": {"type": "boolean", "description": "Whether new_str is a unified diff"},
+            "path": {"type": "string", "description": "File path or directory to edit"},
+            "old_str": {
+                "type": "string",
+                "description": "Original string to replace.  If providing a unified diff, this should be false",
+            },
+            "new_str": {"type": "string", "description": "Replacement string OR unified diff text"},
+            "diff": {
+                "type": "boolean",
+                "description": "Whether the replacement is a string or a diff.  `true` for a diff, `false` otherwise.",
+            },
         },
         "required": ["path", "new_str"],
     }
 
     def run(self, args: dict, ctx: ToolContext) -> str:
-        path = os.path.abspath(args["path"])
+        raw = args["path"]
+        path = os.path.abspath(raw)
+        if not os.access(path, os.R_OK):
+            return f"Error: File or directory {path} is not readable"
+        new_str = args.get("new_str")
+        if new_str is None:
+            return "Error: Required argument `new_str' missing"
+        old = args.get("old_str")
+        diffp = args.get("diff")
+        # gptel: string mode when `diff` is false OR `old_str` is provided.
+        if diffp is False or old is not None:
+            return self._string_replace(path, old, new_str, ctx)
+        # Diff mode runs `patch` in Emacs `file-name-directory' of the path:
+        # a trailing-slash directory path -> that directory itself, so a
+        # multi-file diff applies to files within it; otherwise the parent.
+        if raw.endswith("/") or raw.endswith(os.sep):
+            cwd = path or "/"
+        else:
+            cwd = os.path.dirname(path) or "/"
+        return self._apply_patch(path, cwd, new_str, ctx)
+
+    def _string_replace(
+        self, path: str, old: str | None, new_str: str, ctx: ToolContext
+    ) -> str:
+        if os.path.isdir(path):
+            return (
+                "Error: String replacement is intended for single files, "
+                f"not directories ({path})"
+            )
+        if old is None:
+            return "Error: old_str is required for non-diff edits"
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
         except OSError as e:
             return f"Error: cannot read {path}: {e}"
-        try:
-            if args.get("diff"):
-                new = _apply_diff(content, args["new_str"])
-            else:
-                old = args.get("old_str")
-                if old is None:
-                    return "Error: old_str is required for non-diff edits"
-                if content.count(old) == 0:
-                    return "Error: old_str not found in file"
-                if content.count(old) > 1:
-                    return "Error: old_str is not unique; provide more context"
-                new = content.replace(old, args["new_str"])
-        except Exception as e:
-            return f"Error: {e}"
+        count = content.count(old)
+        if count == 0:
+            return f'Error: Could not find old_str "{old[:20]}" in file {path}'
+        if count > 1:
+            return (
+                "Error: Match is not unique. Consider providing more context "
+                "for the replacement, or a unified diff"
+            )
+        new = content.replace(old, new_str, 1)
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(new)
@@ -519,111 +604,125 @@ class Edit(Tool):
         diff_text = unified_diff(content, new, path)
         if diff_text:
             ctx.record_diff(diff_text)
-        return f"Successfully replaced text in {path}"
+        return (
+            f"Successfully replaced {old[:20]} (truncated) "
+            f"with {new_str[:20]} (truncated)"
+        )
+
+    def _apply_patch(self, path: str, cwd: str, diff: str, ctx: ToolContext) -> str:
+        """Diff/patch mode: shell out to `patch --forward` (files or dirs).
+
+        Mirrors the diff branch of `gptel-agent--edit-files`: ensure a
+        trailing newline, strip a ```diff code fence, fix hunk-header line
+        counts, then run `patch` in CWD (Emacs `file-name-directory' of the
+        path).  For a single file the before/after contents are captured to
+        record a diff for the UI; directory (multi-file) patches skip that.
+        """
+        if not shutil.which("patch"):
+            return (
+                'Error: Command "patch" not available, cannot apply diffs. '
+                "Use string replacement instead"
+            )
+        text = diff if diff.endswith("\n") else diff + "\n"
+        text = _strip_diff_fence(text)
+        text = _fix_patch_headers(text)
+        is_file = os.path.isfile(path)
+        old_content = None
+        if is_file:
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    old_content = f.read()
+            except OSError:
+                old_content = None
+        options = ["--forward", "--verbose"]
+        try:
+            proc = subprocess.run(
+                ["patch", *options],
+                input=text, cwd=cwd, capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return f"Error: {e}"
+        out = (proc.stdout or "") + (proc.stderr or "")
+        if proc.returncode != 0:
+            return (
+                f"Error: Failed to apply diff to {path} (exit status "
+                f"{proc.returncode}).\nPatch command options: {options}\n"
+                f"Patch STDOUT:\n{out}"
+            )
+        if old_content is not None and os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    new_content = f.read()
+                diff_text = unified_diff(old_content, new_content, path)
+                if diff_text:
+                    ctx.record_diff(diff_text)
+            except OSError:
+                pass
+        return (
+            f"Diff successfully applied to {path}.\n"
+            f"Patch command options: {options}\n"
+            f"Patch STDOUT:\n{out}"
+        )
 
 
-_HUNK_HEADER_RE = re.compile(
-    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_len>\d+))? "
-    r"\+(?P<new_start>\d+)(?:,(?P<new_len>\d+))? @@"
-)
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+),(\d+) +\+(\d+),(\d+) @@")
 
 
-@dataclass
-class _Hunk:
-    old_start: int  # 1-based
-    old_len: int
-    ops: list[tuple[str, str]]  # (' '|'-'|'+', line-content incl. trailing \n)
+def _strip_diff_fence(text: str) -> str:
+    """Remove a leading ```diff fence and its trailing ``` line.
 
-
-def _parse_unified_diff(diff: str) -> list[_Hunk]:
-    """Parse a unified diff into hunks; raises ValueError on malformed input."""
-    hunks: list[_Hunk] = []
-    current: _Hunk | None = None
-    for raw in diff.splitlines(keepends=True):
-        if raw.lstrip().startswith("```"):
-            continue  # code fences (```diff / ```patch / ```)
-        if raw.startswith("--- ") or raw.startswith("+++ ") or raw.startswith("diff --git"):
-            continue
-        m = _HUNK_HEADER_RE.match(raw)
-        if m:
-            if current is not None:
-                hunks.append(current)
-            old_start = int(m.group("old_start"))
-            old_len = int(m.group("old_len") or "1")
-            current = _Hunk(old_start=old_start, old_len=old_len, ops=[])
-            continue
-        if current is None:
-            continue  # ignore stray lines before the first hunk header
-        if raw.startswith("\\"):
-            # "\ No newline at end of file" marker: the preceding
-            # content line has no trailing newline.  When the diff is
-            # echoed back by the model, that line carries a newline in
-            # the text (line separators), so strip it for the strict
-            # source-line comparison below.
-            if current.ops and current.ops[-1][1].endswith("\n"):
-                op, text = current.ops[-1]
-                current.ops[-1] = (op, text[:-1])
-            continue
-        if raw.startswith("+"):
-            current.ops.append(("+", raw[1:]))
-        elif raw.startswith("-"):
-            current.ops.append(("-", raw[1:]))
-        elif raw.startswith(" "):
-            current.ops.append((" ", raw[1:]))
-        elif raw.strip() == "" or raw == "\n":
-            current.ops.append((" ", raw))
-        else:
-            raise ValueError(f"malformed diff line: {raw!r}")
-    if current is not None:
-        hunks.append(current)
-    if not hunks:
-        raise ValueError("no hunks found in diff")
-    return hunks
-
-
-def _apply_diff(content: str, diff: str) -> str:
-    """Apply a unified diff to CONTENT; raises ValueError on failure.
-
-    Hunks are applied in order using their declared old-file line
-    positions; context/removed lines are verified against the source
-    so a stale or mismatched hunk fails loudly instead of silently
-    corrupting the file.
+    Mirrors the fence handling in `gptel-agent--edit-files`: only a
+    ```diff opening fence is stripped (a bare ``` or ```patch is left
+    for `patch` to reject), together with the closing ``` line.
     """
-    hunks = _parse_unified_diff(diff)
-    src_lines = content.splitlines(keepends=True)
-    result: list[str] = []
-    cursor = 0  # 0-based index into src_lines already consumed
+    lines = text.splitlines(keepends=True)
+    if lines and re.match(r"^ *```diff", lines[0]):
+        lines = lines[1:]
+        if lines and re.match(r"^ *```", lines[-1]):
+            lines = lines[:-1]
+        return "".join(lines)
+    return text
 
-    for hunk in hunks:
-        start = hunk.old_start - 1 if hunk.old_start > 0 else 0
-        if start < cursor:
-            raise ValueError("hunks overlap or are out of order")
-        # copy untouched lines before this hunk verbatim
-        result.extend(src_lines[cursor:start])
-        cursor = start
-        for op, text in hunk.ops:
-            if op == " ":
-                if cursor >= len(src_lines) or src_lines[cursor] != text:
-                    raise ValueError(
-                        f"context line mismatch at line {cursor + 1}: "
-                        f"expected {text!r}, found "
-                        f"{src_lines[cursor] if cursor < len(src_lines) else '<eof>'!r}"
-                    )
-                result.append(text)
-                cursor += 1
-            elif op == "-":
-                if cursor >= len(src_lines) or src_lines[cursor] != text:
-                    raise ValueError(
-                        f"removed line mismatch at line {cursor + 1}: "
-                        f"expected {text!r}, found "
-                        f"{src_lines[cursor] if cursor < len(src_lines) else '<eof>'!r}"
-                    )
-                cursor += 1
-            elif op == "+":
-                result.append(text)
 
-    result.extend(src_lines[cursor:])
-    return "".join(result)
+def _fix_patch_headers(diff_text: str) -> str:
+    """Recompute the line counts in unified-diff hunk headers.
+
+    Mirrors `gptel-agent--fix-patch-headers`: for every ``@@ -a,b +c,d @@``
+    header, recount the body (context/removed/added lines) up to the next
+    header or EOF and rewrite ``b`` and ``d`` accordingly, so a model that
+    miscounts hunk lengths still produces a patch `patch` will accept.
+    Headers without explicit counts are passed through untouched.
+    """
+    lines = diff_text.splitlines(keepends=True)
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        m = _HUNK_HEADER_RE.match(lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        orig_line, new_line = int(m.group(1)), int(m.group(3))
+        j = i + 1
+        orig_count = new_count = 0
+        body: list[str] = []
+        while j < n and not lines[j].startswith("@@"):
+            line = lines[j]
+            if line.startswith("-") and not line.startswith("--"):
+                orig_count += 1
+            elif line.startswith("+") and not line.startswith("++"):
+                new_count += 1
+            elif line.startswith(" "):
+                orig_count += 1
+                new_count += 1
+            body.append(line)
+            j += 1
+        out.append(f"@@ -{orig_line},{orig_count} +{new_line},{new_count} @@\n")
+        out.extend(body)
+        i = j
+    return "".join(out)
 
 
 class Insert(Tool):
