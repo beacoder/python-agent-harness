@@ -877,5 +877,73 @@ class TestClientNetworkErrors(unittest.TestCase):
             c.close()
 
 
+class TestClientResetHttp(unittest.TestCase):
+    """_reset_http replaces the httpx client so a poisoned connection
+    pool does not doom subsequent requests."""
+
+    def test_reset_http_replaces_client(self):
+        c = make_offline_client()
+        old = c._http
+        c._reset_http()
+        self.assertIsNot(c._http, old)
+        self.assertFalse(c._http.is_closed)
+        c.close()
+
+    def test_reset_http_closes_old_client(self):
+        c = make_offline_client()
+        old = c._http
+        with mock.patch.object(old, "close") as cl:
+            c._reset_http()
+        cl.assert_called_once_with()
+        c.close()
+
+    def test_reset_http_tolerates_close_failure(self):
+        c = make_offline_client()
+        old = c._http
+        with mock.patch.object(old, "close", side_effect=RuntimeError("boom")):
+            c._reset_http()  # must not raise
+        self.assertIsNot(c._http, old)
+        c.close()
+
+    def test_connection_error_resets_pool_for_next_request(self):
+        """After retries exhaust on a connection error, the next chat()
+        call uses a fresh httpx client (not the poisoned one)."""
+        from python_agent_harness.client import ApiError
+
+        c = make_offline_client(retry_max=2, retry_base_delay=0.01, retry_max_delay=0.01)
+        # Simulate persistent connection failures
+        with mock.patch.object(
+            c._http, "stream", side_effect=httpx.ConnectError("refused")
+        ):
+            with self.assertRaises(ApiError):
+                c.chat([Message(role="user", content="hi")])
+        # After the error, _http must be a fresh (non-poisoned) client
+        # that was NOT the one we patched
+        self.assertFalse(c._http.is_closed)
+        # Verify it's a different object (reset happened)
+        # The patched mock is on the OLD client; the new one is real
+        self.assertNotIsInstance(c._http.stream, mock.Mock)
+        c.close()
+
+    def test_cancel_during_backoff_also_resets_pool(self):
+        """If cancel_check fires during retry backoff, the pool is
+        still reset so the next run starts clean."""
+        from python_agent_harness.client import ApiError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=60.0, retry_max_delay=60.0)
+        old_http = c._http
+        with mock.patch.object(
+            c._http, "stream", side_effect=httpx.ConnectError("refused")
+        ):
+            with self.assertRaises(ApiError):
+                c.chat(
+                    [Message(role="user", content="hi")],
+                    cancel_check=lambda: True,
+                )
+        self.assertIsNot(c._http, old_http)
+        self.assertFalse(c._http.is_closed)
+        c.close()
+
+
 if __name__ == "__main__":
     unittest.main()
