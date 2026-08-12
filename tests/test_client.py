@@ -814,8 +814,10 @@ class TestClientNetworkErrors(unittest.TestCase):
 
         c = make_client(retry_max=2, retry_base_delay=0.01, retry_max_delay=0.05)
         try:
+            # patch the class so the fresh client created by
+            # _reset_http between attempts is covered too
             with mock.patch.object(
-                c._http, "post", side_effect=httpx.ConnectError("refused")
+                httpx.Client, "post", side_effect=httpx.ConnectError("refused")
             ):
                 with self.assertRaises(ApiError):
                     c.chat([Message(role="user", content="hi")], stream=False)
@@ -835,46 +837,98 @@ class TestClientNetworkErrors(unittest.TestCase):
         finally:
             c.close()
 
-    def test_error_after_delta_not_retried(self):
-        """Once a delta reached the caller, a retry would duplicate it:
-        a stream dying mid-body raises ApiError immediately (no backoff
-        sleep, no second request)."""
-        from python_agent_harness.client import ApiError
-
-        c = make_client(retry_max=3, retry_base_delay=60.0, retry_max_delay=60.0)
+    def test_error_after_delta_retried_on_fresh_client(self):
+        """A stream dying mid-body after deltas is retried on a fresh
+        client: the partial stream is discarded, the retried response
+        is returned, and nothing is duplicated in the stored message."""
+        c = make_client(retry_max=2, retry_base_delay=0.01, retry_max_delay=0.01)
+        old = c._http
         try:
-            class DieAfterDelta:
-                def __init__(self):
-                    self._sent = False
+            state = {"n": 0}
 
-                def __enter__(self):
-                    return self
+            def flaky(self_, *a, **kw):
+                state["n"] += 1
+                if state["n"] == 1:
+                    return DieAfterDelta()
+                resp = FakeStreamResp([
+                    'data: {"choices": [{"delta": {"content": "full"}}]}',
+                    "data: [DONE]",
+                ])
+                return FakeStreamCM(resp)
 
-                def __exit__(self, *exc):
-                    return False
-
-                @property
-                def status_code(self):
-                    return 200
-
-                @property
-                def headers(self):
-                    return {}
-
-                def read(self):
-                    return b""
-
-                def iter_lines(self):
-                    yield 'data: {"choices": [{"delta": {"content": "partial"}}]}'
-                    raise httpx.ReadError("connection reset")
-
-            with mock.patch.object(c._http, "stream", return_value=DieAfterDelta()):
+            # patch the class so the fresh client created by
+            # _reset_http is covered too
+            with mock.patch.object(httpx.Client, "stream", flaky):
+                retries = []
                 deltas = []
-                with self.assertRaises(ApiError):
-                    c.chat([Message(role="user", content="hi")], on_delta=deltas.append)
-            self.assertEqual(deltas, ["partial"])
+                msg, _ = c.chat(
+                    [Message(role="user", content="hi")],
+                    on_delta=deltas.append,
+                    on_retry=lambda: retries.append(1),
+                )
+            self.assertEqual(msg.content, "full")
+            self.assertEqual(state["n"], 2)
+            self.assertEqual(retries, [1])
+            # the retry ran on a fresh (reset) client
+            self.assertIsNot(c._http, old)
+            # the caller saw the partial delta, but the stored message
+            # only carries the retried response
+            self.assertEqual(deltas, ["partial", "full"])
         finally:
             c.close()
+
+    def test_error_after_delta_retries_exhausted_then_raises(self):
+        """A stream dying mid-body after deltas retries (reset client
+        each time); when the attempt budget is exhausted it raises
+        ApiError — with the client left fresh for the next call."""
+        from python_agent_harness.client import ApiError
+
+        c = make_client(retry_max=2, retry_base_delay=0.01, retry_max_delay=0.01)
+        old = c._http
+        try:
+            with mock.patch.object(
+                httpx.Client, "stream", return_value=DieAfterDelta()
+            ):
+                retries = []
+                with self.assertRaises(ApiError):
+                    c.chat(
+                        [Message(role="user", content="hi")],
+                        on_retry=lambda: retries.append(1),
+                    )
+            self.assertEqual(retries, [1])  # one retry after the first drop
+            self.assertIsNot(c._http, old)  # pool was reset
+            self.assertFalse(c._http.is_closed)
+        finally:
+            c.close()
+
+
+class DieAfterDelta:
+    """Streaming response that yields one delta then dies with a
+    connection error (mimics a connection reset mid-body)."""
+
+    def __init__(self):
+        self._sent = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    @property
+    def status_code(self):
+        return 200
+
+    @property
+    def headers(self):
+        return {}
+
+    def read(self):
+        return b""
+
+    def iter_lines(self):
+        yield 'data: {"choices": [{"delta": {"content": "partial"}}]}'
+        raise httpx.ReadError("connection reset")
 
 
 class TestClientResetHttp(unittest.TestCase):

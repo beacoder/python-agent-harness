@@ -423,6 +423,14 @@ class Tui:
         elif kind == "compact":
             self.status = " compacted"
             self._history_dirty = True
+        elif kind == "retry":
+            # A connection error mid-stream: the client discarded the
+            # partial response and is retrying on a fresh connection —
+            # drop the partial stream text so the restarted stream
+            # doesn't duplicate it on screen.
+            with self.lock:
+                self.stream_text = ""
+            self.status = " connection lost — retrying"
         elif kind == "todos":
             # TodoWrite updated the task list: the cached history rows
             # (which include the Todos panel) must be rebuilt

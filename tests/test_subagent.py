@@ -20,7 +20,7 @@ class SpyClient:
 
     def chat(self, messages, tools=None, system=None, temperature=None,
               max_tokens=None, reasoning_effort=None, on_delta=None, stream=True,
-              cancel_check=None):
+              cancel_check=None, on_retry=None):
         self.systems.append(system)
         return Message(role="assistant", content="sub-agent done"), Usage(input_tokens=10)
 

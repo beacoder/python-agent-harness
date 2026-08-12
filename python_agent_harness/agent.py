@@ -635,6 +635,13 @@ class AgentLoop:
                 # sub-agents must not stream into the parent's live
                 # stream row — their text is private until returned
                 on_delta=(safe_delta if self.top_level else None),
+                # a connection error mid-stream discards the partial
+                # output and retries on a fresh client: tell the TUI to
+                # clear the partial text and show that the request is
+                # being restarted
+                on_retry=(
+                    (lambda: session.notify("retry")) if self.top_level else None
+                ),
                 # poll cancellation during retry backoff so Ctrl-C
                 # aborts promptly instead of after the full sleep
                 cancel_check=self._is_cancelled,

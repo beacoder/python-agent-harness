@@ -24,7 +24,7 @@ class RecClient:
 
     def chat(self, messages, tools=None, system=None, temperature=None,
              max_tokens=None, reasoning_effort=None, on_delta=None, stream=True,
-             cancel_check=None):
+             cancel_check=None, on_retry=None):
         self.n += 1
         self.sent.append([m.to_api() for m in messages])
         self.sent_tools.append([t.name for t in tools] if tools else None)

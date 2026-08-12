@@ -171,6 +171,11 @@ class Client:
             config.API_RETRY_MAX_DELAY if retry_max_delay is None else retry_max_delay
         )
         self._http = httpx.Client(timeout=timeout, verify=self.verify)
+        # True while the in-flight request was aborted (Ctrl-C): a
+        # connection error on an aborted request must NOT be retried —
+        # the user asked to stop.  Cleared at the start of each chat()
+        # so a fresh turn may retry normally.
+        self._aborted = False
         self.log_path: Path | None = _llm_log_path() if config.LLM_LOG_ENABLED else None
 
     def close(self) -> None:
@@ -188,6 +193,7 @@ class Client:
         the loop treats as a cancel) and then close the pool.  A fresh
         client is swapped in for the next request.
         """
+        self._aborted = True
         old = self._http
         self._http = httpx.Client(timeout=self.timeout, verify=self.verify)
         try:
@@ -202,9 +208,9 @@ class Client:
     def _reset_http(self) -> None:
         """Replace the httpx client with a fresh instance.
 
-        Called after connection-level retries are exhausted so a
-        poisoned pool (stale/dead connections) does not doom every
-        subsequent request in the session.
+        Called before every connection-error retry (and on exhaustion)
+        so a poisoned pool (stale/dead connections) never dooms the
+        retry itself or every subsequent request in the session.
         """
         old = self._http
         self._http = httpx.Client(timeout=self.timeout, verify=self.verify)
@@ -267,6 +273,7 @@ class Client:
         on_tool_call: Callable[[str, str, str], None] | None = None,
         stream: bool = True,
         cancel_check: Callable[[], bool] | None = None,
+        on_retry: Callable[[], None] | None = None,
     ) -> tuple[Message, Usage]:
         """Send a chat request, return (assistant msg, usage).
 
@@ -279,18 +286,27 @@ class Client:
 
         Transient failures (HTTP 429 / 5xx, connection errors) are
         retried with exponential backoff + jitter up to ``retry_max``
-        attempts, honoring ``Retry-After`` when present.  A retry only
-        happens before any delta has been delivered to the callbacks,
-        so streaming output is never duplicated for the caller.  Other
-        4xx errors are permanent and fail immediately.  ``cancel_check``
-        (when given) is polled during backoff sleeps so an abort lands
-        promptly instead of after the full wait.
+        attempts, honoring ``Retry-After`` when present.  A connection
+        error always swaps in a fresh httpx client first (``_reset_http``)
+        so a dead connection never poisons the retry — and a stream that
+        died mid-body IS retried even when deltas already reached the
+        callers: the partial stream is discarded on retry (``on_retry``
+        lets the caller drop its live text), so nothing is duplicated in
+        the returned message.  Other 4xx errors are permanent and fail
+        immediately.  ``cancel_check`` (when given) is polled during
+        backoff sleeps so an abort lands promptly instead of after the
+        full wait.  ``on_retry`` (when given) is invoked right before a
+        retry after a connection error, so a UI can clear the partial
+        output and show that the request is being restarted.
         """
         payload = self._payload(
             messages, tools, stream=stream, temperature=temperature,
             max_tokens=max_tokens, system=system,
             reasoning_effort=reasoning_effort,
         )
+        # a fresh turn may retry connection errors even if a previous
+        # in-flight request was aborted (see abort/_aborted)
+        self._aborted = False
         usage = Usage()
         emitted = False
 
@@ -326,19 +342,22 @@ class Client:
                     raise
             except httpx.HTTPError as e:
                 # connection-level failures: connect errors, timeouts,
-                # dropped streams — all transient unless a delta already
-                # reached the caller (then a retry would duplicate it)
-                if emitted or attempt >= self.retry_max:
-                    # Replace the client so a poisoned connection pool
-                    # does not doom all subsequent requests in this
-                    # session.  Without this, a single network hiccup
-                    # can leave the session stuck in a permanent error
-                    # state (the dead connection stays in the pool and
-                    # keeps getting reused).
-                    self._reset_http()
+                # dropped streams.  Swap in a fresh client immediately —
+                # a dead connection must not stay in the pool for the
+                # retry — then retry the request, even when deltas
+                # already reached the caller: the partial stream is
+                # discarded on retry (on_retry lets the caller clear
+                # its live text), so nothing is duplicated in the
+                # stored message.  Only give up once the per-request
+                # attempt budget is exhausted — or immediately when
+                # the request was aborted (Ctrl-C: the user asked to
+                # stop, so a fresh attempt must not be started).
+                self._reset_http()
+                if self._aborted or attempt >= self.retry_max:
                     raise ApiError(f"network error: {e}") from e
+                if on_retry is not None:
+                    on_retry()
                 if self._sleep_backoff(attempt, None, cancel_check):
-                    self._reset_http()
                     raise ApiError(f"network error: {e}") from e
 
         content = "".join(content_parts)

@@ -29,7 +29,7 @@ class FakeClient:
 
     def chat(self, messages, tools=None, system=None, temperature=None,
              max_tokens=None, reasoning_effort=None, on_delta=None, stream=True,
-             cancel_check=None):
+             cancel_check=None, on_retry=None):
         self.calls.append([m.to_api() for m in messages])
         self.kwargs.append({
             "tools": tools, "system": system, "temperature": temperature,
