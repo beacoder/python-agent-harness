@@ -26,12 +26,12 @@ PARAMETERS = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "content": {"type": "string", "description": "Task description (imperative form)"},
+                    "content": {"type": "string", "minLength": 1, "description": "Task description (imperative form)"},
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed"],
                     },
-                    "activeForm": {"type": "string", "description": "Present continuous form"},
+                    "activeForm": {"type": "string", "minLength": 1, "description": "Present continuous form"},
                 },
                 "required": ["content", "status"],
             },
