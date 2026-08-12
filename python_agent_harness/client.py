@@ -199,6 +199,20 @@ class Client:
         except Exception:  # noqa: BLE001 - best effort
             pass
 
+    def _reset_http(self) -> None:
+        """Replace the httpx client with a fresh instance.
+
+        Called after connection-level retries are exhausted so a
+        poisoned pool (stale/dead connections) does not doom every
+        subsequent request in the session.
+        """
+        old = self._http
+        self._http = httpx.Client(timeout=self.timeout, verify=self.verify)
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+
     # -- request plumbing -------------------------------------------------
     def _headers(self, stream: bool = True) -> dict[str, str]:
         h = {
@@ -315,8 +329,16 @@ class Client:
                 # dropped streams — all transient unless a delta already
                 # reached the caller (then a retry would duplicate it)
                 if emitted or attempt >= self.retry_max:
+                    # Replace the client so a poisoned connection pool
+                    # does not doom all subsequent requests in this
+                    # session.  Without this, a single network hiccup
+                    # can leave the session stuck in a permanent error
+                    # state (the dead connection stays in the pool and
+                    # keeps getting reused).
+                    self._reset_http()
                     raise ApiError(f"network error: {e}") from e
                 if self._sleep_backoff(attempt, None, cancel_check):
+                    self._reset_http()
                     raise ApiError(f"network error: {e}") from e
 
         content = "".join(content_parts)
