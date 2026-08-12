@@ -19,7 +19,8 @@ from python_agent_harness.tools.filesystem import (
     Mkdir,
     Read,
     Write,
-    _apply_diff,
+    _fix_patch_headers,
+    _strip_diff_fence,
 )
 
 
@@ -46,106 +47,99 @@ def make_ctx() -> tuple[ToolContext, FakeSession]:
     return ToolContext(sess), sess
 
 
-class TestApplyDiff(unittest.TestCase):
-    def test_replace_line(self):
-        content = "line1\nline2\nline3\n"
-        diff = (
-            "--- a\n+++ b\n@@ -1,3 +1,3 @@\n"
-            " line1\n-line2\n+lineTWO\n line3\n"
-        )
-        self.assertEqual(_apply_diff(content, diff), "line1\nlineTWO\nline3\n")
+class TestPatchHelpers(unittest.TestCase):
+    """Diff/patch-mode helpers, mirroring `gptel-agent--edit-files`:
+    ```diff fence removal and hunk-header line-count fixing."""
 
-    def test_add_only(self):
-        content = "a\nb\nc\n"
-        diff = "@@ -1,2 +1,3 @@\n a\n+NEW\n b\n"
-        self.assertEqual(_apply_diff(content, diff), "a\nNEW\nb\nc\n")
+    def test_fix_patch_headers_recomputes_counts(self):
+        # Header claims -9,9 +9,9 but the body has 2 context, 1 removed,
+        # 1 added -> orig=3, new=3.
+        diff = "@@ -1,9 +1,9 @@\n a\n-b\n+B\n c\n"
+        fixed = _fix_patch_headers(diff)
+        self.assertIn("@@ -1,3 +1,3 @@", fixed)
+        # Body is preserved verbatim.
+        self.assertIn(" a\n-b\n+B\n c\n", fixed)
 
-    def test_remove_only(self):
-        content = "a\nb\nc\n"
-        diff = "@@ -1,2 +1,1 @@\n a\n-b\n"
-        self.assertEqual(_apply_diff(content, diff), "a\nc\n")
+    def test_fix_patch_headers_multiple_hunks(self):
+        # Each hunk's counts are recomputed independently; start lines kept.
+        diff = "@@ -1,9 +1,9 @@\n-a\n+A\n@@ -5,9 +5,9 @@\n-e\n+E\n"
+        fixed = _fix_patch_headers(diff)
+        self.assertIn("@@ -1,1 +1,1 @@", fixed)
+        self.assertIn("@@ -5,1 +5,1 @@", fixed)
 
-    def test_multiple_hunks(self):
-        content = "a\nb\nc\nd\ne\n"
-        diff = "@@ -1,1 +1,1 @@\n-a\n+A\n@@ -4,1 +4,1 @@\n-d\n+D\n"
-        self.assertEqual(_apply_diff(content, diff), "A\nb\nc\nD\ne\n")
+    def test_fix_patch_headers_ignores_file_header_lines(self):
+        diff = "--- a/x\n+++ b/x\n@@ -1,1 +1,2 @@\n a\n+NEW\n"
+        fixed = _fix_patch_headers(diff)
+        # +++/--- lines must not be miscounted as add/remove lines.
+        self.assertIn("--- a/x\n", fixed)
+        self.assertIn("+++ b/x\n", fixed)
+        self.assertIn("@@ -1,1 +1,2 @@", fixed)
 
-    def test_context_mismatch_raises(self):
-        content = "a\nb\nc\n"
-        diff = "@@ -1,2 +1,2 @@\n a\n-ZZZ\n+B\n"
-        with self.assertRaises(ValueError):
-            _apply_diff(content, diff)
+    def test_fix_patch_headers_passes_through_headerless_counts(self):
+        # A header without explicit counts is left untouched.
+        diff = "@@ -1 +1 @@\n a\n"
+        self.assertEqual(_fix_patch_headers(diff), diff)
 
-    def test_no_hunks_raises(self):
-        with self.assertRaises(ValueError):
-            _apply_diff("a\n", "not a diff")
+    def test_strip_diff_fence_removes_diff_fence(self):
+        text = "```diff\n--- a\n+++ b\n@@ -1,1 +1,1 @@\n-a\n+b\n```\n"
+        stripped = _strip_diff_fence(text)
+        self.assertFalse(stripped.startswith("```"))
+        self.assertNotIn("```", stripped)
+        self.assertIn("@@ -1,1 +1,1 @@", stripped)
 
-    def test_diff_with_no_newline_marker(self):
-        """Diffs for files without a trailing newline use the
-        '\\ No newline at end of file' marker (git-style); applying them
-        must work, whether the marker line follows a bare line (as
-        generated) or a newline-terminated one (as echoed by a model)."""
-        from python_agent_harness.diffrender import unified_diff
+    def test_strip_diff_fence_leaves_plain_and_other_fences(self):
+        plain = "--- a\n+++ b\n@@ -1,1 +1,1 @@\n-a\n+b\n"
+        self.assertEqual(_strip_diff_fence(plain), plain)
+        # Only ```diff is stripped (mirrors the elisp); ```patch is left
+        # for `patch` to handle/reject.
+        patch_fence = "```patch\n--- a\n+++ b\n```\n"
+        self.assertEqual(_strip_diff_fence(patch_fence), patch_fence)
 
-        content = "a\nb"
-        generated = unified_diff(content, "a\nc", "/x/x.txt")
-        self.assertIn("\\ No newline at end of file", generated)
-        self.assertEqual(_apply_diff(content, generated), "a\nc")
 
-        git_style = (
-            "--- a/x.txt\n"
-            "+++ b/x.txt\n"
-            "@@ -1,2 +1,2 @@\n"
-            " a\n"
-            "-b\n"
-            "\\ No newline at end of file\n"
-            "+c\n"
-            "\\ No newline at end of file\n"
-        )
-        self.assertEqual(_apply_diff(content, git_style), "a\nc")
+class TestGitGlobResults(unittest.TestCase):
+    """Depth filtering of `git ls-files` output, mirroring the git branch
+    of `gptel-agent-harness-tools--glob` (Emacs `natnump' semantics)."""
 
-    def test_diff_in_fenced_code_block(self):
-        """Models often wrap diffs in ```diff / ```patch fences (the
-        gptel-agent Edit tool accepts these); the parser must skip the
-        fence lines instead of failing on them."""
-        content = "a\nb\nc\n"
-        for fence in ("```diff", "```patch", "```"):
-            diff = (
-                f"{fence}\n"
-                "--- a\n+++ b\n"
-                "@@ -1,3 +1,3 @@\n"
-                " a\n-b\n+B\n c\n"
-                "```\n"
-            )
-            self.assertEqual(_apply_diff(content, diff), "a\nB\nc\n", fence)
-
-    def test_glob_depth_zero_is_unlimited(self):
-        """depth=0 must mean 'no limit' (like `tree -L 0`), never an
-        empty result."""
+    def test_depth_none_is_unlimited(self):
         from python_agent_harness.tools.filesystem import _git_glob_results
 
         raw = "a.py\0sub/b.py\0sub/deep/c.py\0"
-        out0 = _git_glob_results(raw, "/repo", "/repo", 0, "*.py")
-        self.assertIn("sub/deep/c.py", out0)
-        self.assertIn("a.py", out0)
-        out1 = _git_glob_results(raw, "/repo", "/repo", 1, "*.py")
-        self.assertIn("a.py", out1)
-        self.assertNotIn("sub/b.py", out1)
-        self.assertNotIn("sub/deep/c.py", out1)
-        out_none = _git_glob_results(raw, "/repo", "/repo", None, "*.py")
-        self.assertIn("sub/deep/c.py", out_none)
+        out = _git_glob_results(raw, "/repo", "/repo", None)
+        self.assertIn("/repo/a.py", out)
+        self.assertIn("/repo/sub/b.py", out)
+        self.assertIn("/repo/sub/deep/c.py", out)
 
-    def test_glob_depth_in_subdir_base(self):
-        """depth is relative to the search base: entries outside the base
-        subtree must never leak into the results."""
+    def test_natnump_semantics(self):
+        # Emacs `natnump' = non-negative integer.  Critically, bool must
+        # NOT count (isinstance(True, int) is True in Python) or depth=True
+        # would silently act like depth=1.
+        from python_agent_harness.tools.filesystem import _natnump
+
+        self.assertTrue(_natnump(0))
+        self.assertTrue(_natnump(3))
+        self.assertFalse(_natnump(-1))
+        self.assertFalse(_natnump(None))
+        self.assertFalse(_natnump(True))
+        self.assertFalse(_natnump(1.0))
+
+    def test_depth_one_keeps_only_top_level(self):
         from python_agent_harness.tools.filesystem import _git_glob_results
 
-        raw = "a.py\0sub/b.py\0sub/deep/c.py\0sub/deep/deeper/d.py\0"
-        out1 = _git_glob_results(raw, "/repo", "/repo/sub", 1, "*.py")
+        raw = "a.py\0sub/b.py\0sub/deep/c.py\0"
+        out = _git_glob_results(raw, "/repo", "/repo", 1)
+        self.assertIn("/repo/a.py", out)
+        self.assertNotIn("/repo/sub/b.py", out)
+        self.assertNotIn("/repo/sub/deep/c.py", out)
+
+    def test_depth_relative_to_search_base(self):
+        from python_agent_harness.tools.filesystem import _git_glob_results
+
+        # git ls-files with pathspec "sub/*" only returns entries under sub/.
+        raw = "sub/b.py\0sub/deep/c.py\0sub/deep/deeper/d.py\0"
+        out1 = _git_glob_results(raw, "/repo", "/repo/sub", 1)
         self.assertIn("/repo/sub/b.py", out1)
-        self.assertNotIn("/repo/a.py", out1)
         self.assertNotIn("/repo/sub/deep/c.py", out1)
-        out2 = _git_glob_results(raw, "/repo", "/repo/sub", 2, "*.py")
+        out2 = _git_glob_results(raw, "/repo", "/repo/sub", 2)
         self.assertIn("/repo/sub/b.py", out2)
         self.assertIn("/repo/sub/deep/c.py", out2)
         self.assertNotIn("/repo/sub/deep/deeper/d.py", out2)
@@ -209,7 +203,7 @@ class TestSpool(unittest.TestCase):
     def test_large_glob_output_spills(self):
         big = "\n".join(f"/repo/f{i:05d}.py" for i in range(20000))
         self.assertGreater(len(big), self.fs.MAX_OUTPUT)
-        result = self.fs._git_glob_results(big, "/repo", "/repo", None, "*.py")
+        result = self.fs._git_glob_results(big, "/repo", "/repo", None)
         self.assertIn("glob results too large", result)
         m = re.search(r'file_path="([^"]+)"', result)
         self.assertIsNotNone(m, result)
@@ -605,7 +599,7 @@ class TestEditTool(unittest.TestCase):
             result = Edit().run(
                 {"path": path, "new_str": diff, "diff": True}, ctx
             )
-            self.assertIn("Successfully replaced", result)
+            self.assertIn("Diff successfully applied", result)
             with open(path) as f:
                 self.assertEqual(f.read(), "line1\nlineTWO\nline3\n")
             self.assertEqual(len(sess.recorded_diffs), 1)
@@ -617,7 +611,10 @@ class TestEditTool(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(original)
             ctx, sess = make_ctx()
-            bad_diff = "@@ -1,2 +1,2 @@\n line1\n-NOPE\n+lineTWO\n"
+            bad_diff = (
+                "--- a/f.txt\n+++ b/f.txt\n"
+                "@@ -1,2 +1,2 @@\n line1\n-NOPE\n+lineTWO\n"
+            )
             result = Edit().run(
                 {"path": path, "new_str": bad_diff, "diff": True}, ctx
             )
@@ -644,7 +641,7 @@ class TestEditTool(unittest.TestCase):
             result = Edit().run(
                 {"path": path, "old_str": "missing", "new_str": "x"}, ctx
             )
-            self.assertIn("not found", result)
+            self.assertIn("Could not find", result)
 
     def test_old_str_not_unique(self):
         with tempfile.TemporaryDirectory() as d:
@@ -656,6 +653,66 @@ class TestEditTool(unittest.TestCase):
                 {"path": path, "old_str": "dup", "new_str": "x"}, ctx
             )
             self.assertIn("not unique", result)
+
+    def test_string_mode_rejects_directory(self):
+        # String replacement is single-file only (mirrors gptel).
+        with tempfile.TemporaryDirectory() as d:
+            ctx, _ = make_ctx()
+            result = Edit().run({"path": d, "old_str": "x", "new_str": "y"}, ctx)
+            self.assertIn("intended for single files, not directories", result)
+
+    def test_old_str_takes_precedence_over_diff_flag(self):
+        # gptel: string mode when `old_str` is provided, even if diff=True.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("line1\nline2\nline3\n")
+            ctx, _ = make_ctx()
+            result = Edit().run(
+                {"path": path, "old_str": "line2", "new_str": "X", "diff": True},
+                ctx,
+            )
+            self.assertIn("Successfully replaced", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "line1\nX\nline3\n")
+
+    def test_diff_false_without_old_str_requires_old_str(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("a\n")
+            ctx, _ = make_ctx()
+            result = Edit().run(
+                {"path": path, "new_str": "z", "diff": False}, ctx
+            )
+            self.assertIn("old_str is required", result)
+
+    def test_unreadable_path_errors(self):
+        with tempfile.TemporaryDirectory() as d:
+            ctx, _ = make_ctx()
+            result = Edit().run(
+                {"path": os.path.join(d, "nope.txt"), "old_str": "a", "new_str": "b"},
+                ctx,
+            )
+            self.assertIn("is not readable", result)
+
+    def test_diff_mode_patch_binary_missing_reports_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("a\nb\nc\n")
+            ctx, _ = make_ctx()
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+A\n"
+            with mock.patch(
+                "python_agent_harness.tools.filesystem.shutil.which",
+                return_value=None,
+            ):
+                result = Edit().run(
+                    {"path": path, "new_str": diff, "diff": True}, ctx
+                )
+            self.assertIn('Command "patch" not available', result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "a\nb\nc\n")  # untouched
 
 
 class TestWriteTool(unittest.TestCase):
@@ -826,16 +883,18 @@ class TestGlobErrorPaths(unittest.TestCase):
         subprocess.run(["git", "add", "."], cwd=repo, check=True)
         return repo
 
-    def test_git_lsfiles_error_and_tree_error_fall_through(self):
-        """git ls-files crashing (OSError/TimeoutExpired) sets git_err; a
-        crashing tree then leaves the tool with the not-found error."""
+    def test_git_lsfiles_timeout_reported(self):
+        """git ls-files timing out is reported as an error.  The harness
+        `--glob` has no git->tree fallback: inside a repo, git is used and
+        a git failure surfaces directly."""
         repo = self._git_repo()
         with mock.patch(
             "python_agent_harness.tools.filesystem.subprocess.run",
             side_effect=subprocess.TimeoutExpired("git ls-files", 60),
-        ), mock.patch("shutil.which", return_value="/usr/bin/tree"):
+        ):
             out = GlobTool().run({"pattern": "*.py", "path": repo}, self.ctx)
-        self.assertIn("Executable `tree` not found", out)
+        self.assertTrue(out.startswith("Error"))
+        self.assertIn("timed out", out)
 
     def test_git_lsfiles_nonzero_exit_reported(self):
         repo = self._git_repo()
@@ -849,26 +908,17 @@ class TestGlobErrorPaths(unittest.TestCase):
             out = GlobTool().run({"pattern": "*.py", "path": repo}, self.ctx)
         self.assertIn("Glob failed with exit code 128", out)
 
-    def test_git_lsfiles_missing_then_tree_fallback_succeeds(self):
-        """git_err containing 'No such file' falls through to the tree
-        backend, which succeeds."""
+    def test_git_lsfiles_oserror_reported(self):
+        """git ls-files raising OSError is reported (no silent tree
+        fallback), mirroring the harness which uses git inside a repo."""
         repo = self._git_repo()
-        real_run = subprocess.run
-        calls = {"n": 0}
-
-        def fake_run(*args, **kwargs):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise OSError("No such file or directory")
-            return real_run(*args, **kwargs)
-
         with mock.patch(
             "python_agent_harness.tools.filesystem.subprocess.run",
-            side_effect=fake_run,
+            side_effect=OSError("No such file or directory"),
         ):
             out = GlobTool().run({"pattern": "*.py", "path": repo}, self.ctx)
-        self.assertIn("a.py", out)
-        self.assertNotIn("Glob failed", out)
+        self.assertTrue(out.startswith("Error"))
+        self.assertIn("No such file", out)
 
     def test_tree_nonzero_exit_reported(self):
         d = os.path.join(self.tmp.name, "plain")
@@ -884,7 +934,7 @@ class TestGlobErrorPaths(unittest.TestCase):
     def test_git_glob_results_empty_returns_empty_string(self):
         from python_agent_harness.tools.filesystem import _git_glob_results
 
-        self.assertEqual(_git_glob_results("", "/repo", "/repo", None, "*"), "")
+        self.assertEqual(_git_glob_results("", "/repo", "/repo", None), "")
 
 
 class TestGrepFallbackBranches(unittest.TestCase):
@@ -1017,11 +1067,16 @@ class TestWriteEditInsertMkdirErrors(unittest.TestCase):
         self.assertIn("Error: cannot read", out)
 
     def test_edit_missing_old_str_rejected(self):
+        # No old_str and no diff flag: gptel routes this to diff mode
+        # (old_str nil, diff not false), where `patch` rejects the
+        # non-diff `new_str` as garbage.
         p = os.path.join(self.tmp.name, "f.txt")
         with open(p, "w") as f:
             f.write("a\n")
         out = Edit().run({"path": p, "new_str": "b"}, self.ctx)
-        self.assertIn("old_str is required", out)
+        self.assertTrue(out.startswith("Error"))
+        with open(p) as f:
+            self.assertEqual(f.read(), "a\n")  # file untouched
 
     def test_edit_write_oserror_reported(self):
         p = os.path.join(self.tmp.name, "f.txt")
@@ -1062,33 +1117,64 @@ class TestWriteEditInsertMkdirErrors(unittest.TestCase):
         self.assertIn("Error: disk full", out)
 
 
-class TestApplyDiffMoreBranches(unittest.TestCase):
-    """Remaining _parse_unified_diff / _apply_diff branches."""
+@unittest.skipUnless(shutil.which("patch"), "patch not available")
+class TestEditDiffModePatch(unittest.TestCase):
+    """Diff mode end-to-end via the real `patch` binary (mirrors the diff
+    branch of `gptel-agent--edit-files`)."""
 
-    def test_parse_blank_line_becomes_context_op(self):
-        from python_agent_harness.tools.filesystem import _parse_unified_diff
+    def test_fenced_diff_applies(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("a\nb\nc\n")
+            ctx, _ = make_ctx()
+            diff = (
+                "```diff\n"
+                "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"
+                "```\n"
+            )
+            result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "a\nB\nc\n")
 
-        hunks = _parse_unified_diff("@@ -1,1 +1,2 @@\n a\n\n")
-        self.assertEqual(hunks[0].ops[-1], (" ", "\n"))
+    def test_wrong_hunk_counts_are_fixed_and_apply(self):
+        # Header counts are deliberately wrong; _fix_patch_headers corrects
+        # them so `patch` accepts the hunk.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("a\nb\nc\n")
+            ctx, _ = make_ctx()
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,9 +1,9 @@\n a\n-b\n+B\n c\n"
+            result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "a\nB\nc\n")
 
-    def test_parse_malformed_line_raises(self):
-        from python_agent_harness.tools.filesystem import _parse_unified_diff
-
-        with self.assertRaises(ValueError) as cm:
-            _parse_unified_diff("@@ -1,1 +1,1 @@\n a\ngarbage\n")
-        self.assertIn("malformed diff line", str(cm.exception))
-
-    def test_apply_overlapping_hunks_raise(self):
-        diff = "@@ -1,1 +1,1 @@\n-a\n+A\n@@ -1,1 +1,1 @@\n-a\n+B\n"
-        with self.assertRaises(ValueError) as cm:
-            _apply_diff("a\nb\n", diff)
-        self.assertIn("overlap or are out of order", str(cm.exception))
-
-    def test_apply_context_line_mismatch_raises(self):
-        diff = "@@ -1,2 +1,2 @@\n ZZZ\n b\n"
-        with self.assertRaises(ValueError) as cm:
-            _apply_diff("a\nb\n", diff)
-        self.assertIn("context line mismatch", str(cm.exception))
+    def test_directory_multifile_diff_applies(self):
+        """A directory path (with trailing slash) + a multi-file unified
+        diff edits several files at once, mirroring gptel's directory
+        edit mode (patch runs in the directory itself)."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "f1.txt"), "w") as f:
+                f.write("one\n")
+            with open(os.path.join(d, "f2.txt"), "w") as f:
+                f.write("two\n")
+            ctx, _ = make_ctx()
+            diff = (
+                "--- a/f1.txt\n+++ b/f1.txt\n@@ -1 +1 @@\n-one\n+ONE\n"
+                "--- a/f2.txt\n+++ b/f2.txt\n@@ -1 +1 @@\n-two\n+TWO\n"
+            )
+            # Trailing slash -> patch runs inside the directory.
+            result = Edit().run(
+                {"path": d + os.sep, "new_str": diff, "diff": True}, ctx
+            )
+            self.assertIn("Diff successfully applied", result)
+            with open(os.path.join(d, "f1.txt")) as f:
+                self.assertEqual(f.read(), "ONE\n")
+            with open(os.path.join(d, "f2.txt")) as f:
+                self.assertEqual(f.read(), "TWO\n")
 
 
 if __name__ == "__main__":
