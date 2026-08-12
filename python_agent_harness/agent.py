@@ -624,14 +624,31 @@ class AgentLoop:
             tools = session.tool_specs(
                 exclude=config.SUBAGENT_EXCLUDED_TOOLS if not self.top_level else ()
             )
-            assistant, usage = session.client.chat(
+            # sub-agent runs use their own LLM when one is configured
+            # (session.subagent_client, mirroring gptel-agent-harness-
+            # subagent-model/-backend); everything unset inherits the
+            # main agent's settings, so the sub-agent path is identical
+            # when no separate LLM is configured
+            if self.top_level:
+                client = session.client
+                temperature = session.temperature
+                max_tokens = session.max_tokens
+                reasoning_effort = session.reasoning_effort
+                stream = session.stream
+            else:
+                client = session.subagent_client
+                temperature = session.subagent_temperature
+                max_tokens = session.subagent_max_tokens
+                reasoning_effort = session.subagent_reasoning_effort
+                stream = session.subagent_stream
+            assistant, usage = client.chat(
                 self.messages,
                 tools=tools if session.tools_enabled else None,
                 system=self.system,
-                temperature=session.temperature,
-                max_tokens=session.max_tokens,
-                reasoning_effort=session.reasoning_effort,
-                stream=session.stream,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+                stream=stream,
                 # sub-agents must not stream into the parent's live
                 # stream row — their text is private until returned
                 on_delta=(safe_delta if self.top_level else None),

@@ -89,7 +89,7 @@ class TestSubagentTodoIsolation(unittest.TestCase):
             def chat(self, *a, **k):
                 raise RuntimeError("api down")
 
-        s.client = BoomClient([])
+        s.subagent_client = BoomClient([])
         s.update_todos([{"content": "parent task", "status": "in_progress"}])
         result = s.run_subagent("subagent", "boom", "do it")
         self.assertIn("Error", result)

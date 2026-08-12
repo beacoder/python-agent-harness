@@ -11,7 +11,17 @@ from python_agent_harness import cli, config
 
 
 class TestMakeSessionPromptDefaults(unittest.TestCase):
+    ENV_KEYS = [
+        "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL",
+        "OPENAI_BACKEND", "OPENAI_SUBAGENT_BASE_URL",
+        "OPENAI_SUBAGENT_API_KEY", "OPENAI_SUBAGENT_MODEL",
+        "OPENAI_SUBAGENT_BACKEND",
+    ]
+
     def setUp(self):
+        self._saved_env = {k: os.environ.get(k) for k in self.ENV_KEYS}
+        for k in self.ENV_KEYS:
+            os.environ.pop(k, None)
         self._tmp = tempfile.TemporaryDirectory()
         self._cfg_dir = tempfile.TemporaryDirectory()
         # point config file resolution at an empty dir so no real
@@ -21,6 +31,11 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
         self._cfg_dir.cleanup()
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     def test_defaults_to_main_agent_prompt_when_system_not_given(self):
         session = cli.make_session(self._tmp.name, config_path=self._config_path)
@@ -119,6 +134,102 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         )
         try:
             self.assertIs(session.stream, False)
+        finally:
+            session.close()
+
+    def test_no_stream_flag_applies_to_subagents_too(self):
+        """--no-stream is a session-wide flag: it must beat an explicit
+        subagent_llm.stream config as well, mirroring the main agent's
+        precedence (CLI flag > config file)."""
+        cfg_path = Path(self._cfg_dir.name) / "config.toml"
+        cfg_path.write_text(
+            '{"llm": {"stream": true},'
+            ' "subagent_llm": {"model": "sub-m", "stream": true}}',
+            encoding="utf-8",
+        )
+        session = cli.make_session(
+            self._tmp.name, config_path=str(cfg_path), stream=False
+        )
+        try:
+            self.assertIs(session.stream, False)
+            self.assertIs(session.subagent_stream, False)
+        finally:
+            session.close()
+
+    def test_subagent_stream_inherits_main_without_cli_flag(self):
+        """Without --no-stream, an unset subagent_llm.stream inherits the
+        main config value."""
+        cfg_path = Path(self._cfg_dir.name) / "config.toml"
+        cfg_path.write_text(
+            '{"llm": {"stream": false},'
+            ' "subagent_llm": {"model": "sub-m"}}',
+            encoding="utf-8",
+        )
+        session = cli.make_session(self._tmp.name, config_path=str(cfg_path))
+        try:
+            self.assertIs(session.stream, False)
+            self.assertIs(session.subagent_stream, False)
+        finally:
+            session.close()
+
+    def test_subagent_llm_inherits_main_client_by_default(self):
+        """Without subagent_llm overrides, the sub-agent shares the
+        main client (mirrors gptel-agent-harness: nil backend/model
+        inherit the main agent's)."""
+        session = cli.make_session(self._tmp.name, config_path=self._config_path)
+        try:
+            self.assertIs(session.subagent_client, session.client)
+            self.assertIs(session.subagent_temperature, session.temperature)
+            self.assertIs(session.subagent_max_tokens, session.max_tokens)
+            self.assertIs(session.subagent_reasoning_effort, session.reasoning_effort)
+            self.assertIs(session.subagent_stream, session.stream)
+        finally:
+            session.close()
+
+    def test_subagent_llm_separate_client_from_config_file(self):
+        """A subagent_llm block with a different model/base_url creates
+        a dedicated sub-agent client; unset per-request options inherit
+        the main settings."""
+        cfg_path = Path(self._cfg_dir.name) / "config.toml"
+        cfg_path.write_text(
+            '{"llm": {"base_url": "https://main.example/v1",'
+            ' "api_key": "sk-main", "model": "main-model",'
+            ' "reasoning_effort": "high"},'
+            ' "subagent_llm": {"base_url": "https://sub.example/v1",'
+            ' "api_key": "sk-sub", "model": "cheap-model"}}',
+            encoding="utf-8",
+        )
+        session = cli.make_session(self._tmp.name, config_path=str(cfg_path))
+        try:
+            self.assertIsNot(session.subagent_client, session.client)
+            self.assertEqual(session.client.model, "main-model")
+            self.assertEqual(session.client.base_url, "https://main.example/v1")
+            self.assertEqual(session.subagent_client.model, "cheap-model")
+            self.assertEqual(session.subagent_client.base_url, "https://sub.example/v1")
+            self.assertEqual(session.subagent_client.api_key, "sk-sub")
+            # per-request options unset in subagent_llm inherit main
+            self.assertEqual(session.subagent_reasoning_effort, "high")
+            self.assertIs(session.subagent_stream, session.stream)
+        finally:
+            session.close()
+
+    def test_subagent_llm_env_override(self):
+        """OPENAI_SUBAGENT_* env vars win over the config file for the
+        sub-agent LLM."""
+        import unittest.mock as mock
+
+        cfg_path = Path(self._cfg_dir.name) / "config.toml"
+        cfg_path.write_text(
+            '{"llm": {"model": "main-model"},'
+            ' "subagent_llm": {"model": "file-sub"}}',
+            encoding="utf-8",
+        )
+        with mock.patch.dict(
+            os.environ, {"OPENAI_SUBAGENT_MODEL": "env-sub"}, clear=False
+        ):
+            session = cli.make_session(self._tmp.name, config_path=str(cfg_path))
+        try:
+            self.assertEqual(session.subagent_client.model, "env-sub")
         finally:
             session.close()
 

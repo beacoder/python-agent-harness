@@ -73,6 +73,11 @@ class AgentSession:
         max_tokens: int = config.MAX_TOKENS,
         reasoning_effort: str | None = None,
         stream: bool = True,
+        subagent_client: Client | None = None,
+        subagent_temperature: float | None = None,
+        subagent_max_tokens: int | None = None,
+        subagent_reasoning_effort: str | None = None,
+        subagent_stream: bool | None = None,
         tool_names: list[str] | None = None,
         registry: Registry | None = None,
         context_path: str | None = None,
@@ -92,6 +97,25 @@ class AgentSession:
         self.alive = True
         self._configured_context_path = context_path
         self._configured_skill_path = skill_path
+        # Sub-agent LLM: a dedicated client (base_url/api_key/model/
+        # timeout) and per-request options when a different LLM is
+        # configured for sub-agents (mirrors gptel-agent-harness-
+        # subagent-model/-backend); every unset option inherits the
+        # main agent's value.  The Agent tool's sub-agent loop uses
+        # these instead of the main client.
+        self.subagent_client = subagent_client or client
+        self.subagent_temperature = (
+            temperature if subagent_temperature is None else subagent_temperature
+        )
+        self.subagent_max_tokens = (
+            max_tokens if subagent_max_tokens is None else subagent_max_tokens
+        )
+        self.subagent_reasoning_effort = (
+            reasoning_effort
+            if subagent_reasoning_effort is None
+            else subagent_reasoning_effort
+        )
+        self.subagent_stream = stream if subagent_stream is None else subagent_stream
 
         self.registry = registry or Registry()
         self.calibrator = TokenCalibrator()
@@ -427,6 +451,10 @@ class AgentSession:
         cleanup_spooled_files()
         if hasattr(self.client, "close"):
             self.client.close()
+        if self.subagent_client is not self.client and hasattr(
+            self.subagent_client, "close"
+        ):
+            self.subagent_client.close()
 
     def cancel(self) -> None:
         """Cancel the in-flight agent run (Ctrl-C).
@@ -442,11 +470,19 @@ class AgentSession:
         """
         self.cancel_event.set()
         self.cancel_generation += 1
-        if hasattr(self.client, "abort"):
-            try:
-                self.client.abort()
-            except Exception:  # noqa: BLE001 - best effort
-                pass
+        # A sub-agent streams on its own client when a separate LLM is
+        # configured — abort BOTH pools so a blocked sub-agent read is
+        # interrupted too (see Client.abort for why close() alone is
+        # not enough).  A shared client is aborted once.
+        clients = [self.client]
+        if self.subagent_client is not self.client:
+            clients.append(self.subagent_client)
+        for c in clients:
+            if hasattr(c, "abort"):
+                try:
+                    c.abort()
+                except Exception:  # noqa: BLE001 - best effort
+                    pass
 
     # ------------------------------------------------------------------
     # direct commands: compact / summary (no agent loop)

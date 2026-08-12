@@ -21,6 +21,7 @@ class RecClient:
         self.streamed = []      # turn indices that streamed
         self.sent = []
         self.sent_tools = []    # tool names sent per chat call
+        self.kwargs = []        # per-call request options per chat call
 
     def chat(self, messages, tools=None, system=None, temperature=None,
              max_tokens=None, reasoning_effort=None, on_delta=None, stream=True,
@@ -28,6 +29,10 @@ class RecClient:
         self.n += 1
         self.sent.append([m.to_api() for m in messages])
         self.sent_tools.append([t.name for t in tools] if tools else None)
+        self.kwargs.append({
+            "temperature": temperature, "max_tokens": max_tokens,
+            "reasoning_effort": reasoning_effort, "stream": stream,
+        })
         if on_delta:
             on_delta(f"stream-{self.n} ")
             self.streamed.append(self.n)
@@ -102,6 +107,60 @@ class TestSubagentIsolation(unittest.TestCase):
         self.assertNotIn(3, client.streamed)
         self.assertIn(1, client.streamed)   # parent's Agent-call turn
         self.assertIn(4, client.streamed)   # parent's reply turn
+
+    def test_subagent_uses_separate_client_when_configured(self):
+        """A session with a dedicated sub-agent client (subagent_llm in
+        the config) routes sub-agent requests through it with its own
+        per-request options; the parent's client only serves parent
+        turns (mirrors gptel-agent-harness-subagent-model/-backend)."""
+        parent_client = RecClient([
+            ("", [ToolCall(id="p1", name="Agent", arguments=AGENT_CALL)]),
+            "parent done",
+        ])
+        sub_client = RecClient(["sub done"])
+        s = AgentSession(
+            project_dir="/tmp/fakeproj",
+            client=parent_client,
+            subagent_client=sub_client,
+            subagent_temperature=0.4,
+            subagent_max_tokens=111,
+            subagent_reasoning_effort="low",
+            subagent_stream=False,
+            model="m",
+            temperature=0.9,
+            max_tokens=222,
+            reasoning_effort="high",
+            stream=True,
+            registry=default_registry(),
+        )
+        run_agent_loop(
+            s, messages=[Message(role="user", content="delegate")], top_level=True
+        )
+        # the sub-agent's request went to the dedicated client
+        self.assertEqual(len(sub_client.sent), 1)
+        self.assertIn("find stuff", sub_client.sent[0][0]["content"])
+        # with the sub-agent LLM's per-request options
+        self.assertEqual(sub_client.kwargs[-1]["temperature"], 0.4)
+        self.assertEqual(sub_client.kwargs[-1]["max_tokens"], 111)
+        self.assertEqual(sub_client.kwargs[-1]["reasoning_effort"], "low")
+        self.assertIs(sub_client.kwargs[-1]["stream"], False)
+        # the parent's client never served the sub-agent (the exact
+        # parent call count varies with completion-supervision nudges,
+        # so only the payload separation is asserted)
+        for payload in parent_client.sent:
+            self.assertNotIn("find stuff", [m["content"] for m in payload])
+        self.assertGreaterEqual(len(parent_client.sent), 2)
+
+    def test_subagent_client_defaults_to_main(self):
+        """Without a configured sub-agent LLM the session falls back to
+        the main client and the main per-request options."""
+        client = RecClient(["sub done"])
+        s = make_session(client)
+        self.assertIs(s.subagent_client, s.client)
+        self.assertIs(s.subagent_temperature, s.temperature)
+        self.assertIs(s.subagent_max_tokens, s.max_tokens)
+        self.assertIs(s.subagent_reasoning_effort, s.reasoning_effort)
+        self.assertIs(s.subagent_stream, s.stream)
 
     def test_plan_reminder_injected_once(self):
         """In plan mode the read-only reminder must appear exactly once

@@ -148,14 +148,41 @@ DEFAULT_PATHS: dict = {
     "skill_path": None,
 }
 
+# Sub-agent LLM overrides: every key defaults to None, meaning "inherit
+# the main LLM setting" (mirrors gptel-agent-harness-subagent-model /
+# -backend).  Only the keys the user actually sets differ from the main
+# agent's LLM.
+DEFAULT_SUBAGENT_LLM: dict = {
+    "base_url": None,
+    "api_key": None,
+    "model": None,
+    "backend": None,
+    "temperature": None,
+    "max_tokens": None,
+    "timeout": None,
+    "reasoning_effort": None,
+    "stream": None,
+}
+
 CONFIG_TEMPLATE = """\
 {{
-  "_comment": "python-agent-harness configuration. Location: {path}. Precedence: code defaults < this file < OPENAI_* environment variables.",
+  "_comment": "python-agent-harness configuration. Location: {path}. Precedence: code defaults < this file < OPENAI_* / OPENAI_SUBAGENT_* environment variables.",
   "llm": {{
     "base_url": "https://api.deepseek.com/v1",
     "model": "deepseek-chat",
     "reasoning_effort": "medium",
     "stream": true
+  }},
+  "subagent_llm": {{
+    "_comment": "Optional overrides for sub-agent (Agent tool) requests, e.g. a cheaper model. Every key is optional; unset keys inherit the main llm settings above.",
+    "base_url": null,
+    "api_key": null,
+    "model": null,
+    "temperature": null,
+    "max_tokens": null,
+    "timeout": null,
+    "reasoning_effort": null,
+    "stream": null
   }},
   "paths": {{
     "_comment": "Optional overrides for context and skill directories. Absolute paths or ~ expansion supported.",
@@ -170,6 +197,13 @@ _ENV_OVERRIDES = {
     "api_key": "OPENAI_API_KEY",
     "model": "OPENAI_MODEL",
     "backend": "OPENAI_BACKEND",
+}
+
+_SUBAGENT_ENV_OVERRIDES = {
+    "base_url": "OPENAI_SUBAGENT_BASE_URL",
+    "api_key": "OPENAI_SUBAGENT_API_KEY",
+    "model": "OPENAI_SUBAGENT_MODEL",
+    "backend": "OPENAI_SUBAGENT_BACKEND",
 }
 
 
@@ -214,6 +248,50 @@ def load_llm_config(path: str | os.PathLike | None = None) -> dict:
         if val:
             settings[key] = val
     return settings
+
+
+def load_subagent_llm_config(
+    path: str | os.PathLike | None = None,
+    main: dict | None = None,
+) -> dict:
+    """Resolve sub-agent LLM settings; unset keys inherit ``main``.
+
+    Mirrors gptel-agent-harness-subagent-model/-backend: sub-agents
+    (the Agent tool) use their own LLM when configured, otherwise the
+    main agent's.  Precedence: ``main`` settings < config file
+    ``subagent_llm`` object < OPENAI_SUBAGENT_* environment variables.
+
+    Returns a fully resolved settings dict (same keys as
+    `load_llm_config`) that callers can use to build a sub-agent
+    Client; when no override is set anywhere it equals ``main``.
+    """
+    import json
+
+    main = dict(main) if main else dict(DEFAULT_LLM)
+    overrides = dict(DEFAULT_SUBAGENT_LLM)
+    cfg_path = _config_path(path)
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, "rb") as f:
+                data = json.load(f)
+        except Exception as e:  # noqa: BLE001
+            raise ValueError(f"cannot read config file {cfg_path}: {e}") from e
+        sub = data.get("subagent_llm") or {}
+        if not isinstance(sub, dict):
+            raise ValueError(
+                f"config file {cfg_path}: subagent_llm must be an object"
+            )
+        for key in DEFAULT_SUBAGENT_LLM:
+            if key in sub and sub[key] is not None:
+                overrides[key] = sub[key]
+    for key, env in _SUBAGENT_ENV_OVERRIDES.items():
+        val = os.environ.get(env)
+        if val:
+            overrides[key] = val
+    for key, val in overrides.items():
+        if val is not None:
+            main[key] = val
+    return main
 
 
 def load_paths_config(path: str | os.PathLike | None = None) -> dict:

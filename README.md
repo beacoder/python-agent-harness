@@ -103,6 +103,16 @@ Edit `~/.config/python-agent-harness/config.json`:
     "reasoning_effort": "medium",
     "stream": true
   },
+  "subagent_llm": {
+    "base_url": null,
+    "api_key": null,
+    "model": "deepseek-chat",
+    "temperature": null,
+    "max_tokens": null,
+    "timeout": null,
+    "reasoning_effort": null,
+    "stream": null
+  },
   "paths": {
     "context_path": null,
     "skill_path": null
@@ -120,8 +130,18 @@ overrides it on the command line). The `paths` object (`context_path`,
 are `<project>/contexts` or `~/.emacs.d/contexts` for context files, and
 `<project>/skills` or `~/.emacs.d/skills` for skills.
 
+`subagent_llm` configures the LLM used for sub-agent (Agent tool)
+requests, mirroring `gptel-agent-harness-subagent-model`/`-backend`: every
+key is optional and an unset key inherits the main `llm` settings, so a
+cheaper/smaller model (or even a different provider via `base_url` +
+`api_key`) can serve delegated work.  When no key differs from the main
+`llm`, the sub-agent shares the main client.
+
 Precedence: code defaults < config file < `OPENAI_*` environment variables
-(env still wins if you set them, but nothing is required).  Use a custom
+(env still wins if you set them, but nothing is required).  Sub-agent
+settings additionally honor `OPENAI_SUBAGENT_*` variables
+(`OPENAI_SUBAGENT_BASE_URL`, `OPENAI_SUBAGENT_API_KEY`,
+`OPENAI_SUBAGENT_MODEL`, `OPENAI_SUBAGENT_BACKEND`).  Use a custom
 file with `--config PATH` (also settable via `PYTHON_AGENT_HARNESS_CONFIG`).
 
 LLM request/response bodies are logged as JSON to

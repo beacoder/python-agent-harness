@@ -10,6 +10,8 @@ from python_agent_harness import config
 ENV_KEYS = [
     "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL",
     "OPENAI_BACKEND", "PYTHON_AGENT_HARNESS_CONFIG",
+    "OPENAI_SUBAGENT_BASE_URL", "OPENAI_SUBAGENT_API_KEY",
+    "OPENAI_SUBAGENT_MODEL", "OPENAI_SUBAGENT_BACKEND",
 ]
 
 
@@ -173,6 +175,114 @@ class TestConfigFile(unittest.TestCase):
         self.assertIn("base_url", config.CONFIG_TEMPLATE)
         self.assertIn("reasoning_effort", config.CONFIG_TEMPLATE)
         self.assertIn('"stream"', config.CONFIG_TEMPLATE)
+        self.assertIn('"subagent_llm"', config.CONFIG_TEMPLATE)
+
+
+class TestSubagentLlmConfig(unittest.TestCase):
+    """Sub-agent LLM settings: unset keys inherit the main settings
+    (mirrors gptel-agent-harness-subagent-model/-backend)."""
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in ENV_KEYS}
+        for k in ENV_KEYS:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    MAIN = {
+        "base_url": "https://api.main.example/v1",
+        "api_key": "sk-main",
+        "model": "big-model",
+        "backend": "Main",
+        "temperature": 0.0,
+        "max_tokens": None,
+        "timeout": 600.0,
+        "reasoning_effort": "high",
+        "stream": True,
+    }
+
+    def test_inherits_main_when_unset(self):
+        """No subagent_llm in the file: the resolved settings are
+        exactly the main ones."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"llm": {"model": "file-model"}}', encoding="utf-8")
+            main = config.load_llm_config(p)
+            sub = config.load_subagent_llm_config(p, main=main)
+        self.assertEqual(sub, main)
+
+    def test_file_override_inherits_rest(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"llm": {"model": "main-model", "base_url": "https://a/v1",'
+                ' "timeout": 30.0},'
+                ' "subagent_llm": {"model": "cheap-model",'
+                ' "base_url": "https://b/v1", "api_key": "sk-sub"}}',
+                encoding="utf-8",
+            )
+            main = config.load_llm_config(p)
+            sub = config.load_subagent_llm_config(p, main=main)
+        self.assertEqual(sub["model"], "cheap-model")
+        self.assertEqual(sub["base_url"], "https://b/v1")
+        self.assertEqual(sub["api_key"], "sk-sub")
+        # unset keys inherit the main settings
+        self.assertEqual(sub["timeout"], 30.0)
+        self.assertEqual(sub["temperature"], main["temperature"])
+        self.assertEqual(sub["stream"], main["stream"])
+
+    def test_env_wins_over_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"subagent_llm": {"model": "file-sub-model",'
+                ' "base_url": "https://file/v1"}}',
+                encoding="utf-8",
+            )
+            main = config.load_llm_config(p)
+            os.environ["OPENAI_SUBAGENT_MODEL"] = "env-sub-model"
+            os.environ["OPENAI_SUBAGENT_BASE_URL"] = "https://env/v1"
+            sub = config.load_subagent_llm_config(p, main=main)
+        self.assertEqual(sub["model"], "env-sub-model")
+        self.assertEqual(sub["base_url"], "https://env/v1")
+
+    def test_no_main_uses_code_defaults(self):
+        """Without explicit main settings, the sub-agent resolution
+        starts from the code defaults (like load_llm_config)."""
+        sub = config.load_subagent_llm_config("/no/such/file.json")
+        self.assertEqual(sub["model"], config.DEFAULT_LLM["model"])
+        self.assertEqual(sub["base_url"], config.DEFAULT_LLM["base_url"])
+
+    def test_bad_json_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text("not {valid json", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                config.load_subagent_llm_config(p, main=dict(self.MAIN))
+
+    def test_subagent_llm_must_be_object(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"subagent_llm": "nope"}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                config.load_subagent_llm_config(p, main=dict(self.MAIN))
+
+    def test_null_values_inherit(self):
+        """Explicit null values in the file mean 'inherit', not 'reset'."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"subagent_llm": {"model": null, "api_key": null}}',
+                encoding="utf-8",
+            )
+            sub = config.load_subagent_llm_config(p, main=dict(self.MAIN))
+        self.assertEqual(sub["model"], self.MAIN["model"])
+        self.assertEqual(sub["api_key"], self.MAIN["api_key"])
 
 
 class TestConfigCli(unittest.TestCase):
@@ -198,6 +308,40 @@ class TestConfigCli(unittest.TestCase):
             self.assertTrue(p.exists())
             rc = main(["config", "--path", str(p)])
             self.assertEqual(rc, 0)
+
+    def test_config_show_subagent_llm_line(self):
+        """config output reports the effective sub-agent LLM: a summary
+        line when it differs from the main LLM, an inherit note when it
+        matches."""
+        import io
+        from contextlib import redirect_stdout
+
+        from python_agent_harness.cli import main
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"llm": {"model": "main-model"},'
+                ' "subagent_llm": {"model": "cheap-model",'
+                ' "api_key": "sk-sub"}}',
+                encoding="utf-8",
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main(["config", "--path", str(p)])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("subagent_llm: model=cheap-model", out)
+            self.assertIn("subagent_llm:", out)
+            self.assertIn("api_key=****", out)
+
+            # unset subagent_llm -> "(inherits main)"
+            p.write_text('{"llm": {"model": "main-model"}}', encoding="utf-8")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main(["config", "--path", str(p)])
+            self.assertEqual(rc, 0)
+            self.assertIn("subagent_llm: (inherits main)", buf.getvalue())
 
     def test_config_init_refuses_overwrite(self):
         from python_agent_harness.cli import main

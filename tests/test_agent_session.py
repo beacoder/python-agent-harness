@@ -245,6 +245,35 @@ class TestCancel(unittest.TestCase):
         self.assertTrue(session.cancel_event.is_set())
         self.assertEqual(session.cancel_generation, 1)
 
+    def test_cancel_aborts_subagent_client_too(self):
+        """A dedicated sub-agent client (separate subagent_llm) streams
+        on its own pool — cancel must abort it as well, so a blocked
+        sub-agent read is interrupted (and one shared client is not
+        aborted twice)."""
+        session = RecordingSession()
+
+        class SpyClient:
+            def __init__(self):
+                self.aborted = 0
+
+            def abort(self):
+                self.aborted += 1
+
+        main = SpyClient()
+        sub = SpyClient()
+        session.client = main
+        session.subagent_client = sub
+        session.cancel()
+        self.assertEqual(main.aborted, 1)
+        self.assertEqual(sub.aborted, 1)
+
+        # when the sub-agent shares the main client, abort runs once
+        session2 = RecordingSession()
+        session2.client = main
+        session2.subagent_client = main
+        session2.cancel()
+        self.assertEqual(main.aborted, 2)
+
 
 class TestCompactConversation(unittest.TestCase):
     """Manual /compact failure paths: empty history, concurrent
@@ -409,6 +438,25 @@ class TestClose(unittest.TestCase):
         self.assertTrue(session.cancel_event.is_set())
         self.assertFalse(os.path.exists(plan_file))
         self.assertTrue(ClosableClient.closed)
+
+    def test_close_closes_subagent_client_too(self):
+        """A dedicated sub-agent client must be closed with the session."""
+        session = RecordingSession()
+
+        class ClosableClient:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        main = ClosableClient()
+        sub = ClosableClient()
+        session.client = main
+        session.subagent_client = sub
+        session.close()
+        self.assertTrue(main.closed)
+        self.assertTrue(sub.closed)
 
 
 if __name__ == "__main__":

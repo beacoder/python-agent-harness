@@ -40,12 +40,35 @@ def make_session(
     settings = config.load_llm_config(config_path)
     paths = config.load_paths_config(config_path)
     model = model or settings["model"]
+    # resolve sub-agent overrides against the EFFECTIVE main settings
+    # (so a CLI/caller model override is inherited too when the
+    # subagent_llm model is unset)
+    settings["model"] = model
+    subagent_settings = config.load_subagent_llm_config(config_path, main=settings)
     client = Client(
         base_url=settings["base_url"],
         api_key=settings["api_key"],
         model=model,
         timeout=settings["timeout"],
     )
+    # A separate client for sub-agent requests only when a different
+    # LLM is configured (mirrors gptel-agent-harness-subagent-model /
+    # -backend); otherwise the sub-agent shares the main client.
+    subagent_client = None
+    if any(
+        subagent_settings[k] != settings[k]
+        for k in ("base_url", "api_key", "model", "timeout")
+    ):
+        subagent_client = Client(
+            base_url=subagent_settings["base_url"],
+            api_key=subagent_settings["api_key"],
+            model=subagent_settings["model"],
+            timeout=subagent_settings["timeout"],
+        )
+        # keep every request of this session (main + sub-agents) in the
+        # same LLM log file — the TUI advertises the main client's log
+        # path, and a separate sub-agent log would fragment debugging
+        subagent_client.log_path = client.log_path
     from .prompts import assemble_agent_prompt, load_agent_prompt
     from .agent_session import find_skill_dir
 
@@ -61,6 +84,10 @@ def make_session(
     subagent_system_prompt = load_agent_prompt(
         config.DEFAULT_SUBAGENT_PROMPT_FILE, skill_dir=skill_dir
     )
+    # Resolve the effective stream once: the CLI --no-stream flag wins
+    # over the config file for the whole session, sub-agents included
+    # (same precedence as the main agent's stream).
+    effective_stream = settings["stream"] if stream is None else stream
     return AgentSession(
         project_dir=abs_project,
         client=client,
@@ -71,7 +98,14 @@ def make_session(
         temperature=settings["temperature"],
         max_tokens=settings["max_tokens"],
         reasoning_effort=settings["reasoning_effort"],
-        stream=settings["stream"] if stream is None else stream,
+        stream=effective_stream,
+        subagent_client=subagent_client,
+        subagent_temperature=subagent_settings["temperature"],
+        subagent_max_tokens=subagent_settings["max_tokens"],
+        subagent_reasoning_effort=subagent_settings["reasoning_effort"],
+        subagent_stream=(
+            effective_stream if stream is not None else subagent_settings["stream"]
+        ),
         registry=default_registry(),
         context_path=paths.get("context_path"),
         skill_path=paths.get("skill_path"),
@@ -103,6 +137,7 @@ def cmd_config(args: argparse.Namespace) -> int:
         print(f"wrote config template: {path}")
         return 0
     settings = config.load_llm_config(args.path)
+    subagent_settings = config.load_subagent_llm_config(args.path, main=settings)
     paths = config.load_paths_config(args.path)
     print(f"config file: {path}")
     if not path.exists():
@@ -117,6 +152,14 @@ def cmd_config(args: argparse.Namespace) -> int:
     print(f"timeout: {settings['timeout']}")
     print(f"context_path: {paths['context_path'] or '(auto-discover)'}")
     print(f"skill_path: {paths['skill_path'] or '(auto-discover)'}")
+    print("subagent_llm: (inherits main)" if subagent_settings == settings else
+          f"subagent_llm: model={subagent_settings['model']} "
+          f"base_url={subagent_settings['base_url']} "
+          f"api_key={config.mask_secret(subagent_settings['api_key'])} "
+          f"temperature={subagent_settings['temperature']} "
+          f"max_tokens={subagent_settings['max_tokens']} "
+          f"reasoning_effort={subagent_settings['reasoning_effort']} "
+          f"stream={subagent_settings['stream']} timeout={subagent_settings['timeout']}")
     return 0
 
 
