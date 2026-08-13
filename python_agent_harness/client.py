@@ -36,6 +36,17 @@ class RetryableApiError(ApiError):
         self.retry_after = retry_after
 
 
+class AuthExpiredError(ApiError):
+    """Raised on HTTP 401 — the credential may have expired.
+
+    Handled specially in the retry loop: the API key is re-read from
+    config/environment (an external process may have refreshed the
+    token) and the request is retried once with the new key.  If the
+    key hasn't changed, the error is permanent and propagated as a
+    plain ApiError.
+    """
+
+
 def _retryable_status(status: int) -> bool:
     """429 and 5xx are transient; every other error is permanent."""
     return status == 429 or status >= 500
@@ -157,6 +168,7 @@ class Client:
         retry_max: int | None = None,
         retry_base_delay: float | None = None,
         retry_max_delay: float | None = None,
+        config_path: str | None = None,
     ) -> None:
         self.base_url = (base_url or config.DEFAULT_BASE_URL).rstrip("/")
         self.api_key = api_key or _default_api_key()
@@ -170,6 +182,7 @@ class Client:
         self.retry_max_delay = (
             config.API_RETRY_MAX_DELAY if retry_max_delay is None else retry_max_delay
         )
+        self._config_path = config_path
         self._http = httpx.Client(timeout=timeout, verify=self.verify)
         # True while the in-flight request was aborted (Ctrl-C): a
         # connection error on an aborted request must NOT be retried —
@@ -218,6 +231,43 @@ class Client:
             old.close()
         except Exception:  # noqa: BLE001 - best effort
             pass
+
+    def _refresh_api_key(
+        self,
+        cancel_check: Callable[[], bool] | None = None,
+        timeout: float = 30.0,
+        poll_interval: float = 2.0,
+    ) -> bool:
+        """Re-read the API key from the config file and environment.
+
+        Called on HTTP 401 (auth expired): an external process (e.g. a
+        token refresh script) may need time to write a new key.  This
+        method polls the config file / environment every
+        ``poll_interval`` seconds for up to ``timeout`` seconds, waiting
+        for the key to change.  If a fresh key is found that differs
+        from the current one, update ``self.api_key`` and return True
+        (the caller should retry).  If the key remains unchanged after
+        the timeout, return False (permanent auth failure).
+
+        ``cancel_check`` is polled each iteration so Ctrl-C aborts the
+        wait promptly.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                settings = config.load_llm_config(self._config_path)
+                new_key = settings.get("api_key") or _default_api_key()
+            except Exception:  # noqa: BLE001 - config read must not crash
+                new_key = _default_api_key()
+            if new_key and new_key != self.api_key:
+                self.api_key = new_key
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if cancel_check is not None and cancel_check():
+                return False
+            time.sleep(min(poll_interval, remaining))
 
     # -- request plumbing -------------------------------------------------
     def _headers(self, stream: bool = True) -> dict[str, str]:
@@ -333,6 +383,7 @@ class Client:
                     pass
 
         attempt = 0
+        auth_refreshed = False
         while True:
             attempt += 1
             # Track emission per-attempt.  Whether a PRIOR attempt
@@ -365,6 +416,23 @@ class Client:
                     on_retry()
                 if self._sleep_backoff(attempt, e.retry_after, cancel_check):
                     raise
+            except AuthExpiredError as e:
+                # HTTP 401: the credential (often a JWT with a short
+                # TTL) may have expired.  Re-read the API key from the
+                # config file / environment — an external token-refresh
+                # process may have written a new one.  Poll for up to
+                # 30s waiting for the key to change; retry once if it
+                # does.  Fail immediately if already refreshed once
+                # (prevents infinite loops).
+                self._reset_http()
+                if auth_refreshed or not self._refresh_api_key(cancel_check):
+                    raise ApiError(str(e)) from e
+                auth_refreshed = True
+                # Key refreshed — retry immediately (no backoff needed,
+                # and only one extra attempt regardless of retry_max)
+                if emitted and on_retry is not None:
+                    on_retry()
+                continue
             except (httpx.HTTPError, OSError) as e:
                 # connection-level failures: connect errors, timeouts,
                 # dropped streams.  ``httpx.HTTPError`` covers everything
@@ -476,6 +544,8 @@ class Client:
             if resp.status_code >= 400:
                 body = resp.read().decode("utf-8", "replace")
                 message = f"API error {resp.status_code}: {body[:500]}"
+                if resp.status_code == 401:
+                    raise AuthExpiredError(message)
                 if _retryable_status(resp.status_code):
                     raise RetryableApiError(
                         message, resp.headers.get("Retry-After")
@@ -532,6 +602,8 @@ class Client:
         )
         if resp.status_code >= 400:
             message = f"API error {resp.status_code}: {resp.text[:500]}"
+            if resp.status_code == 401:
+                raise AuthExpiredError(message)
             if _retryable_status(resp.status_code):
                 raise RetryableApiError(
                     message, resp.headers.get("Retry-After")
