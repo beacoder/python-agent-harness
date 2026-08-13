@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -11,6 +12,7 @@ import httpx
 
 from python_agent_harness.client import Client
 from python_agent_harness.models import Message, ToolCall, ToolSpec, Usage
+from python_agent_harness import config
 
 # `discover -s tests` puts the tests dir on sys.path, but a direct
 # `-m unittest tests.test_client` invocation does not — make the
@@ -1037,7 +1039,7 @@ class TestClientResetHttp(unittest.TestCase):
 
         def boom(*_a, **_k):
             attempts["n"] += 1
-            raise ApiError("API error 401: unauthorized")
+            raise ApiError("API error 403: forbidden")
 
         with mock.patch.object(c, "_stream_response", side_effect=boom):
             with self.assertRaises(ApiError) as ctx:
@@ -1046,7 +1048,7 @@ class TestClientResetHttp(unittest.TestCase):
         # exactly one attempt: permanent errors are NOT retried
         self.assertEqual(attempts["n"], 1)
         # original error propagates unchanged (not re-wrapped as network)
-        self.assertIn("401", str(ctx.exception))
+        self.assertIn("403", str(ctx.exception))
         # pool still reset so the next request starts clean
         self.assertIsNot(c._http, old_http)
         self.assertFalse(c._http.is_closed)
@@ -1146,6 +1148,223 @@ class TestRetryAfterPartialStream(unittest.TestCase):
         self.assertEqual(msg.text(), "full answer")
         # the dropped partial was cleared via on_retry at least once
         self.assertGreaterEqual(retries["n"], 1)
+        c.close()
+
+
+class TestAuthRefreshOn401(unittest.TestCase):
+    """When a 401 is received, the client re-reads the API key from
+    config/env.  If a new key is found, the request is retried once
+    with the updated credentials.  If the key hasn't changed, the
+    error propagates immediately."""
+
+    def test_401_with_refreshed_key_retries_and_succeeds(self):
+        """A 401 triggers key re-read; if the key changed, the request
+        is retried with the new key and can succeed."""
+        from python_agent_harness.client import AuthExpiredError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+
+        def fake_stream(payload, on_delta, on_tool_call, usage):
+            n = calls["n"]
+            calls["n"] += 1
+            if n == 0:
+                raise AuthExpiredError("API error 401: Unauthorized")
+            # second attempt succeeds with the refreshed key
+            return (["ok"], [], {})
+
+        with mock.patch.object(c, "_stream_response", side_effect=fake_stream):
+            with mock.patch.object(c, "_refresh_api_key", return_value=True):
+                msg, _ = c.chat([Message(role="user", content="hi")])
+
+        # retried once after refresh
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(msg.text(), "ok")
+        c.close()
+
+    def test_401_with_unchanged_key_fails_immediately(self):
+        """A 401 where the key hasn't changed on disk propagates as a
+        permanent ApiError (no retry)."""
+        from python_agent_harness.client import ApiError, AuthExpiredError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+
+        def fake_stream(payload, on_delta, on_tool_call, usage):
+            calls["n"] += 1
+            raise AuthExpiredError("API error 401: Unauthorized")
+
+        with mock.patch.object(c, "_stream_response", side_effect=fake_stream):
+            with mock.patch.object(c, "_refresh_api_key", return_value=False):
+                with self.assertRaises(ApiError) as ctx:
+                    c.chat([Message(role="user", content="hi")])
+
+        # exactly one attempt: key didn't change, no retry
+        self.assertEqual(calls["n"], 1)
+        self.assertIn("401", str(ctx.exception))
+        c.close()
+
+    def test_401_only_retries_once_even_if_key_keeps_changing(self):
+        """Even if _refresh_api_key returns True repeatedly (a bug or
+        race), the auth refresh retry is capped at one attempt to
+        prevent infinite loops."""
+        from python_agent_harness.client import ApiError, AuthExpiredError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+
+        def fake_stream(payload, on_delta, on_tool_call, usage):
+            calls["n"] += 1
+            raise AuthExpiredError("API error 401: Unauthorized")
+
+        with mock.patch.object(c, "_stream_response", side_effect=fake_stream):
+            with mock.patch.object(c, "_refresh_api_key", return_value=True):
+                with self.assertRaises(ApiError) as ctx:
+                    c.chat([Message(role="user", content="hi")])
+
+        # first attempt + one auth-refresh retry = 2 total
+        self.assertEqual(calls["n"], 2)
+        self.assertIn("401", str(ctx.exception))
+        c.close()
+
+    def test_401_resets_http_pool(self):
+        """A 401 must reset the connection pool (same as other errors)
+        so subsequent requests start clean."""
+        from python_agent_harness.client import ApiError, AuthExpiredError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        old_http = c._http
+
+        def fake_stream(payload, on_delta, on_tool_call, usage):
+            raise AuthExpiredError("API error 401: Unauthorized")
+
+        with mock.patch.object(c, "_stream_response", side_effect=fake_stream):
+            with mock.patch.object(c, "_refresh_api_key", return_value=False):
+                with self.assertRaises(ApiError):
+                    c.chat([Message(role="user", content="hi")])
+
+        # pool was swapped out
+        self.assertIsNot(c._http, old_http)
+        self.assertFalse(c._http.is_closed)
+        c.close()
+
+    def test_refresh_api_key_polls_until_key_changes(self):
+        """_refresh_api_key polls the config file repeatedly until the
+        key changes, then returns True."""
+        import tempfile, json
+
+        cfg_path = tempfile.mktemp(suffix=".json")
+        # initially same key
+        with open(cfg_path, "w") as f:
+            json.dump({"llm": {"api_key": "old-token"}}, f)
+
+        c = make_offline_client(config_path=cfg_path)
+        c.api_key = "old-token"
+
+        call_count = {"n": 0}
+        original_load = config.load_llm_config
+
+        def patched_load(path=None):
+            call_count["n"] += 1
+            if call_count["n"] >= 3:
+                # simulate external script updating the file
+                with open(cfg_path, "w") as f:
+                    json.dump({"llm": {"api_key": "refreshed-token"}}, f)
+            return original_load(path)
+
+        try:
+            with mock.patch.object(config, "load_llm_config", side_effect=patched_load):
+                result = c._refresh_api_key(timeout=5.0, poll_interval=0.05)
+            self.assertTrue(result)
+            self.assertEqual(c.api_key, "refreshed-token")
+            self.assertGreaterEqual(call_count["n"], 3)
+        finally:
+            os.unlink(cfg_path)
+            c.close()
+
+    def test_refresh_api_key_times_out_when_key_unchanged(self):
+        """_refresh_api_key returns False after timeout if the key
+        never changes."""
+        import tempfile, json
+
+        cfg = {"llm": {"api_key": "same-token"}}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(cfg, f)
+            cfg_path = f.name
+
+        try:
+            c = make_offline_client(config_path=cfg_path)
+            c.api_key = "same-token"
+            start = time.monotonic()
+            result = c._refresh_api_key(timeout=0.2, poll_interval=0.05)
+            elapsed = time.monotonic() - start
+            self.assertFalse(result)
+            # actually waited close to the timeout
+            self.assertGreaterEqual(elapsed, 0.15)
+        finally:
+            os.unlink(cfg_path)
+            c.close()
+
+    def test_refresh_api_key_aborts_on_cancel(self):
+        """_refresh_api_key respects cancel_check and returns False
+        early without waiting the full timeout."""
+        import tempfile, json
+
+        cfg = {"llm": {"api_key": "same-token"}}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(cfg, f)
+            cfg_path = f.name
+
+        try:
+            c = make_offline_client(config_path=cfg_path)
+            c.api_key = "same-token"
+            start = time.monotonic()
+            result = c._refresh_api_key(
+                cancel_check=lambda: True,  # immediate cancel
+                timeout=10.0,
+                poll_interval=0.05,
+            )
+            elapsed = time.monotonic() - start
+            self.assertFalse(result)
+            # aborted quickly, not after 10s
+            self.assertLess(elapsed, 1.0)
+        finally:
+            os.unlink(cfg_path)
+            c.close()
+
+    def test_refresh_api_key_falls_back_to_env(self):
+        """When no config file exists, _refresh_api_key reads from
+        environment variables."""
+        c = make_offline_client(config_path="/nonexistent/config.json")
+        c.api_key = "old-key"
+
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "env-refreshed-key"}):
+            result = c._refresh_api_key(timeout=0.1, poll_interval=0.05)
+        self.assertTrue(result)
+        self.assertEqual(c.api_key, "env-refreshed-key")
+        c.close()
+
+    def test_401_on_sync_request_also_triggers_refresh(self):
+        """Non-streaming requests (chat_sync, used for titles) also
+        benefit from the auth refresh mechanism."""
+        from python_agent_harness.client import AuthExpiredError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+
+        def fake_sync(payload, on_delta, on_tool_call, usage):
+            n = calls["n"]
+            calls["n"] += 1
+            if n == 0:
+                raise AuthExpiredError("API error 401: Unauthorized")
+            return (["title generated"], [], {})
+
+        with mock.patch.object(c, "_sync_response", side_effect=fake_sync):
+            with mock.patch.object(c, "_refresh_api_key", return_value=True):
+                msg, _ = c.chat_sync([Message(role="user", content="hi")])
+
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(msg.text(), "title generated")
         c.close()
 
 
