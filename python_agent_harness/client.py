@@ -314,17 +314,35 @@ class Client:
             nonlocal emitted
             emitted = True
             if on_delta:
-                on_delta(chunk)
+                # a presentational sink (live UI) — its failure (e.g. a
+                # BrokenPipeError on a closed terminal) must never reach
+                # the retry loop below, or it would be mistaken for a
+                # transport error and pointlessly re-send the request
+                try:
+                    on_delta(chunk)
+                except Exception:  # noqa: BLE001 - streaming UI is best effort
+                    pass
 
         def wrap_tool_call(name: str, call_id: str, fragment: str) -> None:
             nonlocal emitted
             emitted = True
             if on_tool_call:
-                on_tool_call(name, call_id, fragment)
+                try:
+                    on_tool_call(name, call_id, fragment)
+                except Exception:  # noqa: BLE001 - streaming UI is best effort
+                    pass
 
         attempt = 0
         while True:
             attempt += 1
+            # Track emission per-attempt.  Whether a PRIOR attempt
+            # streamed partial text is irrelevant to retrying this one:
+            # that partial was already cleared (via on_retry) when the
+            # prior attempt failed.  Resetting here lets a transient
+            # status (429/5xx) arriving after a dropped partial stream
+            # still be retried, consistent with the connection-error
+            # branch below.
+            emitted = False
             try:
                 if stream:
                     content_parts, reasoning_parts, tc_index = self._stream_response(
@@ -336,22 +354,38 @@ class Client:
                     )
                 break
             except RetryableApiError as e:
-                if emitted or attempt >= self.retry_max:
+                # transient status (429 / 5xx): retry with backoff until
+                # the attempt budget is exhausted.  If this attempt had
+                # already streamed partial text to the caller, clear it
+                # first (mirrors the connection-error branch) so the
+                # retry never duplicates output.
+                if attempt >= self.retry_max:
                     raise
+                if emitted and on_retry is not None:
+                    on_retry()
                 if self._sleep_backoff(attempt, e.retry_after, cancel_check):
                     raise
-            except httpx.HTTPError as e:
+            except (httpx.HTTPError, OSError) as e:
                 # connection-level failures: connect errors, timeouts,
-                # dropped streams.  Swap in a fresh client immediately —
-                # a dead connection must not stay in the pool for the
-                # retry — then retry the request, even when deltas
-                # already reached the caller: the partial stream is
-                # discarded on retry (on_retry lets the caller clear
-                # its live text), so nothing is duplicated in the
-                # stored message.  Only give up once the per-request
-                # attempt budget is exhausted — or immediately when
-                # the request was aborted (Ctrl-C: the user asked to
-                # stop, so a fresh attempt must not be started).
+                # dropped streams.  ``httpx.HTTPError`` covers everything
+                # httpx wraps, but a raw ``OSError`` (ConnectionResetError,
+                # BrokenPipeError, ``ssl.SSLError`` — all OSError
+                # subclasses) can still leak from the socket layer,
+                # notably out of the streaming generator or during SSL
+                # teardown.  Such an error MUST be treated the same way:
+                # if it escaped uncaught the poisoned connection would
+                # stay in the pool and doom every following request in
+                # the session (the reported "connection broken -> all
+                # later requests fail" symptom).  Swap in a fresh client
+                # immediately — a dead connection must not stay in the
+                # pool for the retry — then retry the request, even when
+                # deltas already reached the caller: the partial stream
+                # is discarded on retry (on_retry lets the caller clear
+                # its live text), so nothing is duplicated in the stored
+                # message.  Only give up once the per-request attempt
+                # budget is exhausted — or immediately when the request
+                # was aborted (Ctrl-C: the user asked to stop, so a
+                # fresh attempt must not be started).
                 self._reset_http()
                 if self._aborted or attempt >= self.retry_max:
                     raise ApiError(f"network error: {e}") from e
@@ -359,6 +393,20 @@ class Client:
                     on_retry()
                 if self._sleep_backoff(attempt, None, cancel_check):
                     raise ApiError(f"network error: {e}") from e
+            except Exception:
+                # safety net for anything unexpected (permanent ApiError
+                # from a 4xx, a parsing bug, a raising on_delta callback,
+                # ...).  We do NOT retry these — retrying a permanent
+                # error just burns the budget with backoff, and retrying
+                # a bug masks it as a bogus "network error".  But the
+                # request may have died mid-stream, leaving the
+                # connection in an indeterminate state, so we still
+                # reset the pool before propagating: a poisoned
+                # connection must never survive into the next request,
+                # whatever the cause.  (BaseException — KeyboardInterrupt
+                # / SystemExit — is intentionally not caught here.)
+                self._reset_http()
+                raise
 
         content = "".join(content_parts)
         tool_calls = None
