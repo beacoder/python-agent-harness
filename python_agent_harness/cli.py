@@ -50,6 +50,7 @@ def make_session(
         api_key=settings["api_key"],
         model=model,
         timeout=settings["timeout"],
+        config_path=config_path,
     )
     # A separate client for sub-agent requests only when a different
     # LLM is configured (mirrors gptel-agent-harness-subagent-model /
@@ -64,6 +65,7 @@ def make_session(
             api_key=subagent_settings["api_key"],
             model=subagent_settings["model"],
             timeout=subagent_settings["timeout"],
+            config_path=config_path,
         )
         # keep every request of this session (main + sub-agents) in the
         # same LLM log file — the TUI advertises the main client's log
