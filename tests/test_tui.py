@@ -523,6 +523,77 @@ class TestTui(unittest.TestCase):
         self.assertNotIn(config.NUDGE_MESSAGE, out)
         self.assertNotIn("[FINAL CHECK]", out)
 
+    def test_live_panel_shows_only_current_round(self):
+        """The live panel renders only the LATEST round (messages from
+        round_start on), so a second request does not replay the first
+        round's interactions."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="first round question"),
+            Message(role="assistant", content="first round answer"),
+            Message(role="user", content="second round question"),
+            Message(role="assistant", content="second round answer"),
+        ]
+        # the second round begins at index 2
+        tui.round_start = 2
+        tui._history_dirty = True
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("second round question", out)
+        self.assertIn("second round answer", out)
+        self.assertNotIn("first round question", out)
+        self.assertNotIn("first round answer", out)
+
+    def test_dump_shows_all_rounds_despite_round_start(self):
+        """The end-of-run dump prints the FULL conversation even when
+        round_start points past earlier rounds."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="first round question"),
+            Message(role="assistant", content="first round answer"),
+            Message(role="user", content="second round question"),
+            Message(role="assistant", content="second round answer"),
+        ]
+        tui.round_start = 2
+        tui._dump_conversation()
+        out = buf.getvalue()
+        self.assertIn("first round question", out)
+        self.assertIn("first round answer", out)
+        self.assertIn("second round question", out)
+        self.assertIn("second round answer", out)
+
+    def test_live_panel_shows_pending_user_text_before_mirror(self):
+        """Before the round's user message is mirrored into
+        last_messages (the initial assistant stream), the panel shows
+        the text the user just submitted so the round isn't blank."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="first round question"),
+            Message(role="assistant", content="first round answer"),
+        ]
+        # a new round just started: boundary is past the mirrored
+        # history, and the user text is not mirrored yet
+        tui.round_start = 2
+        tui.round_user_text = "brand new question"
+        tui._history_dirty = True
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("brand new question", out)
+        self.assertNotIn("first round question", out)
+
+    def test_round_start_clamped_when_history_shrinks(self):
+        """A stale round_start past the end of last_messages (e.g. after
+        compaction / clear) must not raise — it clamps to the list."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [Message(role="user", content="only message")]
+        tui.round_start = 99
+        tui.round_user_text = ""
+        tui._history_dirty = True
+        # must render without error; empty slice → just the panel frame
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertNotIn("only message", out)
+
     def test_run_live_dumps_conversation_at_end(self):
         """When a run finishes normally, _run_live prints the full
         conversation into the scrollback after the Live frame."""
