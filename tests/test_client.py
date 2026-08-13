@@ -998,6 +998,156 @@ class TestClientResetHttp(unittest.TestCase):
         self.assertFalse(c._http.is_closed)
         c.close()
 
+    def test_bare_oserror_is_retried_and_resets_pool(self):
+        """A raw OSError (e.g. ConnectionResetError / ssl.SSLError) that
+        leaks past httpx must be treated like a connection error: it is
+        retried on a fresh client and surfaces as ApiError.  Without
+        this, the poisoned connection would stay in the pool and doom
+        every following request in the session."""
+        from python_agent_harness.client import ApiError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        old_http = c._http
+        attempts = {"n": 0}
+
+        def boom(*_a, **_k):
+            attempts["n"] += 1
+            raise ConnectionResetError(104, "Connection reset by peer")
+
+        with mock.patch.object(c, "_stream_response", side_effect=boom):
+            with self.assertRaises(ApiError):
+                c.chat([Message(role="user", content="hi")])
+
+        # retried up to the budget (not a single-shot failure)
+        self.assertEqual(attempts["n"], 3)
+        # pool reset: the poisoned client was swapped out for a fresh one
+        self.assertIsNot(c._http, old_http)
+        self.assertFalse(c._http.is_closed)
+        c.close()
+
+    def test_unexpected_error_resets_pool_but_is_not_retried(self):
+        """A non-connection error (e.g. a bug, or a permanent ApiError)
+        must fail fast — a single attempt, no retry — yet still reset
+        the pool so the next request never reuses a poisoned connection."""
+        from python_agent_harness.client import ApiError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        old_http = c._http
+        attempts = {"n": 0}
+
+        def boom(*_a, **_k):
+            attempts["n"] += 1
+            raise ApiError("API error 401: unauthorized")
+
+        with mock.patch.object(c, "_stream_response", side_effect=boom):
+            with self.assertRaises(ApiError) as ctx:
+                c.chat([Message(role="user", content="hi")])
+
+        # exactly one attempt: permanent errors are NOT retried
+        self.assertEqual(attempts["n"], 1)
+        # original error propagates unchanged (not re-wrapped as network)
+        self.assertIn("401", str(ctx.exception))
+        # pool still reset so the next request starts clean
+        self.assertIsNot(c._http, old_http)
+        self.assertFalse(c._http.is_closed)
+        c.close()
+
+
+class TestClientCallbackIsolation(unittest.TestCase):
+    """A presentational callback (on_delta / on_tool_call) failure must
+    never be mistaken for a transport error and trigger a retry — even
+    when it raises an OSError such as BrokenPipeError on a closed
+    terminal."""
+
+    def test_on_delta_oserror_does_not_trigger_retry(self):
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+
+        def fake_stream(payload, on_delta, on_tool_call, usage):
+            on_delta("hello")  # invokes the wrapped user callback
+            return (["hello"], [], {})
+
+        def bad_on_delta(_chunk):
+            calls["n"] += 1
+            raise BrokenPipeError(32, "Broken pipe")
+
+        with mock.patch.object(c, "_stream_response", side_effect=fake_stream):
+            msg, _ = c.chat(
+                [Message(role="user", content="hi")],
+                on_delta=bad_on_delta,
+                stream=True,
+            )
+        # request succeeded despite the UI callback blowing up, and it
+        # ran exactly once (no spurious network retry)
+        self.assertEqual(msg.text(), "hello")
+        self.assertEqual(calls["n"], 1)
+        c.close()
+
+    def test_on_tool_call_exception_does_not_trigger_retry(self):
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+
+        def fake_stream(payload, on_delta, on_tool_call, usage):
+            on_tool_call("Read", "call_1", '{"path":"x"}')
+            return ([], [], {0: {"id": "call_1", "name": "Read", "arguments": '{"path":"x"}'}})
+
+        def bad_on_tool_call(_n, _i, _f):
+            calls["n"] += 1
+            raise RuntimeError("render boom")
+
+        with mock.patch.object(c, "_stream_response", side_effect=fake_stream):
+            msg, _ = c.chat(
+                [Message(role="user", content="hi")],
+                on_tool_call=bad_on_tool_call,
+                stream=True,
+            )
+        self.assertTrue(msg.tool_calls)
+        self.assertEqual(calls["n"], 1)
+        c.close()
+
+
+class TestRetryAfterPartialStream(unittest.TestCase):
+    """A transient status (429/5xx) arriving AFTER a partial stream was
+    dropped (and cleared) must still be retried — emission is tracked
+    per-attempt, not for the whole request."""
+
+    def test_transient_status_after_dropped_partial_is_retried(self):
+        from python_agent_harness.client import RetryableApiError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+        deltas: list[str] = []
+        retries = {"n": 0}
+
+        def fake_stream(payload, on_delta, on_tool_call, usage):
+            n = calls["n"]
+            calls["n"] += 1
+            if n == 0:
+                on_delta("part")  # partial delivered to the caller
+                raise httpx.ReadError("stream dropped mid-body")
+            if n == 1:
+                # transient status on the retry, AFTER a partial was
+                # already streamed on attempt 0
+                raise RetryableApiError("API error 429", None)
+            return (["full answer"], [], {})
+
+        with mock.patch.object(c, "_stream_response", side_effect=fake_stream):
+            msg, _ = c.chat(
+                [Message(role="user", content="hi")],
+                on_delta=deltas.append,
+                on_retry=lambda: retries.__setitem__("n", retries["n"] + 1),
+                stream=True,
+            )
+
+        # all three attempts ran: the 429 after the dropped partial was
+        # NOT treated as terminal (the pre-fix bug gave up here)
+        self.assertEqual(calls["n"], 3)
+        # final message is the last attempt's content, no duplication
+        self.assertEqual(msg.text(), "full answer")
+        # the dropped partial was cleared via on_retry at least once
+        self.assertGreaterEqual(retries["n"], 1)
+        c.close()
+
 
 if __name__ == "__main__":
     unittest.main()
