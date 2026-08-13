@@ -375,6 +375,16 @@ class Tui:
         self.run_seq = 0
         self._restore: Callable[[], None] | None = None
         self.conversation_history: list[Message] = []
+        # Index into ``session.last_messages`` where the current round
+        # begins: the live panel renders only from here on (the latest
+        # round of interactions), while the end-of-run scrollback dump
+        # prints the full conversation.  0 means "show everything" —
+        # the default until the first run sets a boundary.
+        self.round_start = 0
+        # Text the user submitted for the current round, shown as a live
+        # user row until it is mirrored into ``session.last_messages``
+        # (which only happens once the first assistant response lands).
+        self.round_user_text = ""
         self._data_event = threading.Event()
         self._history_cache: list[Any] | None = None
         self._history_dirty = True
@@ -500,19 +510,39 @@ class Tui:
     def _build_history_rows(self, full: bool = False) -> list[Any]:
         """Rows for the stored conversation (messages + todos). No stream.
 
-        FULL=True renders user/assistant bodies uncapped (used by the
-        post-run scrollback dump, where the whole answer must be
-        readable); the live panel keeps the tail caps so the newest
-        content stays on screen.
+        FULL=True renders the WHOLE conversation with uncapped
+        user/assistant bodies (the post-run scrollback dump, where every
+        round must be readable).  FULL=False renders only the LATEST
+        round — the messages from ``self.round_start`` onward — with the
+        tail caps, so the live panel focuses on the current interaction
+        instead of replaying every previous round.
         """
         rows: list[Any] = []
         calls_by_id: dict[str, Any] = {}
-        for m in self.session.last_messages or []:
+        all_messages = self.session.last_messages or []
+        # tool-call lookup spans the whole conversation so a diff still
+        # resolves even if its call landed in an earlier round
+        for m in all_messages:
             if m.role == "assistant" and m.tool_calls:
                 for tc in m.tool_calls:
                     calls_by_id[tc.id] = tc
 
-        for m in self.session.last_messages or []:
+        if full:
+            messages = all_messages
+        else:
+            # clamp: compaction / clear / restore can shrink
+            # last_messages below the recorded boundary
+            start = min(self.round_start, len(all_messages))
+            messages = all_messages[start:]
+            # before the round's user message is mirrored into
+            # last_messages (during the first assistant stream), show
+            # the text the user just submitted so the round isn't blank
+            if len(all_messages) <= self.round_start and self.round_user_text:
+                body = _tail_lines(self.round_user_text, 12)
+                if body.strip():
+                    rows.append(Markdown(f"**user:** {body}", style=USER_STYLE))
+
+        for m in messages:
             # compacted summaries live in the user turn (system prompt is
             # separate); match on content so both live sessions and
             # restored files (role lost in the markdown round-trip) render
@@ -854,6 +884,13 @@ class Tui:
         """
         self.stream_text = ""
         self.status = " running"
+        # Mark where this round begins in the shared history: the live
+        # panel renders only from here on (the latest round), while the
+        # end-of-run dump prints the full conversation.  Captured before
+        # the run so it points just past the previous round's messages —
+        # the new user message will be the first mirrored row.
+        self.round_start = len(self.session.last_messages or [])
+        self.round_user_text = text
         # A new top-level run starts here: invalidate any worker still
         # unwinding from a previous run — from this point on it is stale
         # and must never touch shared state.  Bump before clearing the
