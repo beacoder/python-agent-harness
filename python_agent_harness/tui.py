@@ -213,6 +213,7 @@ def _make_prompt_session(
         completer=completer,
         complete_while_typing=False,
         multiline=True,
+        enable_suspend=True,
         **kwargs,
     )
 
