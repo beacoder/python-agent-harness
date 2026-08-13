@@ -300,6 +300,8 @@ class Client:
             "messages": msgs,
             "stream": stream,
         }
+        if stream:
+            payload["stream_options"] = {"include_usage": True}
         if tools:
             payload["tools"] = [t.to_api() for t in tools]
         if temperature is not None:

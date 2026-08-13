@@ -333,6 +333,23 @@ class TestBashInternals(unittest.TestCase):
         self.assertIsInstance(result, PendingToolResult)
         self.assertIn("Error: Bash failed", result.wait())
 
+    def test_popen_gets_devnull_stdin(self):
+        """Bash must not inherit the harness's stdin: commands that read
+        stdin would steal keystrokes from the TUI."""
+        import subprocess
+
+        from python_agent_harness.tools.bash import Bash
+
+        fake = mock.Mock()
+        fake.communicate.return_value = ("", None)
+        with mock.patch(
+            "python_agent_harness.tools.bash.subprocess.Popen", return_value=fake
+        ) as popen:
+            result = Bash().run({"command": "echo hi"}, ToolContext())
+        result.wait()
+        kwargs = popen.call_args.kwargs
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+
 
 if __name__ == "__main__":
     unittest.main()

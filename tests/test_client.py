@@ -75,14 +75,16 @@ class TestClientStreaming(unittest.TestCase):
 
     def test_streaming_default_sends_stream_true(self):
         """The default mode is streaming: the request body must carry
-        stream=True unless the caller opts out."""
+        stream=True plus stream_options requesting usage chunks."""
         fake_openai_server.reset_state()
         c = make_client()
         try:
             c.chat([Message(role="user", content="hi")])
         finally:
             c.close()
-        self.assertIs(fake_openai_server.REQUEST_BODIES[-1]["stream"], True)
+        body = fake_openai_server.REQUEST_BODIES[-1]
+        self.assertIs(body["stream"], True)
+        self.assertEqual(body["stream_options"], {"include_usage": True})
 
 
 class TestClientNonStreaming(unittest.TestCase):
@@ -114,13 +116,16 @@ class TestClientNonStreaming(unittest.TestCase):
 
     def test_sync_chat_sends_stream_false(self):
         """Non-streaming mode must send stream=False in the payload
-        (and not ask for text/event-stream)."""
+        (and not ask for text/event-stream); stream_options must be
+        absent since OpenAI-style backends reject it when not streaming."""
         c = make_client()
         try:
             c.chat([Message(role="user", content="hi")], stream=False)
         finally:
             c.close()
-        self.assertIs(fake_openai_server.REQUEST_BODIES[-1]["stream"], False)
+        body = fake_openai_server.REQUEST_BODIES[-1]
+        self.assertIs(body["stream"], False)
+        self.assertNotIn("stream_options", body)
 
     def test_sync_chat_tool_calls_and_reasoning(self):
         """stream=False parses content, reasoning_content, tool_calls

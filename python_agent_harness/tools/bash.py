@@ -60,6 +60,7 @@ class Bash(Tool):
             proc = subprocess.Popen(
                 command,
                 shell=True,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
