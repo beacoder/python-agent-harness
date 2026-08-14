@@ -15,12 +15,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Tooling used by CI (lint + type check + wheel build). Install with:
-#   pip install -e ".[dev]"
+# Tooling used by CI (lint + type check + wheel build + coverage + audit).
+# Install with:  pip install -e ".[dev]"
 dev = [
     "ruff>=0.6",
     "pyright>=1.1.380",
     "build>=1.2",
+    "coverage[toml]>=7.0",
+    "pip-audit>=2.7",
 ]
 
 [project.scripts]
@@ -54,3 +56,16 @@ pythonVersion = "3.11"
 # findings are burned down; flip it to blocking (remove continue-on-error in
 # the workflow) once `pyright` reports zero errors.
 typeCheckingMode = "basic"
+
+[tool.coverage.run]
+source = ["python_agent_harness"]
+branch = true
+# The console/TUI entry points aren't exercised by unittest; omit the ones
+# that would otherwise drag the number down without adding signal.
+omit = ["python_agent_harness/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+# Current line + branch coverage is ~98%. Gate at 90 to leave headroom for
+# small changes while still catching real regressions. Raise as coverage grows.
+fail_under = 90
