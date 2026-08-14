@@ -267,7 +267,8 @@ class AgentLoop:
             )
             system = read_prompt_file("compact.md")
             resp, _ = self.session.client.chat_sync(
-                [Message(role="user", content=conversation)], system=system
+                [Message(role="user", content=conversation)], system=system,
+                cancel_check=self._is_cancelled,
             )
             summary = resp.text()
             if not summary:
