@@ -46,7 +46,7 @@ class FakeClient:
         return Message(role="assistant", content=text, tool_calls=tool_calls), Usage(input_tokens=100)
 
     def chat_sync(self, messages, system=None, temperature=None, max_tokens=None,
-                  reasoning_effort=None):
+                  reasoning_effort=None, cancel_check=None):
         return Message(role="assistant", content="SYNC-OK"), Usage()
 
 
@@ -1148,7 +1148,8 @@ class TestAgentLoop(unittest.TestCase):
         orig_chat_sync = session.client.chat_sync
 
         def tracking_chat_sync(messages, system=None, temperature=None,
-                               max_tokens=None, reasoning_effort=None):
+                               max_tokens=None, reasoning_effort=None,
+                               cancel_check=None):
             session.client.chat_sync_calls.append((messages, system))
             return orig_chat_sync(messages, system=system)
 
