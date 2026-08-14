@@ -482,9 +482,9 @@ class Write(Tool):
         content = args.get("content") or ""
         # LLM may put the full file path in "filename" or in "path"
         if filename:
-            path = os.path.abspath(os.path.join(dir_path, filename))
+            path = os.path.realpath(os.path.abspath(os.path.join(dir_path, filename)))
         else:
-            path = os.path.abspath(dir_path)
+            path = os.path.realpath(os.path.abspath(dir_path))
         if not filename:
             filename = os.path.basename(path) or os.path.basename(dir_path)
         existed = os.path.exists(path)
@@ -552,7 +552,7 @@ class Edit(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         raw = args["path"]
-        path = os.path.abspath(raw)
+        path = os.path.realpath(os.path.abspath(raw))
         if not os.access(path, os.R_OK):
             return f"Error: File or directory {path} is not readable"
         new_str = args.get("new_str")
@@ -710,9 +710,13 @@ def _fix_patch_headers(diff_text: str) -> str:
         body: list[str] = []
         while j < n and not lines[j].startswith("@@"):
             line = lines[j]
-            if line.startswith("-") and not line.startswith("--"):
+            if line.startswith("---") or line.startswith("+++"):
+                # File header lines (--- a/file, +++ b/file) are not
+                # hunk body lines; pass them through without counting.
+                pass
+            elif line.startswith("-"):
                 orig_count += 1
-            elif line.startswith("+") and not line.startswith("++"):
+            elif line.startswith("+"):
                 new_count += 1
             elif line.startswith(" "):
                 orig_count += 1
@@ -742,10 +746,11 @@ class Insert(Tool):
     }
 
     def run(self, args: dict, ctx: ToolContext) -> str:
-        path = os.path.abspath(args["path"])
+        path = os.path.realpath(os.path.abspath(args["path"]))
         try:
             with open(path, "r", encoding="utf-8") as f:
-                lines = f.read().splitlines(keepends=True)
+                old_content = f.read()
+                lines = old_content.splitlines(keepends=True)
         except OSError as e:
             return f"Error: cannot read {path}: {e}"
         ln = int(args["line_number"])
@@ -758,9 +763,13 @@ class Insert(Tool):
             lines.insert(0, new_str)
         else:
             lines.insert(ln, new_str)
+        new_content = "".join(lines)
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write("".join(lines))
+                f.write(new_content)
         except OSError as e:
             return f"Error: {e}"
+        diff_text = unified_diff(old_content, new_content, path)
+        if diff_text:
+            ctx.record_diff(diff_text)
         return f"Successfully inserted text at line {ln} in {path}"
