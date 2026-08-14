@@ -82,10 +82,10 @@ class Message:
         content = self.content
         if self.reasoning and isinstance(content, str):
             if content.startswith(self.reasoning):
-                return content[len(self.reasoning):].lstrip("\n")
+                return content[len(self.reasoning) :].lstrip("\n")
             stripped = content.lstrip()
             if stripped.startswith(self.reasoning):
-                return stripped[len(self.reasoning):].lstrip("\n")
+                return stripped[len(self.reasoning) :].lstrip("\n")
         return content
 
     def text(self) -> str:
@@ -114,10 +114,10 @@ class Message:
         t = self.text()
         if self.reasoning and t:
             if t.startswith(self.reasoning):
-                return t[len(self.reasoning):].lstrip("\n")
+                return t[len(self.reasoning) :].lstrip("\n")
             stripped = t.lstrip()
             if stripped.startswith(self.reasoning):
-                return stripped[len(self.reasoning):].lstrip("\n")
+                return stripped[len(self.reasoning) :].lstrip("\n")
             # Fallback: remove the reasoning anywhere in the text
             return t.replace(self.reasoning, "").strip()
         return t

@@ -67,14 +67,10 @@ class TestToolContext(unittest.TestCase):
     def test_ask_questions_proxies_to_session(self):
         sess = FakeSession()
         sess.ask_questions = lambda qs: "picked A"
-        self.assertEqual(
-            ToolContext(sess).ask_questions([{"question": "q"}]), "picked A"
-        )
+        self.assertEqual(ToolContext(sess).ask_questions([{"question": "q"}]), "picked A")
 
     def test_ask_questions_defaults_unanswered(self):
-        self.assertEqual(
-            ToolContext().ask_questions([{"question": "q"}]), "Unanswered"
-        )
+        self.assertEqual(ToolContext().ask_questions([{"question": "q"}]), "Unanswered")
 
     def test_update_todos_proxies_to_session(self):
         sess = FakeSession()
@@ -153,15 +149,11 @@ class TestQuestionTool(unittest.TestCase):
     def test_list_questions_delivers_answer(self):
         sess = FakeSession()
         sess.ask_questions = lambda qs: "42"
-        result = Question().run(
-            {"questions": [{"question": "q1"}]}, ToolContext(sess)
-        )
+        result = Question().run({"questions": [{"question": "q1"}]}, ToolContext(sess))
         self.assertEqual(result, "42")
 
     def test_dict_wrapped_questions_without_session(self):
-        result = Question().run(
-            {"questions": {"questions": [{"question": "q"}]}}, ToolContext()
-        )
+        result = Question().run({"questions": {"questions": [{"question": "q"}]}}, ToolContext())
         self.assertEqual(result, "Unanswered")
 
     def test_invalid_questions_returns_error(self):
@@ -178,9 +170,7 @@ class TestQuestionTool(unittest.TestCase):
 
         sess = FakeSession()
         sess.ask_questions = boom
-        result = Question().run(
-            {"questions": [{"question": "q"}]}, ToolContext(sess)
-        )
+        result = Question().run({"questions": [{"question": "q"}]}, ToolContext(sess))
         self.assertIn("Error: Question failed", result)
 
 
@@ -290,9 +280,7 @@ class TestAgentTool(unittest.TestCase):
 
         sess = FakeSession()
         sess.run_subagent = boom
-        result = AgentTool().run(
-            {"description": "task", "prompt": "p"}, ToolContext(sess)
-        )
+        result = AgentTool().run({"description": "task", "prompt": "p"}, ToolContext(sess))
         self.assertIn("Error: Task 'task' failed", result.wait())
 
 
@@ -304,8 +292,9 @@ class TestBashInternals(unittest.TestCase):
 
         proc = mock.Mock()
         proc.pid = 1234
-        with mock.patch("os.getpgid", return_value=42), mock.patch(
-            "os.killpg", side_effect=ProcessLookupError
+        with (
+            mock.patch("os.getpgid", return_value=42),
+            mock.patch("os.killpg", side_effect=ProcessLookupError),
         ):
             _kill_process(proc)
         proc.kill.assert_called_once()
@@ -316,8 +305,9 @@ class TestBashInternals(unittest.TestCase):
         proc = mock.Mock()
         proc.pid = 1234
         proc.kill.side_effect = ProcessLookupError
-        with mock.patch("os.getpgid", return_value=42), mock.patch(
-            "os.killpg", side_effect=PermissionError
+        with (
+            mock.patch("os.getpgid", return_value=42),
+            mock.patch("os.killpg", side_effect=PermissionError),
         ):
             _kill_process(proc)  # must not raise
 
@@ -326,9 +316,7 @@ class TestBashInternals(unittest.TestCase):
 
         fake = mock.Mock()
         fake.communicate.side_effect = RuntimeError("pipe broke")
-        with mock.patch(
-            "python_agent_harness.tools.bash.subprocess.Popen", return_value=fake
-        ):
+        with mock.patch("python_agent_harness.tools.bash.subprocess.Popen", return_value=fake):
             result = Bash().run({"command": "echo hi"}, ToolContext())
         self.assertIsInstance(result, PendingToolResult)
         self.assertIn("Error: Bash failed", result.wait())

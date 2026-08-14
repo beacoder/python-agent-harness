@@ -59,12 +59,7 @@ class TokenCalibrator:
 
     def update(self, actual_input: int | None) -> None:
         raw = self.last_raw_estimate
-        if (
-            actual_input is None
-            or actual_input <= 0
-            or raw is None
-            or raw <= 0
-        ):
+        if actual_input is None or actual_input <= 0 or raw is None or raw <= 0:
             return
         ratio = actual_input / float(raw)
         ratio = max(config.CALIBRATION_MIN, min(config.CALIBRATION_MAX, ratio))
@@ -122,7 +117,5 @@ def payload_text(system: object, messages: list[dict], tools: list[dict]) -> str
     return "\n".join(buf)
 
 
-def estimate_payload_tokens(
-    system: object, messages: list[dict], tools: list[dict]
-) -> int:
+def estimate_payload_tokens(system: object, messages: list[dict], tools: list[dict]) -> int:
     return estimate_tokens(payload_text(system, messages, tools))

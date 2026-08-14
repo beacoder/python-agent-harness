@@ -17,8 +17,9 @@ Tool availability per command:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .prompts import read_prompt_file
 
@@ -40,7 +41,10 @@ def _project_root(cwd: str) -> str:
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd, capture_output=True, text=True, timeout=10,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
@@ -56,8 +60,13 @@ class SessionCommand:
     """A configured session command (init/review/custom...)."""
 
     def __init__(
-        self, name: str, prompt_file: str, kickoff: str,
-        buffer_name: str, status: str, validate_dir: bool = False,
+        self,
+        name: str,
+        prompt_file: str,
+        kickoff: str,
+        buffer_name: str,
+        status: str,
+        validate_dir: bool = False,
         allow_planexit: bool = True,
     ) -> None:
         self.name = name

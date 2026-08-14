@@ -39,22 +39,19 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-# Start with the pyflakes (F) + pycodestyle error (E) core. These pass on the
-# current codebase, so CI is green from day one. Broaden `select` (e.g. add
-# "I" for import sorting, "B" for bugbears, "UP" for pyupgrade) once the code
-# is cleaned up with `ruff check --fix` / `ruff format`.
-select = ["E", "F"]
-# E501 (line-too-long) is left to the formatter; E741/E401 have a handful of
-# pre-existing hits that are not worth churning right now.
-ignore = ["E501", "E741", "E401"]
+# Core pyflakes (F) + pycodestyle error (E), plus import sorting (I),
+# bugbears (B), pyupgrade (UP) and simplify (SIM).  The tree is clean
+# under this set (CI blocks on it).
+select = ["E", "F", "I", "B", "UP", "SIM"]
+# E501 (line-too-long) is left to the formatter.
+ignore = ["E501"]
 
 [tool.pyright]
 include = ["python_agent_harness"]
 pythonVersion = "3.11"
 # "basic" surfaces the real Optional-access issues without the full strict
-# firehose. The CI type-check job runs in report-only mode until the existing
-# findings are burned down; flip it to blocking (remove continue-on-error in
-# the workflow) once `pyright` reports zero errors.
+# firehose. The tree is clean under this mode and the CI type-check job
+# blocks on it.
 typeCheckingMode = "basic"
 
 [tool.coverage.run]

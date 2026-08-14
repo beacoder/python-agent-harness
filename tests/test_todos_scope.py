@@ -20,14 +20,25 @@ class FakeClient:
         self.n = 0
         self.sent_tools = []
 
-    def chat(self, messages, tools=None, system=None, temperature=None,
-             max_tokens=None, reasoning_effort=None, on_delta=None, stream=True,
-             cancel_check=None, on_retry=None):
+    def chat(
+        self,
+        messages,
+        tools=None,
+        system=None,
+        temperature=None,
+        max_tokens=None,
+        reasoning_effort=None,
+        on_delta=None,
+        stream=True,
+        cancel_check=None,
+        on_retry=None,
+    ):
         self.n += 1
         self.sent_tools.append([t.name for t in tools] if tools else None)
         if self.n == 1:
             tc = ToolCall(
-                id="call_1", name="TodoWrite",
+                id="call_1",
+                name="TodoWrite",
                 arguments=json.dumps({"todos": self.sub_todos}),
             )
             return Message(role="assistant", content="", tool_calls=[tc]), Usage(input_tokens=10)

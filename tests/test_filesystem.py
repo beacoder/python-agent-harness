@@ -219,15 +219,9 @@ class TestSpool(unittest.TestCase):
             with open(os.path.join(d, "data.txt"), "w") as f:
                 # 1500 matching lines; --max-count=1000 + -C15 context
                 # inflates output well beyond MAX_OUTPUT
-                f.write(
-                    "".join(
-                        f"line{i:04d}-needle-{'x' * 300}\n" for i in range(1500)
-                    )
-                )
+                f.write("".join(f"line{i:04d}-needle-{'x' * 300}\n" for i in range(1500)))
             ctx, _ = make_ctx()
-            result = Grep().run(
-                {"regex": "needle", "path": d, "context_lines": 15}, ctx
-            )
+            result = Grep().run({"regex": "needle", "path": d, "context_lines": 15}, ctx)
             self.assertIn("grep results too large", result)
             m = re.search(r'file_path="([^"]+)"', result)
             self.assertIsNotNone(m, result)
@@ -261,9 +255,7 @@ class TestSpool(unittest.TestCase):
             with open(os.path.join(d, "data.txt"), "w") as f:
                 f.write("one\ntwo\nthree\nneedle\nfour\nfive\nsix\n")
             ctx, _ = make_ctx()
-            result = Grep().run(
-                {"regex": "needle", "path": d, "context_lines": 99}, ctx
-            )
+            result = Grep().run({"regex": "needle", "path": d, "context_lines": 99}, ctx)
             self.assertIn("needle", result)
             self.assertNotIn("Error", result)
 
@@ -310,11 +302,9 @@ class TestReadTool(unittest.TestCase):
 
     def test_range_read_streams_selected_lines(self):
         p = self._write(1000)
-        out = Read().run(
-            {"file_path": p, "start_line": 5, "end_line": 7}, ToolContext()
-        )
+        out = Read().run({"file_path": p, "start_line": 5, "end_line": 7}, ToolContext())
         self.assertIn("Showing lines 5-7:", out)
-        self.assertNotIn("of 1000", out)   # total unknown when EOF not reached
+        self.assertNotIn("of 1000", out)  # total unknown when EOF not reached
         self.assertIn("line00004-", out)
         self.assertIn("line00006-", out)
         self.assertNotIn("line00007-", out)
@@ -336,11 +326,9 @@ class TestReadTool(unittest.TestCase):
 
     def test_range_read_on_file_above_limit_is_allowed(self):
         """The 400 KB gate applies only to whole-file reads, not ranges."""
-        p = self._write(20000, width=80)   # > 1 MB
+        p = self._write(20000, width=80)  # > 1 MB
         self.assertGreater(os.path.getsize(p), self.fs.READ_SIZE_LIMIT)
-        out = Read().run(
-            {"file_path": p, "start_line": 1, "end_line": 3}, ToolContext()
-        )
+        out = Read().run({"file_path": p, "start_line": 1, "end_line": 3}, ToolContext())
         self.assertNotIn("Error", out)
         self.assertIn("Showing lines 1-3:", out)
         self.assertIn("line00000-", out)
@@ -363,16 +351,12 @@ class TestReadTool(unittest.TestCase):
 
     def test_negative_start_line_clamped_to_1(self):
         p = self._write(10)
-        out = Read().run(
-            {"file_path": p, "start_line": -5, "end_line": 2}, ToolContext()
-        )
+        out = Read().run({"file_path": p, "start_line": -5, "end_line": 2}, ToolContext())
         self.assertIn("Showing lines 1-2:", out)
         self.assertIn("line00000-", out)
 
     def test_missing_file_errors(self):
-        out = Read().run(
-            {"file_path": os.path.join(self.tmp.name, "nope.txt")}, ToolContext()
-        )
+        out = Read().run({"file_path": os.path.join(self.tmp.name, "nope.txt")}, ToolContext())
         self.assertIn("Error", out)
 
     def test_empty_file_full_read_returns_empty_string(self):
@@ -410,25 +394,19 @@ class TestReadTool(unittest.TestCase):
     def test_read_spool_falls_back_to_truncation_when_tempdir_unwritable(self):
         self.fs._spool_dir = lambda: "/dev/null/definitely-not-a-dir"
         p = self._write(20000, width=80)
-        out = Read().run(
-            {"file_path": p, "start_line": 1, "end_line": 20000}, ToolContext()
-        )
+        out = Read().run({"file_path": p, "start_line": 1, "end_line": 20000}, ToolContext())
         self.assertIn("[truncated read]", out)
         self.assertNotIn("Stored in:", out)
 
     def test_range_read_reports_total_when_eof_reached(self):
         p = self._write(10)
-        out = Read().run(
-            {"file_path": p, "start_line": 8, "end_line": 999}, ToolContext()
-        )
+        out = Read().run({"file_path": p, "start_line": 8, "end_line": 999}, ToolContext())
         self.assertIn("Showing lines 8-10 of 10:", out)
         self.assertIn("line00009-", out)
 
     def test_range_read_errors_on_start_gt_end(self):
         p = self._write(10)
-        out = Read().run(
-            {"file_path": p, "start_line": 5, "end_line": 3}, ToolContext()
-        )
+        out = Read().run({"file_path": p, "start_line": 5, "end_line": 3}, ToolContext())
         self.assertIn("start_line 5 > end_line 3", out)
 
     def test_range_read_errors_when_start_beyond_eof(self):
@@ -438,9 +416,7 @@ class TestReadTool(unittest.TestCase):
 
     def test_large_range_spills_to_temp_file(self):
         p = self._write(20000, width=80)
-        out = Read().run(
-            {"file_path": p, "start_line": 1, "end_line": 20000}, ToolContext()
-        )
+        out = Read().run({"file_path": p, "start_line": 1, "end_line": 20000}, ToolContext())
         self.assertIn("read results too large", out)
         m = re.search(r'file_path="([^"]+)"', out)
         self.assertIsNotNone(m, out)
@@ -516,9 +492,7 @@ class TestGlobGrepTools(unittest.TestCase):
         self.assertIn("a.py", out)
         self.assertIn("hello", out)
         self.assertNotIn("b.txt", out)
-        out = Grep().run(
-            {"regex": "hello", "path": repo, "context_lines": 2}, self.ctx
-        )
+        out = Grep().run({"regex": "hello", "path": repo, "context_lines": 2}, self.ctx)
         self.assertIn("a.py", out)
         self.assertIn("hello", out)
 
@@ -552,9 +526,7 @@ class TestGlobGrepTools(unittest.TestCase):
         self.assertNotIn("a.md", out)
 
     def test_grep_nonexistent_path_errors(self):
-        out = Grep().run(
-            {"regex": "x", "path": os.path.join(self.tmp.name, "nope")}, self.ctx
-        )
+        out = Grep().run({"regex": "x", "path": os.path.join(self.tmp.name, "nope")}, self.ctx)
         self.assertIn("Error", out)
 
     @mock.patch("shutil.which", return_value=None)
@@ -576,9 +548,7 @@ class TestEditTool(unittest.TestCase):
             with open(path, "w") as f:
                 f.write("hello world\n")
             ctx, sess = make_ctx()
-            result = Edit().run(
-                {"path": path, "old_str": "hello", "new_str": "goodbye"}, ctx
-            )
+            result = Edit().run({"path": path, "old_str": "hello", "new_str": "goodbye"}, ctx)
             self.assertIn("Successfully replaced", result)
             with open(path) as f:
                 self.assertEqual(f.read(), "goodbye world\n")
@@ -592,13 +562,8 @@ class TestEditTool(unittest.TestCase):
             with open(path, "w") as f:
                 f.write("line1\nline2\nline3\n")
             ctx, sess = make_ctx()
-            diff = (
-                "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n"
-                " line1\n-line2\n+lineTWO\n line3\n"
-            )
-            result = Edit().run(
-                {"path": path, "new_str": diff, "diff": True}, ctx
-            )
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+lineTWO\n line3\n"
+            result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
             self.assertIn("Diff successfully applied", result)
             with open(path) as f:
                 self.assertEqual(f.read(), "line1\nlineTWO\nline3\n")
@@ -611,13 +576,8 @@ class TestEditTool(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(original)
             ctx, sess = make_ctx()
-            bad_diff = (
-                "--- a/f.txt\n+++ b/f.txt\n"
-                "@@ -1,2 +1,2 @@\n line1\n-NOPE\n+lineTWO\n"
-            )
-            result = Edit().run(
-                {"path": path, "new_str": bad_diff, "diff": True}, ctx
-            )
+            bad_diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n line1\n-NOPE\n+lineTWO\n"
+            result = Edit().run({"path": path, "new_str": bad_diff, "diff": True}, ctx)
             self.assertTrue(result.startswith("Error:"))
             with open(path) as f:
                 self.assertEqual(f.read(), original)  # unchanged on failure
@@ -638,9 +598,7 @@ class TestEditTool(unittest.TestCase):
             with open(path, "w") as f:
                 f.write("hello\n")
             ctx, _ = make_ctx()
-            result = Edit().run(
-                {"path": path, "old_str": "missing", "new_str": "x"}, ctx
-            )
+            result = Edit().run({"path": path, "old_str": "missing", "new_str": "x"}, ctx)
             self.assertIn("Could not find", result)
 
     def test_old_str_not_unique(self):
@@ -649,9 +607,7 @@ class TestEditTool(unittest.TestCase):
             with open(path, "w") as f:
                 f.write("dup\ndup\n")
             ctx, _ = make_ctx()
-            result = Edit().run(
-                {"path": path, "old_str": "dup", "new_str": "x"}, ctx
-            )
+            result = Edit().run({"path": path, "old_str": "dup", "new_str": "x"}, ctx)
             self.assertIn("not unique", result)
 
     def test_string_mode_rejects_directory(self):
@@ -682,9 +638,7 @@ class TestEditTool(unittest.TestCase):
             with open(path, "w") as f:
                 f.write("a\n")
             ctx, _ = make_ctx()
-            result = Edit().run(
-                {"path": path, "new_str": "z", "diff": False}, ctx
-            )
+            result = Edit().run({"path": path, "new_str": "z", "diff": False}, ctx)
             self.assertIn("old_str is required", result)
 
     def test_unreadable_path_errors(self):
@@ -707,9 +661,7 @@ class TestEditTool(unittest.TestCase):
                 "python_agent_harness.tools.filesystem.shutil.which",
                 return_value=None,
             ):
-                result = Edit().run(
-                    {"path": path, "new_str": diff, "diff": True}, ctx
-                )
+                result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
             self.assertIn('Command "patch" not available', result)
             with open(path) as f:
                 self.assertEqual(f.read(), "a\nb\nc\n")  # untouched
@@ -719,9 +671,7 @@ class TestWriteTool(unittest.TestCase):
     def test_new_file_shows_all_lines_added(self):
         with tempfile.TemporaryDirectory() as d:
             ctx, sess = make_ctx()
-            result = Write().run(
-                {"path": d, "filename": "new.txt", "content": "hi\n"}, ctx
-            )
+            result = Write().run({"path": d, "filename": "new.txt", "content": "hi\n"}, ctx)
             self.assertIn("Created file", result)
             # a brand-new file is shown as an all-added diff
             self.assertEqual(len(sess.recorded_diffs), 1)
@@ -733,9 +683,7 @@ class TestWriteTool(unittest.TestCase):
             with open(path, "w") as f:
                 f.write("old content\n")
             ctx, sess = make_ctx()
-            Write().run(
-                {"path": d, "filename": "f.txt", "content": "new content\n"}, ctx
-            )
+            Write().run({"path": d, "filename": "f.txt", "content": "new content\n"}, ctx)
             self.assertEqual(len(sess.recorded_diffs), 1)
             self.assertIn("-old content", sess.recorded_diffs[0])
             self.assertIn("+new content", sess.recorded_diffs[0])
@@ -762,19 +710,23 @@ class TestInsertTool(unittest.TestCase):
 
     def test_insert_after_line_number(self):
         Insert().run({"path": self.path, "line_number": 2, "new_str": "X"}, ToolContext())
-        self.assertEqual(open(self.path).read(), "a\nb\nX\nc\n")
+        with open(self.path) as f:
+            self.assertEqual(f.read(), "a\nb\nX\nc\n")
 
     def test_insert_at_beginning(self):
         Insert().run({"path": self.path, "line_number": 0, "new_str": "Z"}, ToolContext())
-        self.assertEqual(open(self.path).read(), "Z\na\nb\nc\n")
+        with open(self.path) as f:
+            self.assertEqual(f.read(), "Z\na\nb\nc\n")
 
     def test_insert_at_end(self):
         Insert().run({"path": self.path, "line_number": -1, "new_str": "Y"}, ToolContext())
-        self.assertEqual(open(self.path).read(), "a\nb\nc\nY\n")
+        with open(self.path) as f:
+            self.assertEqual(f.read(), "a\nb\nc\nY\n")
 
     def test_insert_adds_missing_trailing_newline(self):
         Insert().run({"path": self.path, "line_number": 1, "new_str": "X"}, ToolContext())
-        self.assertEqual(open(self.path).read(), "a\nX\nb\nc\n")
+        with open(self.path) as f:
+            self.assertEqual(f.read(), "a\nX\nb\nc\n")
 
 
 class TestMkdirTool(unittest.TestCase):
@@ -790,9 +742,7 @@ class TestMkdirTool(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(self.tmp.name, "sub")))
 
     def test_create_nested_directory(self):
-        out = Mkdir().run(
-            {"parent": self.tmp.name, "name": "sub/deep"}, ToolContext()
-        )
+        out = Mkdir().run({"parent": self.tmp.name, "name": "sub/deep"}, ToolContext())
         self.assertIn("created/verified", out)
         self.assertTrue(os.path.isdir(os.path.join(self.tmp.name, "sub/deep")))
 
@@ -826,8 +776,9 @@ class TestSpoolDirAndTruncate(unittest.TestCase):
     def test_spool_dir_last_resort_slash_tmp(self):
         import python_agent_harness.tools.filesystem as fs
 
-        with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
-            "tempfile.gettempdir", return_value=""
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("tempfile.gettempdir", return_value=""),
         ):
             self.assertEqual(fs._spool_dir(), "/tmp")
 
@@ -898,9 +849,7 @@ class TestGlobErrorPaths(unittest.TestCase):
 
     def test_git_lsfiles_nonzero_exit_reported(self):
         repo = self._git_repo()
-        proc = subprocess.CompletedProcess(
-            [], returncode=128, stdout="fatal: bad pathspec\n"
-        )
+        proc = subprocess.CompletedProcess([], returncode=128, stdout="fatal: bad pathspec\n")
         with mock.patch(
             "python_agent_harness.tools.filesystem.subprocess.run",
             return_value=proc,
@@ -924,9 +873,12 @@ class TestGlobErrorPaths(unittest.TestCase):
         d = os.path.join(self.tmp.name, "plain")
         os.makedirs(d)
         proc = subprocess.CompletedProcess([], returncode=1, stdout="tree stderr\n")
-        with mock.patch("shutil.which", return_value="/usr/bin/tree"), mock.patch(
-            "python_agent_harness.tools.filesystem.subprocess.run",
-            return_value=proc,
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/tree"),
+            mock.patch(
+                "python_agent_harness.tools.filesystem.subprocess.run",
+                return_value=proc,
+            ),
         ):
             out = GlobTool().run({"pattern": "*", "path": d}, self.ctx)
         self.assertIn("Glob failed with exit code 1", out)
@@ -953,10 +905,13 @@ class TestGrepFallbackBranches(unittest.TestCase):
         subprocess.run(["git", "init", "-q", repo], check=True)
         with open(os.path.join(repo, "a.py"), "w") as f:
             f.write("hello\n")
-        with mock.patch(
-            "python_agent_harness.tools.filesystem.subprocess.run",
-            side_effect=OSError("git missing"),
-        ), mock.patch("shutil.which", return_value=None):
+        with (
+            mock.patch(
+                "python_agent_harness.tools.filesystem.subprocess.run",
+                side_effect=OSError("git missing"),
+            ),
+            mock.patch("shutil.which", return_value=None),
+        ):
             out = Grep().run({"regex": "hello", "path": repo}, self.ctx)
         self.assertIn("ripgrep/grep/git-grep not available", out)
 
@@ -964,9 +919,12 @@ class TestGrepFallbackBranches(unittest.TestCase):
         d = os.path.join(self.tmp.name, "plain")
         os.makedirs(d)
         proc = subprocess.CompletedProcess([], returncode=0, stdout="f.txt:1:needle\n")
-        with mock.patch("shutil.which", return_value="/usr/bin/rg"), mock.patch(
-            "python_agent_harness.tools.filesystem.subprocess.run",
-            return_value=proc,
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/rg"),
+            mock.patch(
+                "python_agent_harness.tools.filesystem.subprocess.run",
+                return_value=proc,
+            ),
         ):
             out = Grep().run(
                 {"regex": "needle", "path": d, "glob": "*.py", "context_lines": 2},
@@ -978,12 +936,15 @@ class TestGrepFallbackBranches(unittest.TestCase):
     def test_rg_fallback_error_then_grep_unavailable(self):
         d = os.path.join(self.tmp.name, "plain")
         os.makedirs(d)
-        with mock.patch(
-            "shutil.which",
-            side_effect=lambda n: "/usr/bin/rg" if n == "rg" else None,
-        ), mock.patch(
-            "python_agent_harness.tools.filesystem.subprocess.run",
-            side_effect=OSError("boom"),
+        with (
+            mock.patch(
+                "shutil.which",
+                side_effect=lambda n: "/usr/bin/rg" if n == "rg" else None,
+            ),
+            mock.patch(
+                "python_agent_harness.tools.filesystem.subprocess.run",
+                side_effect=OSError("boom"),
+            ),
         ):
             out = Grep().run({"regex": "x", "path": d}, self.ctx)
         self.assertIn("ripgrep/grep/git-grep not available", out)
@@ -991,12 +952,15 @@ class TestGrepFallbackBranches(unittest.TestCase):
     def test_grep_fallback_error_then_unavailable(self):
         d = os.path.join(self.tmp.name, "plain")
         os.makedirs(d)
-        with mock.patch(
-            "shutil.which",
-            side_effect=lambda n: "/usr/bin/grep" if n == "grep" else None,
-        ), mock.patch(
-            "python_agent_harness.tools.filesystem.subprocess.run",
-            side_effect=OSError("boom"),
+        with (
+            mock.patch(
+                "shutil.which",
+                side_effect=lambda n: "/usr/bin/grep" if n == "grep" else None,
+            ),
+            mock.patch(
+                "python_agent_harness.tools.filesystem.subprocess.run",
+                side_effect=OSError("boom"),
+            ),
         ):
             out = Grep().run({"regex": "x", "path": d}, self.ctx)
         self.assertIn("ripgrep/grep/git-grep not available", out)
@@ -1128,11 +1092,7 @@ class TestEditDiffModePatch(unittest.TestCase):
             with open(path, "w") as f:
                 f.write("a\nb\nc\n")
             ctx, _ = make_ctx()
-            diff = (
-                "```diff\n"
-                "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"
-                "```\n"
-            )
+            diff = "```diff\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n```\n"
             result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
             self.assertIn("Diff successfully applied", result)
             with open(path) as f:
@@ -1167,9 +1127,7 @@ class TestEditDiffModePatch(unittest.TestCase):
                 "--- a/f2.txt\n+++ b/f2.txt\n@@ -1 +1 @@\n-two\n+TWO\n"
             )
             # Trailing slash -> patch runs inside the directory.
-            result = Edit().run(
-                {"path": d + os.sep, "new_str": diff, "diff": True}, ctx
-            )
+            result = Edit().run({"path": d + os.sep, "new_str": diff, "diff": True}, ctx)
             self.assertIn("Diff successfully applied", result)
             with open(os.path.join(d, "f1.txt")) as f:
                 self.assertEqual(f.read(), "ONE\n")

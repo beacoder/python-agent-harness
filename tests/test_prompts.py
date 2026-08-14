@@ -22,10 +22,7 @@ from python_agent_harness.prompts import (
 
 class TestStripFrontmatter(unittest.TestCase):
     def test_strips_leading_yaml_block(self):
-        text = (
-            "---\nname: foo\ndescription: bar\n---\n"
-            "# Role\nYou are foo.\n"
-        )
+        text = "---\nname: foo\ndescription: bar\n---\n# Role\nYou are foo.\n"
         self.assertEqual(strip_frontmatter(text), "# Role\nYou are foo.\n")
 
     def test_no_frontmatter_unchanged(self):
@@ -51,8 +48,7 @@ class TestLoadAgentPrompt(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "agent.md"
             path.write_text(
-                "---\nname: x\ntools:\n  - Read\n---\n"
-                "# Role\nUse skills: {{SKILLS}}\n",
+                "---\nname: x\ntools:\n  - Read\n---\n# Role\nUse skills: {{SKILLS}}\n",
                 encoding="utf-8",
             )
             text = load_agent_prompt(path)
@@ -110,9 +106,7 @@ class TestParseSkillFrontmatter(unittest.TestCase):
                 "---\nname: my-skill\ndescription: does things\n---\nbody",
                 encoding="utf-8",
             )
-            self.assertEqual(
-                _parse_skill_frontmatter(skill), ("my-skill", "does things")
-            )
+            self.assertEqual(_parse_skill_frontmatter(skill), ("my-skill", "does things"))
 
 
 class TestDiscoverSkills(unittest.TestCase):
@@ -231,18 +225,28 @@ class TestLastUserRequest(unittest.TestCase):
         self.assertEqual(last_user_request(msgs), "last")
 
     def test_list_content_joined(self):
-        msgs = [{"role": "user", "content": [
-            {"type": "text", "text": "hello "},
-            {"type": "text", "text": "world"},
-        ]}]
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hello "},
+                    {"type": "text", "text": "world"},
+                ],
+            }
+        ]
         self.assertEqual(last_user_request(msgs), "hello world")
 
     def test_list_content_ignores_non_text_parts(self):
-        msgs = [{"role": "user", "content": [
-            {"type": "text", "text": "only text"},
-            "raw-string-part",
-            {"type": "image"},
-        ]}]
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "only text"},
+                    "raw-string-part",
+                    {"type": "image"},
+                ],
+            }
+        ]
         self.assertEqual(last_user_request(msgs), "only text")
 
     def test_nudge_messages_skipped(self):

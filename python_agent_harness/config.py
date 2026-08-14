@@ -45,9 +45,7 @@ CALIBRATION_MIN = 0.5
 CALIBRATION_MAX = 3.0
 
 # ---- sessions ---------------------------------------------------------------
-SESSION_DIR = Path(
-    os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
-)
+SESSION_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 SESSION_SUBDIR = "python-agent-harness/sessions"
 AUTO_SAVE_SESSION = True
 
@@ -79,14 +77,24 @@ PLAN_EXIT_OPTIONS = (
 
 # ---- tools -------------------------------------------------------------------
 DEFAULT_TOOLS: list[str] = [
-    "Agent", "TodoWrite", "Glob", "Grep", "Read", "Insert", "Edit",
-    "Write", "Mkdir", "Bash", "Skill", "Question",
+    "Agent",
+    "TodoWrite",
+    "Glob",
+    "Grep",
+    "Read",
+    "Insert",
+    "Edit",
+    "Write",
+    "Mkdir",
+    "Bash",
+    "Skill",
+    "Question",
 ]
 
 # ---- LLM client ----------------------------------------------------------------
 DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
-MAX_TOKENS = None   # use None to avoid write tool failure
+MAX_TOKENS: int | None = None  # use None to avoid write tool failure
 TEMPERATURE = 0.0
 
 # ---- API retry / backoff -------------------------------------------------------
@@ -94,9 +102,9 @@ TEMPERATURE = 0.0
 # with exponential backoff + jitter instead of killing the run.  The
 # per-request attempt budget and delay bounds live here; a Client
 # instance can override them per call.
-API_RETRY_MAX = 3            # max attempts per request (initial + retries)
-API_RETRY_BASE_DELAY = 1.0   # base backoff (seconds), doubled per attempt
-API_RETRY_MAX_DELAY = 30.0   # per-attempt backoff cap (seconds)
+API_RETRY_MAX = 3  # max attempts per request (initial + retries)
+API_RETRY_BASE_DELAY = 1.0  # base backoff (seconds), doubled per attempt
+API_RETRY_MAX_DELAY = 30.0  # per-attempt backoff cap (seconds)
 
 # ---- tool execution ----------------------------------------------------------
 SUBAGENT_MAX_ROUNDS = 60
@@ -114,7 +122,7 @@ SUBAGENT_MAX_ROUNDS = 60
 SUBAGENT_EXCLUDED_TOOLS = ("Agent", "Question", "PlanExit", "TodoWrite")
 
 # ---- TUI preview limits -------------------------------------------------------
-TOOL_RESULT_PREVIEW_LINES = 5    # max lines of a tool result shown in the TUI
+TOOL_RESULT_PREVIEW_LINES = 5  # max lines of a tool result shown in the TUI
 TOOL_RESULT_PREVIEW_CHARS = 500  # max chars of that preview (long single lines)
 
 # ---- default agent prompts -----------------------------------------------------
@@ -126,9 +134,9 @@ DEFAULT_AGENT_PROMPT_FILE = PROMPTS_DIR / "agent.md"
 DEFAULT_SUBAGENT_PROMPT_FILE = PROMPTS_DIR / "subagent.md"
 
 # ---- configuration file ---------------------------------------------------------
-CONFIG_DIR = Path(
-    os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
-) / "python-agent-harness"
+CONFIG_DIR = (
+    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "python-agent-harness"
+)
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULT_LLM: dict = {
@@ -237,9 +245,15 @@ def load_llm_config(path: str | os.PathLike | None = None) -> dict:
         if not isinstance(llm, dict):
             raise ValueError(f"config file {cfg_path}: llm must be an object")
         for key in (
-            "base_url", "api_key", "model", "backend",
-            "temperature", "max_tokens", "timeout",
-            "reasoning_effort", "stream",
+            "base_url",
+            "api_key",
+            "model",
+            "backend",
+            "temperature",
+            "max_tokens",
+            "timeout",
+            "reasoning_effort",
+            "stream",
         ):
             if key in llm and llm[key] is not None:
                 settings[key] = llm[key]
@@ -278,9 +292,7 @@ def load_subagent_llm_config(
             raise ValueError(f"cannot read config file {cfg_path}: {e}") from e
         sub = data.get("subagent_llm") or {}
         if not isinstance(sub, dict):
-            raise ValueError(
-                f"config file {cfg_path}: subagent_llm must be an object"
-            )
+            raise ValueError(f"config file {cfg_path}: subagent_llm must be an object")
         for key in DEFAULT_SUBAGENT_LLM:
             if key in sub and sub[key] is not None:
                 overrides[key] = sub[key]

@@ -12,9 +12,13 @@ from python_agent_harness import cli, config
 
 class TestMakeSessionPromptDefaults(unittest.TestCase):
     ENV_KEYS = [
-        "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL",
-        "OPENAI_BACKEND", "OPENAI_SUBAGENT_BASE_URL",
-        "OPENAI_SUBAGENT_API_KEY", "OPENAI_SUBAGENT_MODEL",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "OPENAI_BACKEND",
+        "OPENAI_SUBAGENT_BASE_URL",
+        "OPENAI_SUBAGENT_API_KEY",
+        "OPENAI_SUBAGENT_MODEL",
         "OPENAI_SUBAGENT_BACKEND",
     ]
 
@@ -41,7 +45,7 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         session = cli.make_session(self._tmp.name, config_path=self._config_path)
         try:
             main = _load(config.DEFAULT_AGENT_PROMPT_FILE, project_dir=self._tmp.name)
-            self.assertIn(main, session.system_prompt)          # agent prompt present
+            self.assertIn(main, session.system_prompt)  # agent prompt present
             self.assertIn("Task Completion Rules", session.system_prompt)  # rules injected
             self.assertLess(  # rules are the last context piece, before the prompt
                 session.system_prompt.index("Task Completion Rules"),
@@ -54,7 +58,8 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         """Sub-agents get ONLY their own system prompt — no parent
         context and no task-completion rules."""
         session = cli.make_session(
-            self._tmp.name, config_path=self._config_path,
+            self._tmp.name,
+            config_path=self._config_path,
         )
         try:
             expected = _load(config.DEFAULT_SUBAGENT_PROMPT_FILE, project_dir=self._tmp.name)
@@ -129,9 +134,7 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         """make_session's stream kwarg (--no-stream) beats the config file."""
         cfg_path = Path(self._cfg_dir.name) / "config.toml"
         cfg_path.write_text('{"llm": {"stream": true}}', encoding="utf-8")
-        session = cli.make_session(
-            self._tmp.name, config_path=str(cfg_path), stream=False
-        )
+        session = cli.make_session(self._tmp.name, config_path=str(cfg_path), stream=False)
         try:
             self.assertIs(session.stream, False)
         finally:
@@ -143,13 +146,10 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         precedence (CLI flag > config file)."""
         cfg_path = Path(self._cfg_dir.name) / "config.toml"
         cfg_path.write_text(
-            '{"llm": {"stream": true},'
-            ' "subagent_llm": {"model": "sub-m", "stream": true}}',
+            '{"llm": {"stream": true}, "subagent_llm": {"model": "sub-m", "stream": true}}',
             encoding="utf-8",
         )
-        session = cli.make_session(
-            self._tmp.name, config_path=str(cfg_path), stream=False
-        )
+        session = cli.make_session(self._tmp.name, config_path=str(cfg_path), stream=False)
         try:
             self.assertIs(session.stream, False)
             self.assertIs(session.subagent_stream, False)
@@ -161,8 +161,7 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         main config value."""
         cfg_path = Path(self._cfg_dir.name) / "config.toml"
         cfg_path.write_text(
-            '{"llm": {"stream": false},'
-            ' "subagent_llm": {"model": "sub-m"}}',
+            '{"llm": {"stream": false}, "subagent_llm": {"model": "sub-m"}}',
             encoding="utf-8",
         )
         session = cli.make_session(self._tmp.name, config_path=str(cfg_path))
@@ -220,13 +219,10 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
 
         cfg_path = Path(self._cfg_dir.name) / "config.toml"
         cfg_path.write_text(
-            '{"llm": {"model": "main-model"},'
-            ' "subagent_llm": {"model": "file-sub"}}',
+            '{"llm": {"model": "main-model"}, "subagent_llm": {"model": "file-sub"}}',
             encoding="utf-8",
         )
-        with mock.patch.dict(
-            os.environ, {"OPENAI_SUBAGENT_MODEL": "env-sub"}, clear=False
-        ):
+        with mock.patch.dict(os.environ, {"OPENAI_SUBAGENT_MODEL": "env-sub"}, clear=False):
             session = cli.make_session(self._tmp.name, config_path=str(cfg_path))
         try:
             self.assertEqual(session.subagent_client.model, "env-sub")
@@ -241,14 +237,12 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         keeps working (via commands.find_command).
         """
         from python_agent_harness.commands import (
-            find_command, load_custom_commands,
+            find_command,
+            load_custom_commands,
         )
 
         parser = cli.build_parser()
-        subparsers = next(
-            a for a in parser._actions
-            if a.__class__.__name__ == "_SubParsersAction"
-        )
+        subparsers = next(a for a in parser._actions if a.__class__.__name__ == "_SubParsersAction")
         for cmd in load_custom_commands():
             self.assertNotIn(cmd.name, subparsers.choices)
         self.assertIn("run", subparsers.choices)
@@ -272,7 +266,8 @@ class TestCommandToolAvailability(unittest.TestCase):
 
     def test_init_and_review_forbid_planexit(self):
         from python_agent_harness.commands import (
-            initialize_command, review_command,
+            initialize_command,
+            review_command,
         )
 
         self.assertFalse(initialize_command().allow_planexit)
@@ -280,7 +275,8 @@ class TestCommandToolAvailability(unittest.TestCase):
 
     def test_custom_commands_allow_planexit(self):
         from python_agent_harness.commands import (
-            find_command, load_custom_commands,
+            find_command,
+            load_custom_commands,
         )
 
         customs = load_custom_commands()
@@ -306,7 +302,9 @@ class TestCommandToolAvailability(unittest.TestCase):
         from python_agent_harness.tools import default_registry
 
         s = AgentSession(
-            project_dir="/tmp", client=object(), model="m",
+            project_dir="/tmp",
+            client=object(),
+            model="m",
             registry=default_registry(),
         )
         try:
@@ -332,9 +330,10 @@ class TestCliEntryPoints(unittest.TestCase):
         import unittest.mock as mock
 
         session = mock.Mock()
-        with mock.patch(
-            "python_agent_harness.cli.make_session", return_value=session
-        ) as ms, mock.patch("python_agent_harness.tui.Tui") as tui_cls:
+        with (
+            mock.patch("python_agent_harness.cli.make_session", return_value=session) as ms,
+            mock.patch("python_agent_harness.tui.Tui") as tui_cls,
+        ):
             rc = cli.main(["run", "/tmp/proj"])
         self.assertEqual(rc, 0)
         ms.assert_called_once()
@@ -351,9 +350,10 @@ class TestCliEntryPoints(unittest.TestCase):
         import unittest.mock as mock
 
         session = mock.Mock()
-        with mock.patch(
-            "python_agent_harness.cli.make_session", return_value=session
-        ) as ms, mock.patch("python_agent_harness.tui.Tui") as tui_cls:
+        with (
+            mock.patch("python_agent_harness.cli.make_session", return_value=session) as ms,
+            mock.patch("python_agent_harness.tui.Tui") as tui_cls,
+        ):
             rc = cli.main([])
         self.assertEqual(rc, 0)
         self.assertEqual(ms.call_args.args[0], os.getcwd())
@@ -364,8 +364,10 @@ class TestCliEntryPoints(unittest.TestCase):
         """--no-stream on run must reach make_session as stream=False."""
         import unittest.mock as mock
 
-        with mock.patch("python_agent_harness.cli.make_session") as ms, \
-             mock.patch("python_agent_harness.tui.Tui"):
+        with (
+            mock.patch("python_agent_harness.cli.make_session") as ms,
+            mock.patch("python_agent_harness.tui.Tui"),
+        ):
             rc = cli.main(["run", "/tmp/proj", "--no-stream"])
         self.assertEqual(rc, 0)
         self.assertIs(ms.call_args.kwargs["stream"], False)
@@ -409,8 +411,8 @@ class TestCliEntryPoints(unittest.TestCase):
 
 
 def _load(path, project_dir=None, with_context=False):
-    from python_agent_harness.prompts import load_agent_prompt, load_context_files
     from python_agent_harness.agent_session import find_context_dir, find_skill_dir
+    from python_agent_harness.prompts import load_agent_prompt, load_context_files
 
     skill_dir = find_skill_dir(project_dir) if project_dir else None
     prompt = load_agent_prompt(path, skill_dir=skill_dir)

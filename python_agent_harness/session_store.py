@@ -28,7 +28,7 @@ def sanitize_title(title: str) -> str:
     """Sanitize a generated title (mirrors the elisp semantics)."""
     t = title.strip()
     t = re.sub(r"[\n\r]+", " ", t)
-    t = t.strip("\"")
+    t = t.strip('"')
     t = re.sub(r"[/\\:*?\"<>|]", "-", t)
     t = re.sub(r"[-_ ]+", "-", t)
     t = t[:50]
@@ -53,11 +53,16 @@ def title_from_filename(session_file: str) -> str | None:
 class SessionStore:
     """Saves/restores sessions for one agent session."""
 
-    def __init__(self, project_dir: str, model: str, backend: str,
-                 system_prompt: str | None = None,
-                 temperature: float | None = None,
-                 max_tokens: int | None = None,
-                 tool_names: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        project_dir: str,
+        model: str,
+        backend: str,
+        system_prompt: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        tool_names: list[str] | None = None,
+    ) -> None:
         self.project_dir = project_dir
         self.model = model
         self.backend = backend
@@ -160,7 +165,7 @@ class SessionStore:
         idx = text.rfind(marker)
         if idx == -1:
             return {}
-        block = text[idx + len(marker):]
+        block = text[idx + len(marker) :]
         end = block.find(";; End:")
         if end != -1:
             block = block[:end]

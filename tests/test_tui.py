@@ -9,25 +9,31 @@ import unittest.mock as mock
 from rich.console import Console
 from rich.live import Live
 
-from python_agent_harness.client import Client
 from python_agent_harness.agent_session import AgentSession
+from python_agent_harness.client import Client
 from python_agent_harness.models import Message, ToolCall
 from python_agent_harness.tools import default_registry
 from python_agent_harness.tui import (
-    Tui, UiQuestion, _resolve_keyed_choice, _resolve_numbered_choice,
+    Tui,
+    UiQuestion,
+    _resolve_keyed_choice,
+    _resolve_numbered_choice,
 )
 
 
 def make_tui() -> tuple[Tui, io.StringIO]:
     c = Client(base_url="http://127.0.0.1:1/v1", api_key="x", model="fake")
     s = AgentSession(
-        project_dir="/tmp/fakeproj", client=c, model="fake",
+        project_dir="/tmp/fakeproj",
+        client=c,
+        model="fake",
         registry=default_registry(),
     )
     s.last_messages = [
         Message(role="user", content="hello agent"),
         Message(
-            role="assistant", content="hi",
+            role="assistant",
+            content="hi",
             tool_calls=[ToolCall(id="1", name="Read", arguments="{}")],
         ),
         Message(role="tool", content="file contents", tool_call_id="1", name="Read"),
@@ -85,10 +91,10 @@ class TestTui(unittest.TestCase):
         tui, _ = make_tui()
         rows = tui._build_history_rows()
         styles = [getattr(r, "style", None) for r in rows]
-        self.assertIn(USER_STYLE, styles)       # user body
+        self.assertIn(USER_STYLE, styles)  # user body
         self.assertIn(ASSISTANT_STYLE, styles)  # assistant body
-        self.assertIn("magenta", styles)        # tool call label
-        self.assertIn("dim", styles)            # tool result
+        self.assertIn("magenta", styles)  # tool call label
+        self.assertIn("dim", styles)  # tool result
         self.assertNotEqual(USER_STYLE, ASSISTANT_STYLE)
         # user must not be confused with tool activity (magenta/dim) nor
         # with the panel border (plain blue)
@@ -159,10 +165,7 @@ class TestTui(unittest.TestCase):
             Message(role="user", content=config.NUDGE_MESSAGE),
             Message(
                 role="user",
-                content=(
-                    "<system-reminder>\n# Plan Mode - System Reminder\n\n"
-                    "plan.md body"
-                ),
+                content=("<system-reminder>\n# Plan Mode - System Reminder\n\nplan.md body"),
             ),
             Message(
                 role="user",
@@ -227,8 +230,7 @@ class TestTui(unittest.TestCase):
         )
         self.assertEqual(
             tui.session.last_messages[-1].text(),
-            "[FINAL CHECK]\n- Goal: build the thing\n"
-            "- Status: SUCCESS\n- Evidence: tests pass",
+            "[FINAL CHECK]\n- Goal: build the thing\n- Status: SUCCESS\n- Evidence: tests pass",
         )
 
     def test_final_check_without_header_kept(self):
@@ -289,9 +291,7 @@ class TestTui(unittest.TestCase):
         self.assertIn("Rayleigh scattering.", out)
         self.assertNotIn("Let me think", out)
         # the stored message keeps its reasoning — only the display hides it
-        self.assertEqual(
-            tui.session.last_messages[1].reasoning, reasoning
-        )
+        self.assertEqual(tui.session.last_messages[1].reasoning, reasoning)
         self.assertIn("Let me think", tui.session.last_messages[1].text())
 
     def test_reasoning_collapsed_marker_shows_even_without_answer(self):
@@ -301,7 +301,8 @@ class TestTui(unittest.TestCase):
         tui.session.last_messages = [
             Message(role="user", content="go"),
             Message(
-                role="assistant", content="pensive thoughts here",
+                role="assistant",
+                content="pensive thoughts here",
                 reasoning="pensive thoughts here",
             ),
         ]
@@ -318,7 +319,8 @@ class TestTui(unittest.TestCase):
         tui.session.last_messages = [
             Message(role="user", content="read the file"),
             Message(
-                role="assistant", content="let me check the path first",
+                role="assistant",
+                content="let me check the path first",
                 reasoning="let me check the path first",
                 tool_calls=[ToolCall(id="1", name="Read", arguments="{}")],
             ),
@@ -338,7 +340,8 @@ class TestTui(unittest.TestCase):
         tui.session.last_messages = [
             Message(role="user", content="go"),
             Message(
-                role="assistant", content="full text here",
+                role="assistant",
+                content="full text here",
                 reasoning=["not", "a", "string"],
             ),
         ]
@@ -352,12 +355,8 @@ class TestTui(unittest.TestCase):
         leaves non-matching text untouched."""
         from python_agent_harness.tui import _strip_reasoning
 
-        self.assertEqual(
-            _strip_reasoning("ABCanswer", "ABC"), "answer"
-        )
-        self.assertEqual(
-            _strip_reasoning("  ABCanswer", "ABC"), "answer"
-        )
+        self.assertEqual(_strip_reasoning("ABCanswer", "ABC"), "answer")
+        self.assertEqual(_strip_reasoning("  ABCanswer", "ABC"), "answer")
         self.assertEqual(_strip_reasoning("answer", "ABC"), "answer")
         self.assertEqual(_strip_reasoning("x", ""), "x")
 
@@ -379,17 +378,15 @@ class TestTui(unittest.TestCase):
         from types import SimpleNamespace
 
         tui, _ = make_tui()
-        tui.session.last_messages = [
-            Message(role="user", content=f"m{i}") for i in range(100)
-        ]
+        tui.session.last_messages = [Message(role="user", content=f"m{i}") for i in range(100)]
         tui.console = SimpleNamespace(height=24, width=100)  # cap_rows = 18
         panel = tui._render_conversation()
         out_console, buf = make_tui()
         out_console.console.print(panel)
         out = buf.getvalue()
-        self.assertIn("m99", out)    # newest row visible
+        self.assertIn("m99", out)  # newest row visible
         self.assertNotIn("m0", out)  # oldest dropped
-        self.assertNotIn("m50", out) # middle rows dropped too
+        self.assertNotIn("m50", out)  # middle rows dropped too
 
     def test_stream_tail_visible_when_huge(self):
         """A huge stream must keep its TAIL (the progress) on screen."""
@@ -398,7 +395,7 @@ class TestTui(unittest.TestCase):
         tui.stream_text = "".join(f"line {i}\n" for i in range(2000))
         tui.console.print(tui._render_conversation())
         out = buf.getvalue()
-        self.assertIn("line 1999", out)    # newest progress visible
+        self.assertIn("line 1999", out)  # newest progress visible
         self.assertNotIn("line 0\n", out)  # head dropped
         self.assertLess(len(out), 20_000)
 
@@ -431,10 +428,10 @@ class TestTui(unittest.TestCase):
         tui.stream_text = "streaming data"  # no history change
         rows_b = tui._history_rows()
         self.assertEqual(len(rows_a), len(rows_b))
-        self.assertTrue(all(x is y for x, y in zip(rows_a, rows_b)))
+        self.assertTrue(all(x is y for x, y in zip(rows_a, rows_b, strict=True)))
         tui._history_dirty = True
         rows_c = tui._history_rows()
-        self.assertFalse(all(x is y for x, y in zip(rows_c, rows_b)))
+        self.assertFalse(all(x is y for x, y in zip(rows_c, rows_b, strict=True)))
 
     def test_dump_conversation_full_history(self):
         """After a run, the full conversation is printed as plain lines
@@ -442,12 +439,11 @@ class TestTui(unittest.TestCase):
         including rows the visible frame budget would have dropped."""
         tui, buf = make_tui()
         tui.session.last_messages = [
-            Message(role="user", content=f"message number {i}")
-            for i in range(120)
+            Message(role="user", content=f"message number {i}") for i in range(120)
         ]
         tui._dump_conversation()
         out = buf.getvalue()
-        self.assertIn("message number 0", out)    # oldest rows included
+        self.assertIn("message number 0", out)  # oldest rows included
         self.assertIn("message number 119", out)  # newest rows included
         self.assertIn("full conversation", out)
 
@@ -455,13 +451,11 @@ class TestTui(unittest.TestCase):
         """No line cap: a huge conversation is dumped in full, oldest
         and newest rows alike."""
         tui, buf = make_tui()
-        tui.session.last_messages = [
-            Message(role="user", content=f"m{i}") for i in range(3000)
-        ]
+        tui.session.last_messages = [Message(role="user", content=f"m{i}") for i in range(3000)]
         tui._dump_conversation()
         out = buf.getvalue()
-        self.assertIn("m0", out)      # oldest row included
-        self.assertIn("m2999", out)   # newest row included
+        self.assertIn("m0", out)  # oldest row included
+        self.assertIn("m2999", out)  # newest row included
         self.assertNotIn("omitted", out)
 
     def test_dump_conversation_empty_noop(self):
@@ -484,10 +478,10 @@ class TestTui(unittest.TestCase):
         tui.session.last_messages = [Message(role="assistant", content=body)]
         tui._dump_conversation()
         out = buf.getvalue()
-        self.assertIn("summary line 0", out)    # head visible
-        self.assertIn("summary line 39", out)   # tail visible
-        self.assertNotIn("…\n", out)            # no tail-cut marker
-        self.assertNotIn("more lines", out)     # no head-cut marker
+        self.assertIn("summary line 0", out)  # head visible
+        self.assertIn("summary line 39", out)  # tail visible
+        self.assertNotIn("…\n", out)  # no tail-cut marker
+        self.assertNotIn("more lines", out)  # no head-cut marker
 
     def test_dump_conversation_full_long_user_message(self):
         """Long user messages are dumped uncapped too (the live panel
@@ -513,7 +507,7 @@ class TestTui(unittest.TestCase):
             Message(
                 role="assistant",
                 content="Answer body.\n\n[FINAL CHECK]\n- Goal: x\n"
-                        "- Status: SUCCESS\n- Evidence: y",
+                "- Status: SUCCESS\n- Evidence: y",
             ),
         ]
         tui._dump_conversation()
@@ -651,19 +645,19 @@ class TestTui(unittest.TestCase):
     def test_diff_rendered_for_edit_tool_call(self):
         """A ToolCall.diff on an Edit/Write call is rendered in the panel."""
         tui, buf = make_tui()
-        diff_text = (
-            "--- a/f.py\n+++ b/f.py\n@@ -1,2 +1,2 @@\n"
-            " line1\n-old line\n+new line\n"
-        )
+        diff_text = "--- a/f.py\n+++ b/f.py\n@@ -1,2 +1,2 @@\n line1\n-old line\n+new line\n"
         tui.session.last_messages = [
             Message(role="user", content="edit the file"),
             Message(
-                role="assistant", content="",
+                role="assistant",
+                content="",
                 tool_calls=[ToolCall(id="e1", name="Edit", arguments="{}", diff=diff_text)],
             ),
             Message(
-                role="tool", content="Successfully replaced text in f.py",
-                tool_call_id="e1", name="Edit",
+                role="tool",
+                content="Successfully replaced text in f.py",
+                tool_call_id="e1",
+                name="Edit",
             ),
         ]
         tui.console.print(tui._render_conversation())
@@ -688,25 +682,27 @@ class TestTui(unittest.TestCase):
         tui.session.last_messages = [
             Message(role="user", content="read it"),
             Message(
-                role="assistant", content="",
+                role="assistant",
+                content="",
                 tool_calls=[ToolCall(id="1", name="Read", arguments="{}")],
             ),
             Message(role="tool", content=big, tool_call_id="1", name="Read"),
         ]
         tui.console.print(tui._render_conversation())
         out = buf.getvalue()
-        self.assertIn("output line 0", out)   # head shown
-        self.assertIn("output line 4", out)   # within the 5-line cap
+        self.assertIn("output line 0", out)  # head shown
+        self.assertIn("output line 4", out)  # within the 5-line cap
         self.assertNotIn("output line 5\n", out)
         self.assertNotIn("output line 199", out)
-        self.assertIn("more lines", out)      # truncation marker
+        self.assertIn("more lines", out)  # truncation marker
 
     def test_tool_result_short_untouched(self):
         tui, buf = make_tui()
         tui.session.last_messages = [
             Message(role="user", content="run it"),
             Message(
-                role="assistant", content="",
+                role="assistant",
+                content="",
                 tool_calls=[ToolCall(id="1", name="Bash", arguments="{}")],
             ),
             Message(role="tool", content="ok\n", tool_call_id="1", name="Bash"),
@@ -723,7 +719,8 @@ class TestTui(unittest.TestCase):
         tui.session.last_messages = [
             Message(role="user", content="run it"),
             Message(
-                role="assistant", content="",
+                role="assistant",
+                content="",
                 tool_calls=[ToolCall(id="1", name="Bash", arguments="{}")],
             ),
             Message(role="tool", content=huge, tool_call_id="1", name="Bash"),
@@ -802,9 +799,7 @@ class TestTui(unittest.TestCase):
             Message(role="user", content="q2"),
             Message(role="assistant", content="partial answer"),
         ]
-        with mock.patch(
-            "python_agent_harness.tui.run_agent_loop", return_value=None
-        ):
+        with mock.patch("python_agent_harness.tui.run_agent_loop", return_value=None):
             tui._run_agent("q2", tui.run_seq)
         self.assertEqual(
             [m.text() for m in tui.conversation_history],
@@ -833,20 +828,14 @@ class TestTui(unittest.TestCase):
             old = config.SESSION_DIR
             config.SESSION_DIR = __import__("pathlib").Path(d)
             try:
-                path = tui.session.store.save(
-                    "**user**: hello\n\n**assistant**: hi"
-                )
+                path = tui.session.store.save("**user**: hello\n\n**assistant**: hi")
                 gen = tui.session.run_generation
                 tui._run_restore(path)
             finally:
                 config.SESSION_DIR = old
         self.assertEqual(tui.session.run_generation, gen + 1)
-        self.assertEqual(
-            [m.text() for m in tui.conversation_history], ["hello", "hi"]
-        )
-        self.assertEqual(
-            [m.text() for m in tui.session.last_messages], ["hello", "hi"]
-        )
+        self.assertEqual([m.text() for m in tui.conversation_history], ["hello", "hi"])
+        self.assertEqual([m.text() for m in tui.session.last_messages], ["hello", "hi"])
 
     def test_restore_drops_tool_messages(self):
         """/restore of a session that used tools must not resurrect
@@ -903,6 +892,7 @@ class TestTui(unittest.TestCase):
         path + worker finally) and must only undo its own borrow."""
         tui, _ = make_tui()
         with tempfile.TemporaryDirectory() as d:
+
             def fake_start(text, system=None, restore=None):
                 restore()
                 restore()  # double invocation must be a no-op
@@ -939,13 +929,15 @@ class TestTui(unittest.TestCase):
         is already built; the pinned Todos panel must still appear
         without waiting for the run to finish."""
         tui, buf = make_tui()
-        tui.session.todos = []          # no todos at run start
-        tui._history_rows()             # build cache without todos
+        tui.session.todos = []  # no todos at run start
+        tui._history_rows()  # build cache without todos
         self.assertIsNone(tui._todos_panel())
         # TodoWrite runs mid-run:
         tui.session.update_todos(
-            [{"content": "task one", "status": "in_progress"},
-             {"content": "task two", "status": "pending"}]
+            [
+                {"content": "task one", "status": "in_progress"},
+                {"content": "task two", "status": "pending"},
+            ]
         )
         self.assertEqual(tui.session.todos[0]["content"], "task one")
         tui.console.print(tui._render_frame())
@@ -963,9 +955,7 @@ class TestTui(unittest.TestCase):
         self.assertLess(out.index("[BUILD]"), out.index("Todos"))
         self.assertLess(out.index("Todos"), out.index("hello agent"))
         # even with a huge conversation, the Todos panel stays pinned
-        tui.session.last_messages = [
-            Message(role="user", content=f"m{i}") for i in range(200)
-        ]
+        tui.session.last_messages = [Message(role="user", content=f"m{i}") for i in range(200)]
         tui._history_dirty = True
         buf2 = io.StringIO()
         out_c2 = Console(file=buf2, width=100, force_terminal=False)
@@ -995,15 +985,11 @@ class TestTui(unittest.TestCase):
             tui._command_args("init", 'myproj --extra "focus CI"'),
             ("myproj", "focus CI"),
         )
-        self.assertEqual(
-            tui._command_args("init", "--extra x"), (None, "x")
-        )
+        self.assertEqual(tui._command_args("init", "--extra x"), (None, "x"))
         self.assertEqual(tui._command_args("review", ""), (None, None))
         self.assertEqual(tui._command_args("review", "main"), (None, "main"))
         self.assertEqual(tui._command_args("review", "abc123"), (None, "abc123"))
-        self.assertEqual(
-            tui._command_args("explain", "client.py"), (None, "client.py")
-        )
+        self.assertEqual(tui._command_args("explain", "client.py"), (None, "client.py"))
         self.assertEqual(
             tui._command_args("explain", "the retry logic"),
             (None, "the retry logic"),
@@ -1011,9 +997,7 @@ class TestTui(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(tui._command_args("review", d), (d, None))
             self.assertEqual(tui._command_args("explain", d), (d, None))
-            self.assertEqual(
-                tui._command_args("review", f"{d} main"), (d, "main")
-            )
+            self.assertEqual(tui._command_args("review", f"{d} main"), (d, "main"))
 
     def test_slash_dispatch_runs_command_in_session(self):
         """/init, /review and /explain run their SessionCommand in the
@@ -1047,10 +1031,9 @@ class TestTui(unittest.TestCase):
         project dir for the run (tool cwd) and restores it afterwards."""
         tui, _ = make_tui()
         with tempfile.TemporaryDirectory() as d:
+
             def fake_start(text, system=None, restore=None):
-                self.assertEqual(
-                    tui.session.project_dir, os.path.abspath(d)
-                )
+                self.assertEqual(tui.session.project_dir, os.path.abspath(d))
                 restore()  # simulate the run finishing
 
             with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
@@ -1139,15 +1122,11 @@ class TestTui(unittest.TestCase):
         from python_agent_harness.tui import SlashCompleter
 
         c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
-        completions = list(
-            c.get_completions(Document(text="/ini", cursor_position=4), None)
-        )
+        completions = list(c.get_completions(Document(text="/ini", cursor_position=4), None))
         names = [x.text for x in completions]
         self.assertIn("/init", names)
         self.assertNotIn("/plan", names)
-        completions = list(
-            c.get_completions(Document(text="/", cursor_position=1), None)
-        )
+        completions = list(c.get_completions(Document(text="/", cursor_position=1), None))
         names = [x.text for x in completions]
         for cmd in ("/plan", "/build", "/init", "/review", "/exit"):
             self.assertIn(cmd, names)
@@ -1168,18 +1147,14 @@ class TestTui(unittest.TestCase):
                     c.get_completions(Document(text="~/wor", cursor_position=5), None)
                 )
                 names = [x.text for x in completions]
-                self.assertIn("kspace/", names)   # workspace
-                self.assertIn("kbench/", names)   # workbench
+                self.assertIn("kspace/", names)  # workspace
+                self.assertIn("kbench/", names)  # workbench
                 # bare ~ -> the trailing slash only (home dir itself)
-                completions = list(
-                    c.get_completions(Document(text="~", cursor_position=1), None)
-                )
+                completions = list(c.get_completions(Document(text="~", cursor_position=1), None))
                 self.assertEqual([x.text for x in completions], ["/"])
                 # mid-sentence token completes
                 completions = list(
-                    c.get_completions(
-                        Document(text="see ~/wor", cursor_position=9), None
-                    )
+                    c.get_completions(Document(text="see ~/wor", cursor_position=9), None)
                 )
                 self.assertIn("kspace/", [x.text for x in completions])
 
@@ -1206,11 +1181,9 @@ class TestTui(unittest.TestCase):
             open(os.path.join(d, "file.txt"), "w").close()
             open(os.path.join(d, "alpha", "inner.py"), "w").close()
             c = SlashCompleter(get_project_dir=lambda: d)
-            completions = list(
-                c.get_completions(Document(text="/init ", cursor_position=6), None)
-            )
+            completions = list(c.get_completions(Document(text="/init ", cursor_position=6), None))
             names = [x.text for x in completions]
-            self.assertIn("alpha/", names)   # directories get a trailing slash
+            self.assertIn("alpha/", names)  # directories get a trailing slash
             self.assertIn("beta/", names)
             self.assertIn("file.txt", names)  # files complete too (e.g. /explain)
             # partial dir prefix: only the suffix is inserted at the cursor
@@ -1219,9 +1192,7 @@ class TestTui(unittest.TestCase):
             )
             self.assertEqual([x.text for x in completions], ["pha/"])
             # empty arg lists the project dir's own contents, not its siblings
-            completions = list(
-                c.get_completions(Document(text="/init ", cursor_position=6), None)
-            )
+            completions = list(c.get_completions(Document(text="/init ", cursor_position=6), None))
             self.assertIn("alpha/", [x.text for x in completions])
             # trailing slash drills into the subdirectory
             completions = list(
@@ -1244,8 +1215,10 @@ class TestTui(unittest.TestCase):
             with tempfile.TemporaryDirectory() as d, create_pipe_input() as inp:
                 c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
                 s = _make_prompt_session(
-                    FileHistory(os.path.join(d, "hist")), c,
-                    input=inp, output=DummyOutput(),
+                    FileHistory(os.path.join(d, "hist")),
+                    c,
+                    input=inp,
+                    output=DummyOutput(),
                 )
                 task = asyncio.ensure_future(s.prompt_async("> "))
                 await asyncio.sleep(0.1)
@@ -1275,8 +1248,10 @@ class TestTui(unittest.TestCase):
             with tempfile.TemporaryDirectory() as d, create_pipe_input() as inp:
                 c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
                 s = _make_prompt_session(
-                    FileHistory(os.path.join(d, "hist")), c,
-                    input=inp, output=DummyOutput(),
+                    FileHistory(os.path.join(d, "hist")),
+                    c,
+                    input=inp,
+                    output=DummyOutput(),
                 )
                 task = asyncio.ensure_future(s.prompt_async("> "))
                 await asyncio.sleep(0.1)
@@ -1296,9 +1271,8 @@ class TestTui(unittest.TestCase):
         kb = _make_key_bindings()
         self.assertIsInstance(kb, KeyBindings)
         handlers = {b.keys: b.handler for b in kb.bindings}
-        self.assertIn(("c-i",), handlers)    # Tab
+        self.assertIn(("c-i",), handlers)  # Tab
         self.assertIn(("s-tab",), handlers)  # Shift+Tab
-
 
     # ------------------------------------------------------------------
     # question selection (number keys)
@@ -1339,9 +1313,7 @@ class TestTui(unittest.TestCase):
         tui, _ = make_tui()
         q = UiQuestion("Pick one", options=["long option a", "long option b"])
         tui.question = q
-        with mock.patch.object(
-            tui.prompt_session, "prompt", return_value="something else"
-        ):
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="something else"):
             tui._ask_question_blocking()
         self.assertEqual(q.answer, "something else")
 
@@ -1349,7 +1321,8 @@ class TestTui(unittest.TestCase):
         """Comma-separated numbers select several options (multiple)."""
         tui, _ = make_tui()
         q = UiQuestion(
-            "Pick several", multiple=True,
+            "Pick several",
+            multiple=True,
             options=["first choice", "second choice", "third choice"],
         )
         tui.question = q
@@ -1367,8 +1340,7 @@ class TestTui(unittest.TestCase):
         self.assertEqual(_resolve_keyed_choice("y", options, keys), options[0])
         self.assertEqual(_resolve_keyed_choice("n", options, keys), options[1])
         self.assertEqual(_resolve_keyed_choice("Y", options, keys), options[0])
-        self.assertEqual(_resolve_keyed_choice("y, custom", options, keys),
-                         f"{options[0]}, custom")
+        self.assertEqual(_resolve_keyed_choice("y, custom", options, keys), f"{options[0]}, custom")
         self.assertEqual(_resolve_keyed_choice("custom", options, keys), "custom")
         self.assertEqual(_resolve_keyed_choice("", options, keys), "")
         self.assertEqual(_resolve_keyed_choice("y", [], []), "y")
@@ -1399,8 +1371,14 @@ class TestTui(unittest.TestCase):
         from python_agent_harness import config
 
         tui, _ = make_tui()
-        for raw, expected in (("y", True), ("n", False), ("yes", True),
-                              ("a", True), ("1", True), ("", False)):
+        for raw, expected in (
+            ("y", True),
+            ("n", False),
+            ("yes", True),
+            ("a", True),
+            ("1", True),
+            ("", False),
+        ):
             with mock.patch.object(tui, "_ask_sync", return_value=raw) as ask:
                 self.assertEqual(tui._ui_confirm("Switch to build?"), expected)
             q = ask.call_args[0][0]
@@ -1420,9 +1398,7 @@ class TestTui(unittest.TestCase):
         tui, _ = make_tui()
         q = UiQuestion("Pick one", options=["a", "b"])
         results = {}
-        worker = threading.Thread(
-            target=lambda: results.update(r=tui._ask_sync(q))
-        )
+        worker = threading.Thread(target=lambda: results.update(r=tui._ask_sync(q)))
         worker.start()
         time.sleep(0.2)
         tui.session.cancel()  # sets cancel_event
@@ -1458,7 +1434,7 @@ class TestTui(unittest.TestCase):
             Message(
                 role="user",
                 content="**[Compacted Summary]**\n\nfixed the bug\n\n---\n\n"
-                        "**[Context compacted]**\n\n---\n\n",
+                "**[Context compacted]**\n\n---\n\n",
             ),
         ]
         tui.console.print(tui._render_frame())
@@ -1479,15 +1455,21 @@ class TestTui(unittest.TestCase):
         compacted = [
             Message(role="user", content="**[Compacted Summary]**\n\nx"),
         ]
-        with mock.patch.object(
-            tui.session, "compact_conversation", return_value=(True, "ok"),
-        ), mock.patch.object(
-            tui.session, "last_messages", compacted, create=True,
+        with (
+            mock.patch.object(
+                tui.session,
+                "compact_conversation",
+                return_value=(True, "ok"),
+            ),
+            mock.patch.object(
+                tui.session,
+                "last_messages",
+                compacted,
+                create=True,
+            ),
         ):
             tui._run_compact()
-        self.assertEqual(
-            [m.role for m in tui.conversation_history], ["user"]
-        )
+        self.assertEqual([m.role for m in tui.conversation_history], ["user"])
         self.assertEqual(
             [m.text() for m in tui.conversation_history],
             [m.text() for m in compacted],
@@ -1500,10 +1482,18 @@ class TestTui(unittest.TestCase):
             Message(role="user", content="hello"),
             Message(role="assistant", content="summary appended"),
         ]
-        with mock.patch.object(
-            tui.session, "summarize_conversation", return_value="summary appended",
-        ), mock.patch.object(
-            tui.session, "last_messages", summarized, create=True,
+        with (
+            mock.patch.object(
+                tui.session,
+                "summarize_conversation",
+                return_value="summary appended",
+            ),
+            mock.patch.object(
+                tui.session,
+                "last_messages",
+                summarized,
+                create=True,
+            ),
         ):
             tui._run_summary()
         self.assertEqual(
@@ -1574,9 +1564,7 @@ class TestTui(unittest.TestCase):
 
         c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
         completions = list(
-            c.get_completions(
-                Document(text="/init /no/such/dir/", cursor_position=16), None
-            )
+            c.get_completions(Document(text="/init /no/such/dir/", cursor_position=16), None)
         )
         self.assertEqual(completions, [])
 
@@ -1617,9 +1605,7 @@ class TestTui(unittest.TestCase):
         """A single Question returns one 'prompt' = 'answer' line."""
         tui, _ = make_tui()
         with mock.patch.object(tui, "_ask_sync", return_value="42"):
-            result = tui._ui_ask(
-                [{"question": "How many?", "options": ["one", "two"]}]
-            )
+            result = tui._ui_ask([{"question": "How many?", "options": ["one", "two"]}])
         self.assertEqual(result, '"How many?" = "42"')
 
     def test_ui_ask_multiple_questions(self):
@@ -1632,9 +1618,7 @@ class TestTui(unittest.TestCase):
         """Multiple-select answers are joined, dropping empty parts."""
         tui, _ = make_tui()
         with mock.patch.object(tui, "_ask_sync", return_value="a, , b"):
-            result = tui._ui_ask(
-                [{"question": "Pick", "multiple": True, "options": ["a", "b"]}]
-            )
+            result = tui._ui_ask([{"question": "Pick", "multiple": True, "options": ["a", "b"]}])
         self.assertEqual(result, '"Pick" = "a, b"')
 
     def test_ui_ask_no_questions_returns_unanswered(self):
@@ -1650,7 +1634,8 @@ class TestTui(unittest.TestCase):
         tui.session.last_messages = [
             Message(role="user", content="go"),
             Message(
-                role="assistant", content="",
+                role="assistant",
+                content="",
                 tool_calls=[ToolCall(id="1", name="Read", arguments="{oops")],
             ),
             Message(role="tool", content="x", tool_call_id="1", name="Read"),
@@ -1665,10 +1650,9 @@ class TestTui(unittest.TestCase):
         tui.session.last_messages = [
             Message(role="user", content="go"),
             Message(
-                role="assistant", content="",
-                tool_calls=[
-                    ToolCall(id="1", name="Bash", arguments='["ls", "-la"]')
-                ],
+                role="assistant",
+                content="",
+                tool_calls=[ToolCall(id="1", name="Bash", arguments='["ls", "-la"]')],
             ),
             Message(role="tool", content="x", tool_call_id="1", name="Bash"),
         ]
@@ -1697,9 +1681,7 @@ class TestTui(unittest.TestCase):
         from python_agent_harness.tui import Tui
 
         self.assertEqual(Tui._est_lines(Panel("short"), 80), 4)
-        self.assertEqual(
-            Tui._est_lines(Panel(Group(Text("a"), Text("b"))), 80), 5
-        )
+        self.assertEqual(Tui._est_lines(Panel(Group(Text("a"), Text("b"))), 80), 5)
 
     # ------------------------------------------------------------------
     # the main run loop
@@ -1717,9 +1699,10 @@ class TestTui(unittest.TestCase):
         """Blank lines are skipped, non-exit slashes continue the loop,
         /exit breaks it and plain text starts a run."""
         tui, buf = make_tui()
-        with mock.patch.object(
-            tui, "_read_multiline", side_effect=["", "hello", "/help", "/exit"]
-        ), mock.patch.object(tui, "_start_agent") as start:
+        with (
+            mock.patch.object(tui, "_read_multiline", side_effect=["", "hello", "/help", "/exit"]),
+            mock.patch.object(tui, "_start_agent") as start,
+        ):
             tui.run()
         start.assert_called_once_with("hello")
         self.assertIn("/sessions", buf.getvalue())  # /help rendered
@@ -1727,9 +1710,7 @@ class TestTui(unittest.TestCase):
     def test_run_keyboard_interrupt_stays_open(self):
         """A stray Ctrl-C outside input prints a hint and keeps looping."""
         tui, buf = make_tui()
-        with mock.patch.object(
-            tui, "_read_multiline", side_effect=[KeyboardInterrupt, None]
-        ):
+        with mock.patch.object(tui, "_read_multiline", side_effect=[KeyboardInterrupt, None]):
             tui.run()
         self.assertIn("cancelled", buf.getvalue())
 
@@ -1737,10 +1718,14 @@ class TestTui(unittest.TestCase):
         """A pending question is answered before reading new input."""
         tui, _ = make_tui()
         tui.question = UiQuestion("Approve?")
-        with mock.patch.object(
-            tui, "_ask_question_blocking",
-            side_effect=lambda: setattr(tui, "question", None),
-        ), mock.patch.object(tui, "_read_multiline", return_value=None):
+        with (
+            mock.patch.object(
+                tui,
+                "_ask_question_blocking",
+                side_effect=lambda: setattr(tui, "question", None),
+            ),
+            mock.patch.object(tui, "_read_multiline", return_value=None),
+        ):
             tui.run()
         self.assertIsNone(tui.question)
 
@@ -1750,8 +1735,10 @@ class TestTui(unittest.TestCase):
 
         tui, buf = make_tui()
         tui.session.client.log_path = "/tmp/llm.log"
-        with mock.patch.object(tui_mod.config, "LLM_LOG_ENABLED", True), \
-             mock.patch.object(tui, "_read_multiline", return_value=None):
+        with (
+            mock.patch.object(tui_mod.config, "LLM_LOG_ENABLED", True),
+            mock.patch.object(tui, "_read_multiline", return_value=None),
+        ):
             tui.run()
         self.assertIn("/tmp/llm.log", buf.getvalue())
 
@@ -1763,8 +1750,11 @@ class TestTui(unittest.TestCase):
         and resolves comma-separated keys."""
         tui, buf = make_tui()
         q = UiQuestion(
-            "Approve?", multiple=True,
-            options=["Yes, switch", "No, refine"], keys=["y", "n"], custom=True,
+            "Approve?",
+            multiple=True,
+            options=["Yes, switch", "No, refine"],
+            keys=["y", "n"],
+            custom=True,
         )
         tui.question = q
         with mock.patch.object(tui.prompt_session, "prompt", return_value="y,n"):
@@ -1779,9 +1769,7 @@ class TestTui(unittest.TestCase):
         tui, _ = make_tui()
         q = UiQuestion("What is your name?")
         tui.question = q
-        with mock.patch.object(
-            tui.prompt_session, "prompt", return_value="Ada"
-        ) as m:
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="Ada") as m:
             tui._ask_question_blocking()
         m.assert_called_once_with("What is your name? > ", multiline=False)
         self.assertEqual(q.answer, "Ada")
@@ -1791,9 +1779,7 @@ class TestTui(unittest.TestCase):
         tui, _ = make_tui()
         q = UiQuestion("Pick", options=["a", "b"])
         tui.question = q
-        with mock.patch.object(
-            tui.prompt_session, "prompt", side_effect=EOFError
-        ):
+        with mock.patch.object(tui.prompt_session, "prompt", side_effect=EOFError):
             tui._ask_question_blocking()
         self.assertEqual(q.answer, "")
         self.assertIsNone(tui.question)
@@ -1808,16 +1794,12 @@ class TestTui(unittest.TestCase):
 
     def test_read_multiline_eof_quits(self):
         tui, _ = make_tui()
-        with mock.patch.object(
-            tui.prompt_session, "prompt", side_effect=EOFError
-        ):
+        with mock.patch.object(tui.prompt_session, "prompt", side_effect=EOFError):
             self.assertIsNone(tui._read_multiline())
 
     def test_read_multiline_interrupt_cancels_input(self):
         tui, buf = make_tui()
-        with mock.patch.object(
-            tui.prompt_session, "prompt", side_effect=KeyboardInterrupt
-        ):
+        with mock.patch.object(tui.prompt_session, "prompt", side_effect=KeyboardInterrupt):
             self.assertEqual(tui._read_multiline(), "")
         self.assertIn("input cancelled", buf.getvalue())
 
@@ -1837,9 +1819,10 @@ class TestTui(unittest.TestCase):
             done.set()
             raise RuntimeError("stop")
 
-        with mock.patch("python_agent_harness.tui.run_agent_loop",
-                        side_effect=boom), \
-             mock.patch.object(tui, "_run_live", return_value=False) as live:
+        with (
+            mock.patch("python_agent_harness.tui.run_agent_loop", side_effect=boom),
+            mock.patch.object(tui, "_run_live", return_value=False) as live,
+        ):
             tui._start_agent("hello")
         self.assertTrue(done.wait(2.0), "worker thread never ran")
         self.assertEqual(tui.session.run_generation, gen + 1)
@@ -1853,12 +1836,14 @@ class TestTui(unittest.TestCase):
 
         tui, _ = make_tui()
         tui.console = SimpleNamespace(
-            is_dumb_terminal=True, print=lambda *a, **k: None,
+            is_dumb_terminal=True,
+            print=lambda *a, **k: None,
             file=io.StringIO(),
         )
-        with mock.patch("python_agent_harness.tui.run_agent_loop",
-                        side_effect=RuntimeError("stop")), \
-             mock.patch.object(tui, "_run_dumb", return_value=False) as dumb:
+        with (
+            mock.patch("python_agent_harness.tui.run_agent_loop", side_effect=RuntimeError("stop")),
+            mock.patch.object(tui, "_run_dumb", return_value=False) as dumb,
+        ):
             tui._start_agent("hello")
         dumb.assert_called_once()
         self.assertFalse(tui.agent_running)
@@ -1871,9 +1856,10 @@ class TestTui(unittest.TestCase):
         released = []
         q = UiQuestion("Approve?")
         tui.question = q
-        with mock.patch("python_agent_harness.tui.run_agent_loop",
-                        side_effect=RuntimeError("stop")), \
-             mock.patch.object(tui, "_run_live", side_effect=KeyboardInterrupt):
+        with (
+            mock.patch("python_agent_harness.tui.run_agent_loop", side_effect=RuntimeError("stop")),
+            mock.patch.object(tui, "_run_live", side_effect=KeyboardInterrupt),
+        ):
             tui._start_agent("hello", restore=lambda: released.append(1))
         self.assertIn("execution cancelled", buf.getvalue())
         self.assertIsNone(tui.question)
@@ -1898,8 +1884,10 @@ class TestTui(unittest.TestCase):
             answered.append(1)
             tui.question = None  # the question is now answered
 
-        with mock.patch.object(tui, "_ask_question_blocking", side_effect=ask), \
-             mock.patch.object(tui, "_dump_conversation"):
+        with (
+            mock.patch.object(tui, "_ask_question_blocking", side_effect=ask),
+            mock.patch.object(tui, "_dump_conversation"),
+        ):
             tui._run_live(worker)
         self.assertEqual(answered, [1])
 
@@ -1918,8 +1906,10 @@ class TestTui(unittest.TestCase):
             answered.append(1)
             tui.question = None
 
-        with mock.patch.object(tui, "_ask_question_blocking", side_effect=ask), \
-             mock.patch.object(tui, "_dump_conversation"):
+        with (
+            mock.patch.object(tui, "_ask_question_blocking", side_effect=ask),
+            mock.patch.object(tui, "_dump_conversation"),
+        ):
             result = tui._run_dumb(worker)
         self.assertFalse(result)
         self.assertEqual(answered, [1])
@@ -1928,17 +1918,16 @@ class TestTui(unittest.TestCase):
     def test_flush_tolerates_flush_errors(self):
         """A failing stdout flush must not crash the render loop."""
         tui, _ = make_tui()
-        with mock.patch.object(
-            tui.console.file, "flush", side_effect=OSError("boom")
-        ):
+        with mock.patch.object(tui.console.file, "flush", side_effect=OSError("boom")):
             tui._flush()  # must not raise
 
     def test_run_agent_error_logged(self):
         """An agent-loop exception on the current run is surfaced in the
         status bar."""
         tui, _ = make_tui()
-        with mock.patch("python_agent_harness.tui.run_agent_loop",
-                        side_effect=RuntimeError("boom")):
+        with mock.patch(
+            "python_agent_harness.tui.run_agent_loop", side_effect=RuntimeError("boom")
+        ):
             tui._run_agent("hi", tui.run_seq)
         self.assertIn("agent error: boom", tui.status)
 
@@ -1946,8 +1935,9 @@ class TestTui(unittest.TestCase):
         """The current run's finally fires the restore callback."""
         tui, _ = make_tui()
         restored = []
-        with mock.patch("python_agent_harness.tui.run_agent_loop",
-                        side_effect=RuntimeError("boom")):
+        with mock.patch(
+            "python_agent_harness.tui.run_agent_loop", side_effect=RuntimeError("boom")
+        ):
             tui._run_agent("hi", tui.run_seq, restore=lambda: restored.append(1))
         self.assertEqual(restored, [1])
 
@@ -1969,16 +1959,16 @@ class TestTui(unittest.TestCase):
 
     def test_save_slash(self):
         tui, buf = make_tui()
-        with mock.patch.object(
-            tui.session.store, "save", return_value="/tmp/x.md"
-        ):
+        with mock.patch.object(tui.session.store, "save", return_value="/tmp/x.md"):
             self.assertFalse(tui._handle_slash("/save"))
         self.assertIn("saved: /tmp/x.md", buf.getvalue())
 
     def test_compact_and_summary_slashes_dispatch(self):
         tui, _ = make_tui()
-        with mock.patch.object(tui, "_run_compact") as c, \
-             mock.patch.object(tui, "_run_summary") as s:
+        with (
+            mock.patch.object(tui, "_run_compact") as c,
+            mock.patch.object(tui, "_run_summary") as s,
+        ):
             tui._handle_slash("/compact")
             tui._handle_slash("/summary")
         c.assert_called_once_with()
@@ -1986,8 +1976,10 @@ class TestTui(unittest.TestCase):
 
     def test_sessions_and_restore_slashes_dispatch(self):
         tui, _ = make_tui()
-        with mock.patch.object(tui, "_run_sessions") as s, \
-             mock.patch.object(tui, "_run_restore") as r:
+        with (
+            mock.patch.object(tui, "_run_sessions") as s,
+            mock.patch.object(tui, "_run_restore") as r,
+        ):
             tui._handle_slash("/sessions")
             tui._handle_slash("/restore foo.md")
         s.assert_called_once_with()
@@ -1996,9 +1988,7 @@ class TestTui(unittest.TestCase):
     def test_split_args_unbalanced_quote_falls_back(self):
         """An unterminated quote falls back to whitespace splitting."""
         tui, _ = make_tui()
-        self.assertEqual(
-            tui._split_args('unterminated "quote'), ['unterminated', '"quote']
-        )
+        self.assertEqual(tui._split_args('unterminated "quote'), ["unterminated", '"quote'])
 
     def test_command_args_init_invalid_returns_none(self):
         """/init with a non-project token after the project is invalid."""
@@ -2052,9 +2042,7 @@ class TestTui(unittest.TestCase):
 
     def test_run_sessions_empty(self):
         tui, buf = make_tui()
-        with mock.patch(
-            "python_agent_harness.tui.SessionStore.list_sessions", return_value=[]
-        ):
+        with mock.patch("python_agent_harness.tui.SessionStore.list_sessions", return_value=[]):
             tui._run_sessions()
         self.assertIn("no saved sessions", buf.getvalue())
 
@@ -2116,9 +2104,7 @@ class TestTui(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("restored:", out)
         self.assertIn("session.md", out)
-        self.assertEqual(
-            [m.text() for m in tui.session.last_messages], ["hello", "hi"]
-        )
+        self.assertEqual([m.text() for m in tui.session.last_messages], ["hello", "hi"])
 
     def test_restore_resolved_path_not_a_file(self):
         """A resolved path that is not a file reports an error."""
@@ -2174,9 +2160,7 @@ class TestTui(unittest.TestCase):
                     Tui._find_session_by_title("Add feature_250101000001.md"),
                     spaced,
                 )
-                self.assertEqual(
-                    Tui._find_session_by_title("add feature_250101000001"), spaced
-                )
+                self.assertEqual(Tui._find_session_by_title("add feature_250101000001"), spaced)
                 # filename substring match
                 self.assertEqual(Tui._find_session_by_title("fix-bugs"), dash)
                 self.assertEqual(Tui._find_session_by_title("feature"), spaced)

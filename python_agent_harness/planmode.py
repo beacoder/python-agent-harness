@@ -56,9 +56,7 @@ class PlanMode:
             return self.plan_file
         proj_name = os.path.basename(os.path.normpath(self.project_dir))
         suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-        d = os.path.join(
-            self.plan_temp_dir(), f"python-agent-plans-{proj_name}-{suffix}"
-        )
+        d = os.path.join(self.plan_temp_dir(), f"python-agent-plans-{proj_name}-{suffix}")
         return os.path.join(d, config.PLAN_FILE_NAME)
 
     def ensure_plan_file(self) -> str:
@@ -111,6 +109,4 @@ class PlanMode:
         return self.mode == AgentMode.PLAN
 
     def plan_reminder(self) -> str:
-        return config.PLAN_MODE_SUBAGENT_REMINDER % (
-            self.plan_file or self.plan_file_path()
-        )
+        return config.PLAN_MODE_SUBAGENT_REMINDER % (self.plan_file or self.plan_file_path())

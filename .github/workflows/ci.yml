@@ -28,11 +28,7 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
-      # Report-only for now: `ruff format` would restyle a large part of the
-      # tree. Run `ruff format` once and commit it, then remove
-      # `continue-on-error` to make formatting a blocking gate.
       - name: Ruff format (check only)
-        continue-on-error: true
         run: ruff format --check .
 
   typecheck:
@@ -50,11 +46,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      # Report-only for now: the codebase has pre-existing type findings.
-      # Remove `continue-on-error` to make Pyright a blocking gate once
-      # `pyright` reports zero errors.
+      # Pyright is a blocking gate: the tree reports zero errors under
+      # `typeCheckingMode = "basic"`.
       - name: Pyright
-        continue-on-error: true
         run: pyright
 
   test:

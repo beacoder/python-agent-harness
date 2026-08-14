@@ -122,7 +122,9 @@ class TestPlanExitConfirm(unittest.TestCase):
         from python_agent_harness.tools import default_registry
 
         s = AgentSession(
-            project_dir="/tmp/proj", client=self.FakeClient(), model="m",
+            project_dir="/tmp/proj",
+            client=self.FakeClient(),
+            model="m",
             registry=default_registry(),
         )
         s.switch_to_plan()

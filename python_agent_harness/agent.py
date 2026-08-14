@@ -32,13 +32,20 @@ completion supervision as an extension:
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Protocol
 
 from . import config
-from .prompts import last_user_request, read_prompt_file
 from .models import Message, ToolCall
+from .prompts import last_user_request, read_prompt_file
 from .token_estimator import context_window_for, estimate_payload_tokens
 from .tools.base import PendingToolResult
+
+
+class _SupervisorSession(Protocol):
+    """The slice of an agent session the Supervisor reads."""
+
+    alive: bool
+    compacting: bool
 
 
 class AgentLoop:
@@ -201,7 +208,8 @@ class AgentLoop:
     # ------------------------------------------------------------------
     def _update_context_ratio(self) -> None:
         raw = estimate_payload_tokens(
-            self.system, [m.to_api() for m in self.messages],
+            self.system,
+            [m.to_api() for m in self.messages],
             [t.to_api() for t in self.session.tool_specs()],
         )
         self.session.calibrator.last_raw_estimate = raw
@@ -248,9 +256,7 @@ class AgentLoop:
             if last.role == "user" and isinstance(last.content, str) and not last.tool_call_id:
                 insert_at = len(self.messages) - 1
         for i, text in enumerate(prompts):
-            self.messages.insert(
-                insert_at + i, Message(role="user", content=text, injected=True)
-            )
+            self.messages.insert(insert_at + i, Message(role="user", content=text, injected=True))
 
     # ------------------------------------------------------------------
     # compaction
@@ -262,12 +268,11 @@ class AgentLoop:
             return False
         self.session.compacting = True
         try:
-            conversation = "\n\n".join(
-                f"{m.role}: {m.text()}" for m in self.messages if m.text()
-            )
+            conversation = "\n\n".join(f"{m.role}: {m.text()}" for m in self.messages if m.text())
             system = read_prompt_file("compact.md")
             resp, _ = self.session.client.chat_sync(
-                [Message(role="user", content=conversation)], system=system,
+                [Message(role="user", content=conversation)],
+                system=system,
                 cancel_check=self._is_cancelled,
             )
             summary = resp.text_without_reasoning()
@@ -308,10 +313,7 @@ class AgentLoop:
         if not self.top_level and call.name in config.SUBAGENT_EXCLUDED_TOOLS:
             # defense in depth: a hallucinated call must never reach the
             # registry — the spec was filtered, so refuse it here too
-            return (
-                f"Error: {call.name} is not available to sub-agents — "
-                "it is a parent-only tool"
-            )
+            return f"Error: {call.name} is not available to sub-agents — it is a parent-only tool"
         args = call.arguments
         if isinstance(args, str):
             try:
@@ -326,10 +328,7 @@ class AgentLoop:
             required = tool.parameters.get("required", [])
             missing = [k for k in required if k not in args]
             if missing:
-                return (
-                    f"Error: {call.name} is missing required argument(s): "
-                    f"{', '.join(missing)}"
-                )
+                return f"Error: {call.name} is missing required argument(s): {', '.join(missing)}"
         return self.session.execute_tool(call.name, args, call_id=call.id)
 
     def _deliver_tool_result(self, p: ToolCall, result: str) -> None:
@@ -352,9 +351,7 @@ class AgentLoop:
             # conversation history (the TUI renders from it)
             self.session.last_messages = list(self.messages)
 
-    def _run_tools(
-        self, calls: list[ToolCall], results: dict[str, str]
-    ) -> None:
+    def _run_tools(self, calls: list[ToolCall], results: dict[str, str]) -> None:
         """Run CALLS in model-emitted order, filling RESULTS.
 
         Mirrors gptel's `gptel--handle-tool-use': synchronous tools
@@ -377,9 +374,7 @@ class AgentLoop:
             # before every call, so a call that has not started yet must
             # not run after Ctrl-C.
             if self._is_cancelled():
-                results[p.id] = (
-                    "Error: tool call cancelled (user aborted the run)."
-                )
+                results[p.id] = "Error: tool call cancelled (user aborted the run)."
                 continue
             # Notify the TUI which tool is currently executing so the
             # status bar can show the active tool name beside the spinner.
@@ -388,9 +383,7 @@ class AgentLoop:
             try:
                 result = self._execute_tool_call(p)
             except Exception as e:  # noqa: BLE001 - containment boundary
-                results[p.id] = (
-                    f"Error: tool {p.name!r} crashed during execution — {e}"
-                )
+                results[p.id] = f"Error: tool {p.name!r} crashed during execution — {e}"
                 continue
             if isinstance(result, PendingToolResult):
                 # async tool (e.g. Bash): run() spawned the work and
@@ -404,9 +397,7 @@ class AgentLoop:
             try:
                 results[p.id] = sanitize_tool_result(pending.wait())
             except Exception as e:  # noqa: BLE001 - containment boundary
-                results[p.id] = (
-                    f"Error: tool {p.name!r} crashed during execution — {e}"
-                )
+                results[p.id] = f"Error: tool {p.name!r} crashed during execution — {e}"
 
     def _execute_pending(self) -> None:
         """TOOL state: run the round's pending tool calls.
@@ -578,9 +569,7 @@ class AgentLoop:
         for pred, nxt in self.TRANSITIONS[self.state]:
             if pred is True or pred(self, self.info):
                 return nxt
-        raise RuntimeError(
-            f"agent FSM: no matching transition from state {self.state!r}"
-        )
+        raise RuntimeError(f"agent FSM: no matching transition from state {self.state!r}")
 
     # ------------------------------------------------------------------
     # state handlers
@@ -661,9 +650,7 @@ class AgentLoop:
                 # output and retries on a fresh client: tell the TUI to
                 # clear the partial text and show that the request is
                 # being restarted
-                on_retry=(
-                    (lambda: session.notify("retry")) if self.top_level else None
-                ),
+                on_retry=((lambda: session.notify("retry")) if self.top_level else None),
                 # poll cancellation during retry backoff so Ctrl-C
                 # aborts promptly instead of after the full sleep
                 cancel_check=self._is_cancelled,
@@ -685,9 +672,12 @@ class AgentLoop:
         # assistant message before a nudge creates consecutive user
         # messages which some APIs reject with a 400 error.
         self.messages.append(assistant)
-        if assistant.text().strip() or assistant.tool_calls:
-            if not assistant.tool_calls and self.top_level:
-                session.last_messages = list(self.messages)
+        if (
+            (assistant.text().strip() or assistant.tool_calls)
+            and not assistant.tool_calls
+            and self.top_level
+        ):
+            session.last_messages = list(self.messages)
 
         if self.top_level:
             session.calibrator.update(usage.input_tokens)
@@ -696,9 +686,7 @@ class AgentLoop:
 
         self.info["assistant"] = assistant
         self.info["usage"] = usage
-        self.info["tool_calls"] = (
-            list(assistant.tool_calls) if assistant.tool_calls else None
-        )
+        self.info["tool_calls"] = list(assistant.tool_calls) if assistant.tool_calls else None
 
     def _handle_tool(self) -> None:
         """TOOL — run the round's tools (see ``_execute_pending``); the
@@ -739,9 +727,7 @@ class AgentLoop:
             top_level=self.top_level,
             pending=bool(self.pending),
         ):
-            self.messages.append(
-                Message(role="user", content=config.NUDGE_MESSAGE, injected=True)
-            )
+            self.messages.append(Message(role="user", content=config.NUDGE_MESSAGE, injected=True))
             self.info["nudged"] = True
 
     def _handle_done(self) -> None:
@@ -812,9 +798,14 @@ def run_agent_loop(
 ) -> str | None:
     """Convenience wrapper running a full agent run (FSM)."""
     return AgentLoop(
-        session, messages=messages, top_level=top_level,
-        system=system, max_rounds=max_rounds,
+        session,
+        messages=messages,
+        top_level=top_level,
+        system=system,
+        max_rounds=max_rounds,
     ).run()
+
+
 NIL_RESULT_PLACEHOLDER = (
     "Error: tool produced no result (it may have been interrupted or failed to return)."
 )
@@ -823,7 +814,7 @@ NIL_RESULT_PLACEHOLDER = (
 class Supervisor:
     """Completion supervision: nudge the model when it stops too early."""
 
-    def __init__(self, session: object) -> None:
+    def __init__(self, session: _SupervisorSession) -> None:
         self.session = session
         self.nudge_count = 0
 

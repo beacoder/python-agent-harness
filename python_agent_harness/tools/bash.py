@@ -13,6 +13,7 @@ cancelled error.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -37,10 +38,8 @@ def _kill_process(proc: subprocess.Popen) -> None:
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
-        try:
+        with contextlib.suppress(ProcessLookupError):
             proc.kill()
-        except ProcessLookupError:
-            pass
 
 
 class Bash(Tool):
@@ -109,7 +108,7 @@ class Bash(Tool):
                     # Keep head + tail so the model sees the start and end
                     tail = "\n".join(out.splitlines()[-_TAIL_LINES:])
                     head_budget = _MAX_OUTPUT - len(tail) - 200  # room for notice
-                    head = out[:max(head_budget, 1000)]
+                    head = out[: max(head_budget, 1000)]
                     out = (
                         f"{head}\n\n... [truncated: output exceeded "
                         f"{_MAX_OUTPUT} chars] ...\n\n{tail}"

@@ -7,6 +7,7 @@ services interactive questions (Question tool, PlanExit confirmation).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -14,7 +15,8 @@ import re
 import shlex
 import threading
 import time
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -30,9 +32,9 @@ from rich.text import Text
 
 from . import config
 from .agent import run_agent_loop
+from .agent_session import AgentSession
 from .commands import find_command
 from .diffrender import render_diff
-from .agent_session import AgentSession
 from .models import Message
 from .session_store import SessionStore, title_from_filename
 
@@ -89,9 +91,7 @@ def _tool_result_preview(content: str) -> str:
 
 # the completion-check filter: a [FINAL CHECK] header followed by the
 # Goal:/Status:/Evidence: labels (anywhere in the block, any lines)
-_FINAL_CHECK_RE = re.compile(
-    r"\[FINAL CHECK\].*Goal:.*Status:.*Evidence:", re.DOTALL
-)
+_FINAL_CHECK_RE = re.compile(r"\[FINAL CHECK\].*Goal:.*Status:.*Evidence:", re.DOTALL)
 
 _PLAN_EXIT_PREFIX = "The plan at "
 _PLAN_EXIT_SUFFIX = " has been approved, you can now edit files. Execute the plan"
@@ -150,10 +150,10 @@ def _strip_reasoning(text: str, reasoning: str) -> str:
     if not reasoning:
         return text
     if text.startswith(reasoning):
-        return text[len(reasoning):]
+        return text[len(reasoning) :]
     stripped = text.lstrip()
     if stripped.startswith(reasoning):
-        return stripped[len(reasoning):]
+        return stripped[len(reasoning) :]
     return text
 
 
@@ -219,9 +219,18 @@ def _make_prompt_session(
 
 
 SLASH_COMMANDS = [
-    "/plan", "/build", "/init", "/review", "/explain", "/compact",
-    "/save", "/summary", "/sessions",
-    "/restore", "/clear", "/exit",
+    "/plan",
+    "/build",
+    "/init",
+    "/review",
+    "/explain",
+    "/compact",
+    "/save",
+    "/summary",
+    "/sessions",
+    "/restore",
+    "/clear",
+    "/exit",
 ]
 
 
@@ -259,8 +268,11 @@ class SlashCompleter(Completer):
         if not arg:
             directory, prefix = self.get_project_dir() or os.getcwd(), ""
         elif expanded.endswith(os.sep):
-            base = expanded if os.path.isabs(expanded) else os.path.join(
-                self.get_project_dir() or os.getcwd(), expanded)
+            base = (
+                expanded
+                if os.path.isabs(expanded)
+                else os.path.join(self.get_project_dir() or os.getcwd(), expanded)
+            )
             directory, prefix = base, ""
         elif os.path.isdir(expanded):
             # "~" or an existing dir without a trailing slash: complete
@@ -268,8 +280,11 @@ class SlashCompleter(Completer):
             yield Completion(text="/", start_position=0, display=arg + "/")
             return
         else:
-            base = expanded if os.path.isabs(expanded) else os.path.join(
-                self.get_project_dir() or os.getcwd(), expanded)
+            base = (
+                expanded
+                if os.path.isabs(expanded)
+                else os.path.join(self.get_project_dir() or os.getcwd(), expanded)
+            )
             directory, prefix = os.path.dirname(base), os.path.basename(base)
         try:
             entries = sorted(os.listdir(directory or "."))
@@ -278,7 +293,7 @@ class SlashCompleter(Completer):
         for name in entries:
             if not name.startswith(prefix):
                 continue
-            suffix = name[len(prefix):]
+            suffix = name[len(prefix) :]
             if os.path.isdir(os.path.join(directory, name)):
                 suffix += "/"
                 display = name + "/"
@@ -308,10 +323,14 @@ class SlashCompleter(Completer):
 
 
 class UiQuestion:
-    def __init__(self, prompt: str, multiple: bool = False,
-                 options: list[str] | None = None,
-                 custom: bool = True,
-                 keys: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        prompt: str,
+        multiple: bool = False,
+        options: list[str] | None = None,
+        custom: bool = True,
+        keys: list[str] | None = None,
+    ) -> None:
         self.prompt = prompt
         self.multiple = multiple
         self.options = options or []
@@ -479,7 +498,11 @@ class Tui:
         # resolved answers arrive as the option label; legacy free-text
         # (y/yes/a/1/true) keeps working for muscle memory
         return answer == config.PLAN_EXIT_OPTIONS[0].lower() or answer in (
-            "y", "yes", "a", "true", "1",
+            "y",
+            "yes",
+            "a",
+            "true",
+            "1",
         )
 
     def _ui_ask(self, questions: list[dict]) -> str:
@@ -490,7 +513,10 @@ class Tui:
             multiple = bool(q.get("multiple"))
             custom = q.get("custom", True)
             ui_q = UiQuestion(
-                prompt, multiple=multiple, options=list(options), custom=custom,
+                prompt,
+                multiple=multiple,
+                options=list(options),
+                custom=custom,
             )
             answer = self._ask_sync(ui_q)
             if multiple:
@@ -596,8 +622,11 @@ class Tui:
                             except (json.JSONDecodeError, ValueError):
                                 args = {}
                         if isinstance(args, dict):
-                            params = " ".join(f"{k}={v!r}" for k, v in args.items()
-                                             if k != "content" and len(repr(v)) < 80)
+                            params = " ".join(
+                                f"{k}={v!r}"
+                                for k, v in args.items()
+                                if k != "content" and len(repr(v)) < 80
+                            )
                         else:
                             params = ""
                         label = f"🤖 {tc.name}({params})" if params else f"🤖 {tc.name}"
@@ -811,12 +840,12 @@ class Tui:
                 self._start_agent(text)
             except KeyboardInterrupt:
                 # stray Ctrl-C outside input/execution: stay in the app
-                self.console.print(
-                    "[dim]cancelled — Ctrl-D or /exit to quit[/dim]"
-                )
+                self.console.print("[dim]cancelled — Ctrl-D or /exit to quit[/dim]")
 
     def _ask_question_blocking(self) -> None:
         q = self.question
+        if q is None:
+            return
         self.console.print(self._render_frame())
         self.console.print()
         self._flush()
@@ -826,14 +855,11 @@ class Tui:
             # keyed choices (e.g. y/n confirm): type the key to pick —
             # same list look as the Question tool, keys instead of numbers
             self.console.print(Text(q.prompt))
-            for key, opt in zip(keys, options):
+            for key, opt in zip(keys, options, strict=True):
                 line = Text(f"  {key}) ", style="cyan")
                 line.append(opt)
                 self.console.print(line)
-            if q.multiple:
-                hint = "Enter keys, comma-separated"
-            else:
-                hint = "Enter a key"
+            hint = "Enter keys, comma-separated" if q.multiple else "Enter a key"
             if q.custom:
                 hint += ", or type your own answer"
             self.console.print(f"[dim]{hint}[/dim]")
@@ -845,10 +871,7 @@ class Tui:
                 line = Text(f"  {i}) ", style="cyan")
                 line.append(opt)
                 self.console.print(line)
-            if q.multiple:
-                hint = "Enter numbers, comma-separated"
-            else:
-                hint = "Enter a number"
+            hint = "Enter numbers, comma-separated" if q.multiple else "Enter a number"
             if q.custom:
                 hint += ", or type your own answer"
             self.console.print(f"[dim]{hint}[/dim]")
@@ -946,9 +969,7 @@ class Tui:
                 # (stale) and its own finally must not touch it then
                 self._restore()
                 self._restore = None
-            self.console.print(
-                "\n[dim]execution cancelled — add more messages or /exit[/dim]"
-            )
+            self.console.print("\n[dim]execution cancelled — add more messages or /exit[/dim]")
             self._flush()
         finally:
             self.agent_running = False
@@ -1018,10 +1039,8 @@ class Tui:
         the stdio buffer and only appear once the run ends (or the 8KB
         buffer fills).
         """
-        try:
+        with contextlib.suppress(AttributeError, OSError):
             self.console.file.flush()
-        except (AttributeError, OSError):
-            pass
 
     def _run_agent(
         self,
@@ -1081,7 +1100,9 @@ class Tui:
             return True
         if cmd == "/plan":
             self.session.switch_to_plan()
-            self.console.print("[yellow]Plan mode — read-only; only the plan file is writable.[/yellow]")
+            self.console.print(
+                "[yellow]Plan mode — read-only; only the plan file is writable.[/yellow]"
+            )
         elif cmd == "/build":
             self.session.switch_to_build()
             self.console.print("[green]Build mode.[/green]")
@@ -1160,9 +1181,7 @@ class Tui:
                     return None, None
                 extra = " ".join(rest[1:]) if len(rest) > 1 else None
             return project, extra
-        first_is_dir = os.path.isdir(
-            os.path.abspath(os.path.expanduser(parts[0]))
-        )
+        first_is_dir = os.path.isdir(os.path.abspath(os.path.expanduser(parts[0])))
         if first_is_dir:
             return parts[0], " ".join(parts[1:]) or None
         return None, " ".join(parts)
@@ -1283,9 +1302,7 @@ class Tui:
             basename = os.path.basename(f)
             model = meta.get("gptel-model", "?")
             project = meta.get("python-agent-harness--project-dir", "?")
-            self.console.print(
-                f"  {basename:50s}  model={model:20s}  project={project}"
-            )
+            self.console.print(f"  {basename:50s}  model={model:20s}  project={project}")
 
     def _run_restore(self, arg: str) -> None:
         """Restore a saved session into the current TUI.

@@ -40,11 +40,11 @@ class TestProjectRoot(unittest.TestCase):
                 self.assertEqual(_project_root(d), str(Path(d).resolve()))
 
     def test_returns_cwd_when_nothing_found(self):
-        with tempfile.TemporaryDirectory() as d:
-            with mock.patch(
-                "subprocess.run", side_effect=subprocess.TimeoutExpired("git", 10)
-            ):
-                self.assertEqual(_project_root(d), d)
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("git", 10)),
+        ):
+            self.assertEqual(_project_root(d), d)
 
 
 class TestSessionCommandPrepare(unittest.TestCase):
@@ -59,11 +59,9 @@ class TestSessionCommandPrepare(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cwd, prompt, kickoff = cmd.prepare(project_dir=d, extra="client.py")
         self.assertEqual(cwd, d)
-        self.assertIn(d, prompt)             # ${path} substituted
-        self.assertIn("client.py", prompt)   # $ARGUMENTS substituted
-        self.assertEqual(
-            kickoff, "Proceed with the task described in your instructions.\n"
-        )
+        self.assertIn(d, prompt)  # ${path} substituted
+        self.assertIn("client.py", prompt)  # $ARGUMENTS substituted
+        self.assertEqual(kickoff, "Proceed with the task described in your instructions.\n")
 
     def test_prepare_replaces_path_in_kickoff(self):
         cmd = initialize_command()
@@ -83,9 +81,7 @@ class TestSessionCommandPrepare(unittest.TestCase):
 
 class TestLoadCustomCommands(unittest.TestCase):
     def test_missing_commands_dir_returns_empty(self):
-        with mock.patch.object(
-            commands, "COMMANDS_DIR", Path("/nonexistent/commands")
-        ):
+        with mock.patch.object(commands, "COMMANDS_DIR", Path("/nonexistent/commands")):
             self.assertEqual(load_custom_commands(), [])
 
     def test_skips_files_with_empty_names_and_builds_commands(self):
@@ -96,8 +92,10 @@ class TestLoadCustomCommands(unittest.TestCase):
             (cmds_dir / "explain.md").write_text("explain prompt", encoding="utf-8")
             # "---" strips to an empty name: must be skipped, not crash
             (cmds_dir / "---.md").write_text("ignored", encoding="utf-8")
-            with mock.patch.object(commands, "COMMANDS_DIR", cmds_dir), \
-                 mock.patch.object(commands, "PROMPTS_DIR", prompts_dir):
+            with (
+                mock.patch.object(commands, "COMMANDS_DIR", cmds_dir),
+                mock.patch.object(commands, "PROMPTS_DIR", prompts_dir),
+            ):
                 loaded = load_custom_commands()
         self.assertEqual([c.name for c in loaded], ["explain"])
         self.assertEqual(loaded[0].prompt_file, "commands/explain.md")

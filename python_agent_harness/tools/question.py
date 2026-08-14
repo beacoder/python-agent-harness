@@ -18,13 +18,13 @@ DESCRIPTION = (
     "3. Get decisions on implementation choices as you work\n"
     "4. Offer choices to the user about what direction to take\n\n"
     "Each question can have predefined options for the user to select from. "
-    "By default, a \"Type your own answer\" option is added; set custom to "
+    'By default, a "Type your own answer" option is added; set custom to '
     "false to disable it. Set multiple to true to allow selecting more than "
     "one option.\n\n"
     "If no options are provided, the user will be prompted for free-text "
     "input.\n\n"
     "If you recommend a specific option, make that the first option in the "
-    "list and add \"(Recommended)\" at the end of the label."
+    'list and add "(Recommended)" at the end of the label.'
 )
 
 PARAMETERS = {

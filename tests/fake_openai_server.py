@@ -51,12 +51,28 @@ class Handler(BaseHTTPRequestHandler):
                 {"choices": [{"delta": {"reasoning_content": " hard"}}]},
                 {"choices": [{"delta": {"role": "assistant", "content": "Hello"}}]},
                 {"choices": [{"delta": {"content": " world"}}]},
-                {"choices": [{"delta": {"tool_calls": [
-                    {"index": 0, "id": "call_1",
-                     "function": {"name": "Read",
-                                  "arguments": '{"file_path": "/tmp/x.py"}'}}
-                ]}}]},
-                {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 12, "completion_tokens": 3}},
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {
+                                            "name": "Read",
+                                            "arguments": '{"file_path": "/tmp/x.py"}',
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [{"delta": {}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+                },
             ]
             data = "".join("data: " + json.dumps(c) + "\n\n" for c in chunks) + "data: [DONE]\n\n"
         elif NON_STREAM_SEQUENCE:
@@ -64,10 +80,12 @@ class Handler(BaseHTTPRequestHandler):
         elif NON_STREAM_RESPONSE is not None:
             data = json.dumps(NON_STREAM_RESPONSE)
         else:
-            data = json.dumps({
-                "choices": [{"message": {"role": "assistant", "content": "sync reply"}}],
-                "usage": {"prompt_tokens": 5, "completion_tokens": 2},
-            })
+            data = json.dumps(
+                {
+                    "choices": [{"message": {"role": "assistant", "content": "sync reply"}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+                }
+            )
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream" if stream else "application/json")
         self.send_header("Content-Length", str(len(data.encode())))

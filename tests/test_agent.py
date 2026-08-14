@@ -1,5 +1,6 @@
 """End-to-end agent loop tests with a fake client and fake session."""
 
+import contextlib
 import json
 import os
 import sys
@@ -27,15 +28,31 @@ class FakeClient:
         self.calls = []
         self.kwargs = []
 
-    def chat(self, messages, tools=None, system=None, temperature=None,
-             max_tokens=None, reasoning_effort=None, on_delta=None, stream=True,
-             cancel_check=None, on_retry=None):
+    def chat(
+        self,
+        messages,
+        tools=None,
+        system=None,
+        temperature=None,
+        max_tokens=None,
+        reasoning_effort=None,
+        on_delta=None,
+        stream=True,
+        cancel_check=None,
+        on_retry=None,
+    ):
         self.calls.append([m.to_api() for m in messages])
-        self.kwargs.append({
-            "tools": tools, "system": system, "temperature": temperature,
-            "max_tokens": max_tokens, "reasoning_effort": reasoning_effort,
-            "stream": stream, "cancel_check": cancel_check,
-        })
+        self.kwargs.append(
+            {
+                "tools": tools,
+                "system": system,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "reasoning_effort": reasoning_effort,
+                "stream": stream,
+                "cancel_check": cancel_check,
+            }
+        )
         if not self.script:
             return Message(role="assistant", content="done"), Usage()
         item = self.script.pop(0)
@@ -43,10 +60,19 @@ class FakeClient:
             text, tool_calls = item
         else:
             text, tool_calls = item, None
-        return Message(role="assistant", content=text, tool_calls=tool_calls), Usage(input_tokens=100)
+        return Message(role="assistant", content=text, tool_calls=tool_calls), Usage(
+            input_tokens=100
+        )
 
-    def chat_sync(self, messages, system=None, temperature=None, max_tokens=None,
-                  reasoning_effort=None, cancel_check=None):
+    def chat_sync(
+        self,
+        messages,
+        system=None,
+        temperature=None,
+        max_tokens=None,
+        reasoning_effort=None,
+        cancel_check=None,
+    ):
         return Message(role="assistant", content="SYNC-OK"), Usage()
 
 
@@ -208,11 +234,13 @@ def agent_call(call_id, description, prompt="do it"):
     return ToolCall(
         id=call_id,
         name="Agent",
-        arguments=json.dumps({
-            "subagent_type": "subagent",
-            "description": description,
-            "prompt": prompt,
-        }),
+        arguments=json.dumps(
+            {
+                "subagent_type": "subagent",
+                "description": description,
+                "prompt": prompt,
+            }
+        ),
     )
 
 
@@ -232,15 +260,17 @@ class TestAgentLoop(unittest.TestCase):
         session.tools_enabled = False
         # round 1: text + tool call; round 2: tool call only; budget 2
         session.client.script = [
-            ("partial answer", [ToolCall(
-                id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
-            ("", [ToolCall(
-                id="2", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            (
+                "partial answer",
+                [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')],
+            ),
+            ("", [ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
         ]
         loop = AgentLoop(
             session,
             messages=[Message(role="user", content="do it")],
-            top_level=False, max_rounds=2,
+            top_level=False,
+            max_rounds=2,
         )
         result = loop.run()
         # the trailing messages are [tool result, assistant+tool_call,
@@ -253,15 +283,14 @@ class TestAgentLoop(unittest.TestCase):
         session = RecordingSession()
         session.tools_enabled = False
         session.client.script = [
-            ("", [ToolCall(
-                id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
-            ("", [ToolCall(
-                id="2", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            ("", [ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
         ]
         loop = AgentLoop(
             session,
             messages=[Message(role="user", content="do it")],
-            top_level=False, max_rounds=2,
+            top_level=False,
+            max_rounds=2,
         )
         result = loop.run()
         self.assertIsInstance(result, str)
@@ -281,9 +310,7 @@ class TestAgentLoop(unittest.TestCase):
             result = loop.run()
         self.assertEqual(result, "final answer")
         self.assertEqual(session.executed[0][0], "Read")
-        self.assertTrue(any(
-            m.role == "tool" and m.text() == "file content" for m in loop.messages
-        ))
+        self.assertTrue(any(m.role == "tool" and m.text() == "file content" for m in loop.messages))
 
     def test_sync_tools_run_one_by_one_in_call_order(self):
         """Sync tools in one round — everything except the async
@@ -293,11 +320,14 @@ class TestAgentLoop(unittest.TestCase):
         session = ParallelToolSession(duration=0.2)
         session.tools_enabled = False
         session.client.script = [
-            ("", [
-                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}'),
-                ToolCall(id="2", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
-                ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/y.py"}'),
-            ]),
+            (
+                "",
+                [
+                    ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}'),
+                    ToolCall(id="2", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
+                    ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/y.py"}'),
+                ],
+            ),
             "all done",
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="delegate")])
@@ -333,10 +363,14 @@ class TestAgentLoop(unittest.TestCase):
             session.execute_tool = real_execute
             loop = AgentLoop(session, messages=[Message(role="user", content="run")])
             calls = [
-                ToolCall(id="b1", name="Bash", arguments=json.dumps(
-                    {"command": "sleep 0.5 && echo one"})),
-                ToolCall(id="b2", name="Read", arguments=json.dumps(
-                    {"file_path": os.path.join(tmpdir, "x.txt")})),
+                ToolCall(
+                    id="b1", name="Bash", arguments=json.dumps({"command": "sleep 0.5 && echo one"})
+                ),
+                ToolCall(
+                    id="b2",
+                    name="Read",
+                    arguments=json.dumps({"file_path": os.path.join(tmpdir, "x.txt")}),
+                ),
             ]
             loop.pending = list(calls)
             start = time.monotonic()
@@ -361,11 +395,14 @@ class TestAgentLoop(unittest.TestCase):
         session = ParallelToolSession(duration=0.3)
         session.tools_enabled = False
         session.client.script = [
-            ("", [
-                agent_call("1", "alpha"),
-                ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/x.py"}'),
-                agent_call("3", "beta"),
-            ]),
+            (
+                "",
+                [
+                    agent_call("1", "alpha"),
+                    ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/x.py"}'),
+                    agent_call("3", "beta"),
+                ],
+            ),
             "done",
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="go")])
@@ -396,9 +433,7 @@ class TestAgentLoop(unittest.TestCase):
         result = {}
         worker = threading.Thread(
             target=lambda: result.update(
-                r=AgentLoop(
-                    session, messages=[Message(role="user", content="delegate")]
-                ).run()
+                r=AgentLoop(session, messages=[Message(role="user", content="delegate")]).run()
             )
         )
         worker.start()
@@ -418,17 +453,18 @@ class TestAgentLoop(unittest.TestCase):
         session = ParallelToolSession(duration=None)
         session.tools_enabled = False
         session.client.script = [
-            ("", [
-                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
-                ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
-            ]),
+            (
+                "",
+                [
+                    ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                    ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
+                ],
+            ),
         ]
         result = {}
         worker = threading.Thread(
             target=lambda: result.update(
-                r=AgentLoop(
-                    session, messages=[Message(role="user", content="read")]
-                ).run()
+                r=AgentLoop(session, messages=[Message(role="user", content="read")]).run()
             )
         )
         worker.start()
@@ -477,12 +513,15 @@ class TestAgentLoop(unittest.TestCase):
         session = RecordingSession()
         session.tools_enabled = False
         session.client.script = [
-            ("", [
-                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
-                ToolCall(id="2", name="Bash", arguments="not-json{{{"),
-                ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
-                ToolCall(id="4", name="Read", arguments="[1, 2, 3]"),
-            ]),
+            (
+                "",
+                [
+                    ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                    ToolCall(id="2", name="Bash", arguments="not-json{{{"),
+                    ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
+                    ToolCall(id="4", name="Read", arguments="[1, 2, 3]"),
+                ],
+            ),
             "done",
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="go")])
@@ -524,11 +563,14 @@ class TestAgentLoop(unittest.TestCase):
 
         session.execute_tool = exploding_execute
         session.client.script = [
-            ("", [
-                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
-                ToolCall(id="2", name="Bash", arguments='{"command": "echo hi"}'),
-                ToolCall(id="3", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
-            ]),
+            (
+                "",
+                [
+                    ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                    ToolCall(id="2", name="Bash", arguments='{"command": "echo hi"}'),
+                    ToolCall(id="3", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
+                ],
+            ),
             "all done",
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="go")])
@@ -578,6 +620,7 @@ class TestAgentLoop(unittest.TestCase):
                 f.write("y = 2\n")
             session = RecordingSession(project_dir=tmpdir)
             session.tools_enabled = False
+
             # run the REAL Edit implementation (RecordingSession normally
             # returns canned results)
             def real_execute(name, args, call_id=None):
@@ -586,10 +629,16 @@ class TestAgentLoop(unittest.TestCase):
             session.execute_tool = real_execute
             loop = AgentLoop(session, messages=[Message(role="user", content="edit")])
             calls = [
-                ToolCall(id="e1", name="Edit", arguments=json.dumps(
-                    {"path": fa, "old_str": "x = 1", "new_str": "x = 42"})),
-                ToolCall(id="e2", name="Edit", arguments=json.dumps(
-                    {"path": fb, "old_str": "y = 2", "new_str": "y = 43"})),
+                ToolCall(
+                    id="e1",
+                    name="Edit",
+                    arguments=json.dumps({"path": fa, "old_str": "x = 1", "new_str": "x = 42"}),
+                ),
+                ToolCall(
+                    id="e2",
+                    name="Edit",
+                    arguments=json.dumps({"path": fb, "old_str": "y = 2", "new_str": "y = 43"}),
+                ),
             ]
             loop.pending = list(calls)
             loop._run_tool_round()
@@ -626,11 +675,14 @@ class TestAgentLoop(unittest.TestCase):
 
         session.execute_tool = none_execute
         session.client.script = [
-            ("", [
-                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
-                ToolCall(id="2", name="Bash", arguments='{"command": "echo hi"}'),
-                ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
-            ]),
+            (
+                "",
+                [
+                    ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                    ToolCall(id="2", name="Bash", arguments='{"command": "echo hi"}'),
+                    ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
+                ],
+            ),
             "done",
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="go")])
@@ -652,9 +704,14 @@ class TestAgentLoop(unittest.TestCase):
         session = RecordingSession()
         session.tools_enabled = False
         session.plan_mode = PlanMode("/tmp/fakeproj")
-        session.plan_mode.set_mode(session.plan_mode.mode.PLAN, {
-            "plan": "P1", "plan-mode": "P2", "build-switch": "B",
-        })
+        session.plan_mode.set_mode(
+            session.plan_mode.mode.PLAN,
+            {
+                "plan": "P1",
+                "plan-mode": "P2",
+                "build-switch": "B",
+            },
+        )
 
         def real_execute(name, args, call_id=None):
             return AgentSession.execute_tool(session, name, args, call_id=call_id)
@@ -666,14 +723,25 @@ class TestAgentLoop(unittest.TestCase):
             with open(readable, "w") as f:
                 f.write("readable content\n")
             session.client.script = [
-                ("", [
-                    ToolCall(id="1", name="Write", arguments=json.dumps(
-                        {"path": tmpdir,
-                         "filename": "blocked.txt",
-                         "content": "should not land"})),
-                    ToolCall(id="2", name="Read", arguments=json.dumps(
-                        {"file_path": readable})),
-                ]),
+                (
+                    "",
+                    [
+                        ToolCall(
+                            id="1",
+                            name="Write",
+                            arguments=json.dumps(
+                                {
+                                    "path": tmpdir,
+                                    "filename": "blocked.txt",
+                                    "content": "should not land",
+                                }
+                            ),
+                        ),
+                        ToolCall(
+                            id="2", name="Read", arguments=json.dumps({"file_path": readable})
+                        ),
+                    ],
+                ),
                 "done",
             ]
             loop = AgentLoop(session, messages=[Message(role="user", content="go")])
@@ -702,10 +770,12 @@ class TestAgentLoop(unittest.TestCase):
             session.execute_tool = real_execute
             loop = AgentLoop(session, messages=[Message(role="user", content="run")])
             calls = [
-                ToolCall(id="b1", name="Bash", arguments=json.dumps(
-                    {"command": "sleep 0.5 && echo one"})),
-                ToolCall(id="b2", name="Bash", arguments=json.dumps(
-                    {"command": "sleep 0.5 && echo two"})),
+                ToolCall(
+                    id="b1", name="Bash", arguments=json.dumps({"command": "sleep 0.5 && echo one"})
+                ),
+                ToolCall(
+                    id="b2", name="Bash", arguments=json.dumps({"command": "sleep 0.5 && echo two"})
+                ),
             ]
             loop.pending = list(calls)
             start = time.monotonic()
@@ -725,18 +795,22 @@ class TestAgentLoop(unittest.TestCase):
             result = loop.run()
         self.assertEqual(result, "done now")
         # the nudge message was injected
-        self.assertTrue(any(
-            m.role == "user" and "Task Completion Rules" in m.text()
-            for m in loop.messages
-        ))
+        self.assertTrue(
+            any(m.role == "user" and "Task Completion Rules" in m.text() for m in loop.messages)
+        )
 
     def test_plan_mode_queues_prompts(self):
         session = RecordingSession()
         session.client.script = ["ok"]
         session.plan_mode = PlanMode("/tmp/fakeproj")
-        session.plan_mode.set_mode(session.plan_mode.mode.PLAN, {
-            "plan": "P1", "plan-mode": "P2 ${planInfo}", "build-switch": "B",
-        })
+        session.plan_mode.set_mode(
+            session.plan_mode.mode.PLAN,
+            {
+                "plan": "P1",
+                "plan-mode": "P2 ${planInfo}",
+                "build-switch": "B",
+            },
+        )
         loop = AgentLoop(session, messages=[Message(role="user", content="plan it")])
         loop.run()
         sent = session.client.calls[0]
@@ -766,9 +840,7 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(loop.messages[0].role, "user")
         self.assertEqual(loop.messages[1].role, "user")
         self.assertIn("Compacted Summary", loop.messages[0].text())
-        self.assertTrue(any(
-            "Compacted Summary" in m.text() for m in loop.messages
-        ))
+        self.assertTrue(any("Compacted Summary" in m.text() for m in loop.messages))
 
     def test_compact_resets_nudge_budget(self):
         """Compaction must reset the nudge budget: a terminal answer right
@@ -925,9 +997,7 @@ class TestAgentLoop(unittest.TestCase):
             result = loop.run()
         self.assertEqual(result, "final answer")
         self.assertEqual(session.executed[0][0], "Read")
-        self.assertTrue(any(
-            m.role == "tool" and m.text() == "file content" for m in loop.messages
-        ))
+        self.assertTrue(any(m.role == "tool" and m.text() == "file content" for m in loop.messages))
         # every request in the run went out non-streaming
         self.assertTrue(all(k["stream"] is False for k in session.client.kwargs))
 
@@ -952,42 +1022,56 @@ class TestAgentLoop(unittest.TestCase):
             try:
                 fake_openai_server.NON_STREAM_SEQUENCE = [
                     {  # 1st request: a tool call, no text
-                        "choices": [{"message": {
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [{
-                                "id": "call_1", "type": "function",
-                                "function": {"name": "Read", "arguments": json.dumps(
-                                    {"file_path": str(data_file)}
-                                )},
-                            }],
-                        }}],
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "tool_calls": [
+                                        {
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "Read",
+                                                "arguments": json.dumps(
+                                                    {"file_path": str(data_file)}
+                                                ),
+                                            },
+                                        }
+                                    ],
+                                }
+                            }
+                        ],
                         "usage": {"prompt_tokens": 1, "completion_tokens": 2},
                     },
                     {  # 2nd request: the final answer
-                        "choices": [{"message": {
-                            "role": "assistant", "content": "http non-streaming done",
-                        }}],
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "http non-streaming done",
+                                }
+                            }
+                        ],
                         "usage": {"prompt_tokens": 3, "completion_tokens": 4},
                     },
                 ]
                 srv = serve()
                 host, port = srv.server_address
-                client = Client(
-                    base_url=f"http://{host}:{port}/v1", api_key="test", model="fake"
-                )
+                client = Client(base_url=f"http://{host}:{port}/v1", api_key="test", model="fake")
                 session = AgentSession(
-                    project_dir=d, client=client, model="fake",
-                    registry=default_registry(), stream=False,
+                    project_dir=d,
+                    client=client,
+                    model="fake",
+                    registry=default_registry(),
+                    stream=False,
                 )
                 # non-agentic: no completion nudges — the loop must terminate
                 # on the scripted final answer; the fake server still returns
                 # tool_calls, so the tool round runs regardless
                 session.tools_enabled = False
                 try:
-                    loop = AgentLoop(
-                        session, messages=[Message(role="user", content="read it")]
-                    )
+                    loop = AgentLoop(session, messages=[Message(role="user", content="read it")])
                     result = loop.run()
                 finally:
                     client.close()
@@ -1003,9 +1087,7 @@ class TestAgentLoop(unittest.TestCase):
             # every request (loop chats + title generation) went out
             # non-streaming with the stream flag set
             self.assertTrue(bodies)
-            self.assertTrue(
-                all(b.get("stream") is False for b in bodies)
-            )
+            self.assertTrue(all(b.get("stream") is False for b in bodies))
 
     def test_abort_unblocks_stalled_http_stream(self):
         """Ctrl-C during a REAL stalled chunked SSE stream must unblock
@@ -1036,13 +1118,11 @@ class TestAgentLoop(unittest.TestCase):
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
                 first = b'data: {"choices": [{"delta": {"content": "hi"}}]}\n\n'
-                self.wfile.write(("%x" % len(first)).encode() + b"\r\n" + first + b"\r\n")
+                self.wfile.write(f"{len(first):x}".encode() + b"\r\n" + first + b"\r\n")
                 self.wfile.flush()
                 _time.sleep(60)
-                try:
+                with contextlib.suppress(Exception):
                     self.wfile.write(b"0\r\n\r\n")
-                except Exception:
-                    pass
 
             def log_message(self, *a):
                 pass
@@ -1052,9 +1132,7 @@ class TestAgentLoop(unittest.TestCase):
             server = ThreadingHTTPServer(("127.0.0.1", 0), StallHandler)
             _threading.Thread(target=server.serve_forever, daemon=True).start()
             host, port = server.server_address
-            client = Client(
-                base_url=f"http://{host}:{port}/v1", api_key="test", model="fake"
-            )
+            client = Client(base_url=f"http://{host}:{port}/v1", api_key="test", model="fake")
             out = {}
 
             def worker():
@@ -1105,9 +1183,7 @@ class TestAgentLoop(unittest.TestCase):
         result = {}
         worker = threading.Thread(
             target=lambda: result.update(
-                r=AgentLoop(
-                    session, messages=[Message(role="user", content="hi")]
-                ).run()
+                r=AgentLoop(session, messages=[Message(role="user", content="hi")]).run()
             )
         )
         worker.start()
@@ -1147,9 +1223,14 @@ class TestAgentLoop(unittest.TestCase):
 
         orig_chat_sync = session.client.chat_sync
 
-        def tracking_chat_sync(messages, system=None, temperature=None,
-                               max_tokens=None, reasoning_effort=None,
-                               cancel_check=None):
+        def tracking_chat_sync(
+            messages,
+            system=None,
+            temperature=None,
+            max_tokens=None,
+            reasoning_effort=None,
+            cancel_check=None,
+        ):
             session.client.chat_sync_calls.append((messages, system))
             return orig_chat_sync(messages, system=system)
 
@@ -1178,14 +1259,17 @@ class TestAgentLoop(unittest.TestCase):
         session.client.script = ["bye"]
         session.client.chat_sync_calls = []
 
-        def chat_sync(messages, system=None, temperature=None,
-                      max_tokens=None, reasoning_effort=None):
+        def chat_sync(
+            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+        ):
             session.client.chat_sync_calls.append(temperature)
             return (
                 Message(
                     role="assistant",
-                    content=("We need to generate a title for the conversation. "
-                             "Adding MCP support to agent harness"),
+                    content=(
+                        "We need to generate a title for the conversation. "
+                        "Adding MCP support to agent harness"
+                    ),
                     reasoning="We need to generate a title for the conversation.",
                 ),
                 Usage(),
@@ -1282,10 +1366,13 @@ class TestAgentLoop(unittest.TestCase):
         session.execute_tool = cancelling_execute
         session.client.script = [
             ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}')]),
-            ("", [
-                ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
-                ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
-            ]),
+            (
+                "",
+                [
+                    ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
+                    ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
+                ],
+            ),
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="read all")])
         self.assertIsNone(loop.run())
@@ -1295,8 +1382,9 @@ class TestAgentLoop(unittest.TestCase):
         # never delivered to the conversation
         self.assertGreaterEqual(len(session.executed), 2)
         self.assertLessEqual(len(session.executed), 3)
-        self.assertFalse(any(m.role == "tool" and m.tool_call_id in ("2", "3")
-                             for m in loop.messages))
+        self.assertFalse(
+            any(m.role == "tool" and m.tool_call_id in ("2", "3") for m in loop.messages)
+        )
         # the completed round survives; the dangling second round
         # (tool calls 2+3 unanswered) is cut from the shared history
         roles = [m.role for m in session.last_messages]
@@ -1320,11 +1408,14 @@ class TestAgentLoop(unittest.TestCase):
 
         session.execute_tool = cancelling_execute
         session.client.script = [
-            ("", [
-                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
-                ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
-                ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
-            ]),
+            (
+                "",
+                [
+                    ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                    ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
+                    ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
+                ],
+            ),
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="read all")])
         self.assertIsNone(loop.run())
@@ -1373,11 +1464,11 @@ class TestAgentLoop(unittest.TestCase):
         session = RecordingSession()
         session.tools_enabled = False
         session.cancel_event.set()
-        session.cancel_generation += 1   # Ctrl-C
+        session.cancel_generation += 1  # Ctrl-C
         loop = AgentLoop(session, messages=[Message(role="user", content="q2")])
         loop._run_gen = session.run_generation  # captured before /clear
-        session.last_messages = []       # /clear wiped the shared state
-        session.run_generation += 1      # /clear invalidated in-flight workers
+        session.last_messages = []  # /clear wiped the shared state
+        session.run_generation += 1  # /clear invalidated in-flight workers
         self.assertIsNone(loop.run())
         self.assertEqual(session.last_messages, [])
 
@@ -1395,12 +1486,8 @@ class TestAgentLoop(unittest.TestCase):
         gen = session.run_generation
         session.compact_conversation()
         self.assertEqual(session.run_generation, gen + 1)
-        self.assertEqual(
-            [m.role for m in session.last_messages], ["user"]
-        )
-        self.assertIn(
-            "Compacted Summary", session.last_messages[0].text()
-        )
+        self.assertEqual([m.role for m in session.last_messages], ["user"])
+        self.assertIn("Compacted Summary", session.last_messages[0].text())
         session.summarize_conversation()
         self.assertEqual(session.run_generation, gen + 2)
 
@@ -1440,8 +1527,9 @@ class TestAgentLoop(unittest.TestCase):
         conversation (fail cleanly, reset the compacting flag)."""
         session = RecordingSession()
 
-        def empty_chat_sync(messages, system=None, temperature=None,
-                            max_tokens=None, reasoning_effort=None):
+        def empty_chat_sync(
+            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+        ):
             return Message(role="assistant", content=""), Usage()
 
         session.client.chat_sync = empty_chat_sync
@@ -1454,8 +1542,9 @@ class TestAgentLoop(unittest.TestCase):
         the loop continues without replacing the history."""
         session = RecordingSession()
 
-        def boom_chat_sync(messages, system=None, temperature=None,
-                           max_tokens=None, reasoning_effort=None):
+        def boom_chat_sync(
+            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+        ):
             raise RuntimeError("compaction API down")
 
         session.client.chat_sync = boom_chat_sync
@@ -1481,7 +1570,8 @@ class TestAgentLoop(unittest.TestCase):
         loop = AgentLoop(
             session,
             messages=[Message(role="user", content="hi")],
-            top_level=False, max_rounds=0,
+            top_level=False,
+            max_rounds=0,
         )
         self.assertIsNone(loop.run())
 
@@ -1496,9 +1586,7 @@ class TestAgentFSM(unittest.TestCase):
 
     def test_terminal_states_have_no_transitions(self):
         """DONE/ERRS/ABRT are terminals: no table entry, driver stops."""
-        self.assertEqual(
-            AgentLoop.TERMINAL, {AgentLoop.DONE, AgentLoop.ERRS, AgentLoop.ABRT}
-        )
+        self.assertEqual(AgentLoop.TERMINAL, {AgentLoop.DONE, AgentLoop.ERRS, AgentLoop.ABRT})
         for state in AgentLoop.TERMINAL:
             self.assertNotIn(state, AgentLoop.TRANSITIONS)
 
@@ -1516,8 +1604,7 @@ class TestAgentFSM(unittest.TestCase):
         session = RecordingSession()
         session.tools_enabled = False
         session.client.script = [
-            ("", [ToolCall(
-                id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
             "final",
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="read it")])
@@ -1525,8 +1612,7 @@ class TestAgentFSM(unittest.TestCase):
         self.assertEqual(loop.state, AgentLoop.DONE)
         self.assertEqual(
             loop.history,
-            [AgentLoop.WAIT, AgentLoop.TOOL, AgentLoop.TRET,
-             AgentLoop.WAIT, AgentLoop.SUPERVISE],
+            [AgentLoop.WAIT, AgentLoop.TOOL, AgentLoop.TRET, AgentLoop.WAIT, AgentLoop.SUPERVISE],
         )
 
     def test_cancel_trace_ends_in_abrt(self):
@@ -1563,13 +1649,13 @@ class TestAgentFSM(unittest.TestCase):
         session = RecordingSession()
         session.tools_enabled = False
         session.client.script = [
-            ("partial", [ToolCall(
-                id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            ("partial", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
         ]
         loop = AgentLoop(
             session,
             messages=[Message(role="user", content="do it")],
-            top_level=False, max_rounds=1,
+            top_level=False,
+            max_rounds=1,
         )
         self.assertEqual(loop.run(), "partial")
         self.assertEqual(loop.state, AgentLoop.DONE)
@@ -1596,15 +1682,13 @@ class TestAgentFSM(unittest.TestCase):
                 "python_agent_harness.agent.estimate_payload_tokens",
                 side_effect=fake_estimate,
             ):
-                loop = AgentLoop(
-                    session, messages=[Message(role="user", content="long task")]
-                )
+                loop = AgentLoop(session, messages=[Message(role="user", content="long task")])
                 result = loop.run()
         self.assertEqual(result, "answer after compaction")
         self.assertEqual(loop.state, AgentLoop.DONE)
         self.assertIn(
             (AgentLoop.WAIT, AgentLoop.WAIT),
-            zip(loop.history, loop.history[1:]),
+            zip(loop.history, loop.history[1:], strict=False),
         )
 
     def test_nudge_cycles_supervise_back_to_wait(self):
@@ -1620,9 +1704,14 @@ class TestAgentFSM(unittest.TestCase):
         self.assertEqual(loop.supervisor.nudge_count, 2)
         self.assertEqual(
             loop.history,
-            [AgentLoop.WAIT, AgentLoop.SUPERVISE,
-             AgentLoop.WAIT, AgentLoop.SUPERVISE,
-             AgentLoop.WAIT, AgentLoop.SUPERVISE],
+            [
+                AgentLoop.WAIT,
+                AgentLoop.SUPERVISE,
+                AgentLoop.WAIT,
+                AgentLoop.SUPERVISE,
+                AgentLoop.WAIT,
+                AgentLoop.SUPERVISE,
+            ],
         )
 
     def test_wait_resets_info_between_rounds(self):
@@ -1631,8 +1720,7 @@ class TestAgentFSM(unittest.TestCase):
         session = RecordingSession()
         session.tools_enabled = False
         session.client.script = [
-            ("", [ToolCall(
-                id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
             "done",
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
@@ -1692,11 +1780,14 @@ class TestToolRounds(unittest.TestCase):
         session = StaggeredSession({"Read": 0.5, "Bash": 0.05, "Grep": 0.1})
         session.tools_enabled = False
         session.client.script = [
-            ("", [
-                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
-                ToolCall(id="2", name="Bash", arguments='{"command": "echo hi"}'),
-                ToolCall(id="3", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
-            ]),
+            (
+                "",
+                [
+                    ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                    ToolCall(id="2", name="Bash", arguments='{"command": "echo hi"}'),
+                    ToolCall(id="3", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
+                ],
+            ),
             "done",
         ]
         loop = AgentLoop(session, messages=[Message(role="user", content="go")])
@@ -1754,11 +1845,14 @@ class TestToolRounds(unittest.TestCase):
         session = RecordingSession()
         session.tools_enabled = False
         session.client.script = [
-            ("", [
-                ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
-                ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
-                ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
-            ]),
+            (
+                "",
+                [
+                    ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                    ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
+                    ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/c.py"}'),
+                ],
+            ),
         ]
         calls = {"n": 0}
         orig_deliver = AgentLoop._deliver_tool_result
@@ -1797,14 +1891,20 @@ class TestToolRounds(unittest.TestCase):
         session = RealParallelSession(duration=0.4)
         session.tools_enabled = False
         session.client.script = [
-            ("", [
-                agent_call("1", "sub task", "sub prompt"),
-                ToolCall(id="2", name="Glob", arguments='{"pattern": "*.py"}'),
-            ]),
-            ("", [
-                ToolCall(id="s1", name="Bash", arguments='{"command": "echo hi"}'),
-                ToolCall(id="s2", name="Read", arguments='{"file_path": "/tmp/x.py"}'),
-            ]),
+            (
+                "",
+                [
+                    agent_call("1", "sub task", "sub prompt"),
+                    ToolCall(id="2", name="Glob", arguments='{"pattern": "*.py"}'),
+                ],
+            ),
+            (
+                "",
+                [
+                    ToolCall(id="s1", name="Bash", arguments='{"command": "echo hi"}'),
+                    ToolCall(id="s2", name="Read", arguments='{"file_path": "/tmp/x.py"}'),
+                ],
+            ),
             "sub done",
             "parent done",
         ]
@@ -1832,36 +1932,55 @@ class TestToolRounds(unittest.TestCase):
         assistant text reply mid-round, or a stray tool result — back
         to the last complete round (the defensive branches protecting
         the tool-round cancellation recovery)."""
-        a1 = Message(role="assistant", content="", tool_calls=[
-            ToolCall(id="1", name="Read", arguments="{}")])
-        a2 = Message(role="assistant", content="", tool_calls=[
-            ToolCall(id="2", name="Read", arguments="{}")])
+        a1 = Message(
+            role="assistant", content="", tool_calls=[ToolCall(id="1", name="Read", arguments="{}")]
+        )
+        a2 = Message(
+            role="assistant", content="", tool_calls=[ToolCall(id="2", name="Read", arguments="{}")]
+        )
         t1 = Message(role="tool", content="r1", tool_call_id="1", name="Read")
         session = RecordingSession()
         # a second tool-call message while a round is open → cut back to
         # the last COMPLETE round (before the open one)
-        loop = AgentLoop(session, messages=[
-            Message(role="user", content="u"), a1, t1, a2,
-            Message(role="assistant", content="", tool_calls=[
-                ToolCall(id="3", name="Read", arguments="{}")]),
-        ])
+        loop = AgentLoop(
+            session,
+            messages=[
+                Message(role="user", content="u"),
+                a1,
+                t1,
+                a2,
+                Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=[ToolCall(id="3", name="Read", arguments="{}")],
+                ),
+            ],
+        )
         self.assertEqual(
             [m.role for m in loop._salvage_messages()],
             ["user", "assistant", "tool"],
         )
         # an assistant TEXT reply while a round is open → cut to the
         # last complete prefix (the user message only)
-        loop = AgentLoop(session, messages=[
-            Message(role="user", content="u"), a1,
-            Message(role="assistant", content="text"),
-        ])
+        loop = AgentLoop(
+            session,
+            messages=[
+                Message(role="user", content="u"),
+                a1,
+                Message(role="assistant", content="text"),
+            ],
+        )
         self.assertEqual([m.role for m in loop._salvage_messages()], ["user"])
         # a USER message while a round is open → cut to the last
         # complete prefix (the user message only)
-        loop = AgentLoop(session, messages=[
-            Message(role="user", content="u"), a1,
-            Message(role="user", content="interrupt"),
-        ])
+        loop = AgentLoop(
+            session,
+            messages=[
+                Message(role="user", content="u"),
+                a1,
+                Message(role="user", content="interrupt"),
+            ],
+        )
         self.assertEqual([m.role for m in loop._salvage_messages()], ["user"])
 
 
@@ -1875,9 +1994,14 @@ class FakeSupervisorSession:
 class TestSupervisor(unittest.TestCase):
     def test_terminal_agentic_top_level_nudges(self):
         sup = Supervisor(FakeSupervisorSession())
-        self.assertTrue(sup.supervise(
-            terminal=True, agentic=True, top_level=True, pending=False,
-        ))
+        self.assertTrue(
+            sup.supervise(
+                terminal=True,
+                agentic=True,
+                top_level=True,
+                pending=False,
+            )
+        )
         self.assertEqual(sup.nudge_count, 1)
 
     def test_nudge_budget_exhausted(self):
@@ -1885,15 +2009,25 @@ class TestSupervisor(unittest.TestCase):
         for _ in range(2):
             sup.supervise(terminal=True, agentic=True, top_level=True, pending=False)
         self.assertEqual(sup.nudge_count, 2)
-        self.assertFalse(sup.supervise(
-            terminal=True, agentic=True, top_level=True, pending=False,
-        ))
+        self.assertFalse(
+            sup.supervise(
+                terminal=True,
+                agentic=True,
+                top_level=True,
+                pending=False,
+            )
+        )
 
     def test_dead_session_fails_closed(self):
         sup = Supervisor(FakeSupervisorSession(alive=False))
-        self.assertFalse(sup.supervise(
-            terminal=True, agentic=True, top_level=True, pending=False,
-        ))
+        self.assertFalse(
+            sup.supervise(
+                terminal=True,
+                agentic=True,
+                top_level=True,
+                pending=False,
+            )
+        )
 
     def test_reset_nudges_on_tool_calls(self):
         sup = Supervisor(FakeSupervisorSession())
@@ -1903,33 +2037,58 @@ class TestSupervisor(unittest.TestCase):
 
     def test_compacting_blocks_supervision(self):
         sup = Supervisor(FakeSupervisorSession(compacting=True))
-        self.assertFalse(sup.supervise(
-            terminal=True, agentic=True, top_level=True, pending=False,
-        ))
+        self.assertFalse(
+            sup.supervise(
+                terminal=True,
+                agentic=True,
+                top_level=True,
+                pending=False,
+            )
+        )
 
     def test_non_agentic_does_not_nudge(self):
         sup = Supervisor(FakeSupervisorSession(tools=False))
-        self.assertFalse(sup.supervise(
-            terminal=True, agentic=False, top_level=True, pending=False,
-        ))
+        self.assertFalse(
+            sup.supervise(
+                terminal=True,
+                agentic=False,
+                top_level=True,
+                pending=False,
+            )
+        )
 
     def test_non_top_level_does_not_nudge(self):
         sup = Supervisor(FakeSupervisorSession())
-        self.assertFalse(sup.supervise(
-            terminal=True, agentic=True, top_level=False, pending=False,
-        ))
+        self.assertFalse(
+            sup.supervise(
+                terminal=True,
+                agentic=True,
+                top_level=False,
+                pending=False,
+            )
+        )
 
     def test_pending_tools_does_not_nudge(self):
         sup = Supervisor(FakeSupervisorSession())
-        self.assertFalse(sup.supervise(
-            terminal=True, agentic=True, top_level=True, pending=True,
-        ))
+        self.assertFalse(
+            sup.supervise(
+                terminal=True,
+                agentic=True,
+                top_level=True,
+                pending=True,
+            )
+        )
 
     def test_non_terminal_does_not_nudge(self):
         sup = Supervisor(FakeSupervisorSession())
-        self.assertFalse(sup.supervise(
-            terminal=False, agentic=True, top_level=True, pending=False,
-        ))
+        self.assertFalse(
+            sup.supervise(
+                terminal=False,
+                agentic=True,
+                top_level=True,
+                pending=False,
+            )
+        )
 
 
 class TestSanitizeToolResult(unittest.TestCase):
@@ -1984,10 +2143,12 @@ class TestBashAsync(unittest.TestCase):
                 f.write("file content\n")
             session, loop = self.make_round(tmpdir)
             loop.pending = [
-                ToolCall(id="b1", name="Bash", arguments=json.dumps(
-                    {"command": "echo one"})),
-                ToolCall(id="b2", name="Read", arguments=json.dumps(
-                    {"file_path": os.path.join(tmpdir, "x.txt")})),
+                ToolCall(id="b1", name="Bash", arguments=json.dumps({"command": "echo one"})),
+                ToolCall(
+                    id="b2",
+                    name="Read",
+                    arguments=json.dumps({"file_path": os.path.join(tmpdir, "x.txt")}),
+                ),
             ]
             loop._run_tool_round()
             by_id = {m.tool_call_id: m.text().strip() for m in loop.messages if m.role == "tool"}

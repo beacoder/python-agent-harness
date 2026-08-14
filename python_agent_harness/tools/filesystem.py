@@ -44,17 +44,18 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import TypeGuard
 
-from .base import Tool, ToolContext
 from ..diffrender import unified_diff
+from .base import Tool, ToolContext
 
-MAX_OUTPUT = 20_000   # spill threshold (chars), matching gptel-agent--truncate-buffer
-SPOOL_LINES = 50      # preview lines kept when results are spilled
+MAX_OUTPUT = 20_000  # spill threshold (chars), matching gptel-agent--truncate-buffer
+SPOOL_LINES = 50  # preview lines kept when results are spilled
 READ_SIZE_LIMIT = 400 * 1024  # whole-file reads above this are refused
-                              # (mirrors gptel-agent-read-file-size-threshold)
+# (mirrors gptel-agent-read-file-size-threshold)
 
 _spooled_files: list[str] = []  # temp files created by _spool, cleaned
-                                # up by cleanup_spooled_files on session close
+# up by cleanup_spooled_files on session close
 
 
 def _truncate(text: str, label: str = "output") -> str:
@@ -135,7 +136,7 @@ class Read(Tool):
     description = (
         "Read file contents between specified line numbers `start_line` and "
         "`end_line`, with both ends included.\n\n"
-        "Consider using the \"Grep\" tool to find the right range to read first.\n\n"
+        'Consider using the "Grep" tool to find the right range to read first.\n\n'
         "Reads the whole file if the line range is not provided.\n\n"
         f"Files over {READ_SIZE_LIMIT // 1024} KB in size can only be read by "
         "specifying a line range.\n"
@@ -146,8 +147,14 @@ class Read(Tool):
         "type": "object",
         "properties": {
             "file_path": {"type": "string", "description": "The path to the file to be read"},
-            "start_line": {"type": "integer", "description": "The line to start reading from, defaults to the start of the file"},
-            "end_line": {"type": "integer", "description": "The line up to which to read, defaults to the end of the file."},
+            "start_line": {
+                "type": "integer",
+                "description": "The line to start reading from, defaults to the start of the file",
+            },
+            "end_line": {
+                "type": "integer",
+                "description": "The line up to which to read, defaults to the end of the file.",
+            },
         },
         "required": ["file_path"],
     }
@@ -171,7 +178,7 @@ class Read(Tool):
                     "range to read"
                 )
             try:
-                with open(full, "r", encoding="utf-8", errors="replace") as f:
+                with open(full, encoding="utf-8", errors="replace") as f:
                     return f.read()
             except OSError as e:
                 return f"Error: cannot read {path}: {e}"
@@ -185,10 +192,10 @@ class Read(Tool):
         # Stream the file line by line instead of loading it whole, so
         # huge files can be read in ranges with constant memory.
         selected: list[str] = []
-        total: int | None = None   # exact line count once EOF is reached
+        total: int | None = None  # exact line count once EOF is reached
         reached_eof = True
         try:
-            with open(full, "r", encoding="utf-8", errors="replace") as f:
+            with open(full, encoding="utf-8", errors="replace") as f:
                 for lineno, line in enumerate(f, 1):
                     if end is not None and lineno > end:
                         reached_eof = False
@@ -199,9 +206,9 @@ class Read(Tool):
         except OSError as e:
             return f"Error: cannot read {path}: {e}"
         if end is not None and reached_eof and total is not None:
-            end = min(end, total)   # clamp to the real file end
+            end = min(end, total)  # clamp to the real file end
         if total is None:
-            total = 0               # empty file
+            total = 0  # empty file
         if start > total:
             return f"Error: start_line {start} > end_line {end if end is not None else total}"
         end_eff = end if end is not None else total
@@ -216,13 +223,13 @@ class GlobTool(Tool):
     name = "Glob"
     description = (
         "Recursively find files matching a provided glob pattern.\n\n"
-        "- Supports glob patterns like \"*.md\" or \"*test*.py\".\n"
+        '- Supports glob patterns like "*.md" or "*test*.py".\n'
         "- Inside a git repository, matching respects .gitignore and covers "
         "both tracked and untracked files.\n"
         "- Returns matching file paths (absolute) at all depths.  Limit the "
         "depth of the search by providing the `depth` argument.\n"
         "- When you are doing an open ended search that may require multiple "
-        "rounds of globbing and grepping, use the \"Agent\" tool instead.\n"
+        'rounds of globbing and grepping, use the "Agent" tool instead.\n'
         "- Oversized results are spilled to a temp file (see the 'Stored in:' "
         "path); use Read to view the full output."
     )
@@ -232,22 +239,20 @@ class GlobTool(Tool):
             "pattern": {
                 "type": "string",
                 "description": (
-                    "Glob pattern to match, for example \"*.el\". Must not be "
-                    "empty.\nUse \"*\" to list all files in a directory."
+                    'Glob pattern to match, for example "*.el". Must not be '
+                    'empty.\nUse "*" to list all files in a directory.'
                 ),
             },
             "path": {
                 "type": "string",
                 "description": (
-                    "Directory to search in.  Supports relative paths and "
-                    "defaults to \".\""
+                    'Directory to search in.  Supports relative paths and defaults to "."'
                 ),
             },
             "depth": {
                 "type": "integer",
                 "description": (
-                    "Limit directory depth of search, 1 or higher. Defaults "
-                    "to no limit."
+                    "Limit directory depth of search, 1 or higher. Defaults to no limit."
                 ),
             },
         },
@@ -279,10 +284,23 @@ class GlobTool(Tool):
             pathspec = pattern if rel == "." else f"{rel}/{pattern}".replace(os.sep, "/")
             try:
                 proc = subprocess.run(
-                    ["git", "ls-files", "-z", "--full-name", "--cached",
-                     "--others", "--exclude-standard", "--", pathspec],
-                    cwd=git_root, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=60,
+                    [
+                        "git",
+                        "ls-files",
+                        "-z",
+                        "--full-name",
+                        "--cached",
+                        "--others",
+                        "--exclude-standard",
+                        "--",
+                        pathspec,
+                    ],
+                    cwd=git_root,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=60,
                 )
             except (OSError, subprocess.TimeoutExpired) as e:
                 return f"Error: {e}"
@@ -293,14 +311,30 @@ class GlobTool(Tool):
             return _git_glob_results(proc.stdout, git_root, base, depth)
 
         # --- Tree strategy (fallback outside git) ---
-        cmd = ["tree", "-l", "-f", "-i", "-I", ".git",
-               "--sort=mtime", "--ignore-case", "--prune", "-P", pattern, base]
+        cmd = [
+            "tree",
+            "-l",
+            "-f",
+            "-i",
+            "-I",
+            ".git",
+            "--sort=mtime",
+            "--ignore-case",
+            "--prune",
+            "-P",
+            pattern,
+            base,
+        ]
         if _natnump(depth):
             cmd += ["-L", str(depth)]
         try:
             proc = subprocess.run(
-                cmd, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=60,
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             return f"Error: {e}"
@@ -310,7 +344,7 @@ class GlobTool(Tool):
         return _spool(out, "glob")
 
 
-def _natnump(n: object) -> bool:
+def _natnump(n: object) -> TypeGuard[int]:
     """True for a non-negative integer (Emacs `natnump' semantics)."""
     return isinstance(n, int) and not isinstance(n, bool) and n >= 0
 
@@ -333,12 +367,12 @@ def _git_glob_results(raw: str, git_root: str, base: str, depth: object) -> str:
     (only when DEPTH is a non-negative integer — `natnump'), then prefix
     each remaining entry with GIT-ROOT.
     """
-    lines = [l for l in raw.split("\0") if l]
+    lines = [line for line in raw.split("\0") if line]
     if _natnump(depth):
         rel_base = os.path.relpath(base, git_root)
         base_depth = 0 if rel_base == "." else 1 + rel_base.count("/")
-        lines = [l for l in lines if l.count("/") < base_depth + depth]
-    out = "\n".join(os.path.join(git_root, l) for l in lines)
+        lines = [line for line in lines if line.count("/") < base_depth + depth]
+    out = "\n".join(os.path.join(git_root, line) for line in lines)
     if not out:
         return ""
     return _spool(out + "\n", "glob")
@@ -358,7 +392,11 @@ class Grep(Tool):
             "regex": {"type": "string", "description": "Regular expression to search for"},
             "path": {"type": "string", "description": "File or directory to search in"},
             "glob": {"type": "string", "description": "Optional file pattern filter (e.g. *.py)"},
-            "context_lines": {"type": "integer", "description": "Lines of context (0-15)", "maximum": 15},
+            "context_lines": {
+                "type": "integer",
+                "description": "Lines of context (0-15)",
+                "maximum": 15,
+            },
         },
         "required": ["regex", "path"],
     }
@@ -379,46 +417,85 @@ class Grep(Tool):
             pathspec = rel
             if glob and os.path.isdir(path):
                 pathspec = os.path.join(rel, glob).replace(os.sep, "/")
-            cmd = ["git", "grep", "--line-number", "--no-color", "--max-count=1000",
-                   "--untracked", "-P", "-e", regex, "--", pathspec]
+            cmd = [
+                "git",
+                "grep",
+                "--line-number",
+                "--no-color",
+                "--max-count=1000",
+                "--untracked",
+                "-P",
+                "-e",
+                regex,
+                "--",
+                pathspec,
+            ]
             if context:
                 cmd = cmd[:3] + [f"-C{context}"] + cmd[3:]
             try:
                 proc = subprocess.run(
-                    cmd, cwd=git_root, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=60,
+                    cmd,
+                    cwd=git_root,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=60,
                 )
             except (OSError, subprocess.TimeoutExpired):
                 proc = None
             if proc is not None and proc.returncode in (0, 1):
                 return _grep_out(proc, "git")
         if shutil.which("rg"):
-            cmd = ["rg", "--sort=modified", "--max-count=1000",
-                   "--heading", "--line-number", "-e", regex, path]
+            cmd = [
+                "rg",
+                "--sort=modified",
+                "--max-count=1000",
+                "--heading",
+                "--line-number",
+                "-e",
+                regex,
+                path,
+            ]
             if context:
                 cmd = cmd[:1] + [f"--context={context}"] + cmd[1:]
             if glob:
                 cmd = cmd[:1] + [f"--glob={glob}"] + cmd[1:]
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=60,
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=60,
                 )
             except (OSError, subprocess.TimeoutExpired):
                 proc = None
             if proc is not None and proc.returncode in (0, 1):
                 return _grep_out(proc, "rg")
         if shutil.which("grep"):
-            cmd = ["grep", "--recursive", "--max-count=1000",
-                   "--line-number", "--regexp", regex, path]
+            cmd = [
+                "grep",
+                "--recursive",
+                "--max-count=1000",
+                "--line-number",
+                "--regexp",
+                regex,
+                path,
+            ]
             if context:
                 cmd = cmd[:1] + [f"--context={context}"] + cmd[1:]
             if glob:
                 cmd = cmd[:1] + [f"--include={glob}"] + cmd[1:]
             try:
                 proc = subprocess.run(
-                    cmd, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=60,
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=60,
                 )
             except (OSError, subprocess.TimeoutExpired):
                 proc = None
@@ -430,10 +507,7 @@ class Grep(Tool):
 def _grep_out(proc: subprocess.CompletedProcess, backend: str) -> str:
     text = proc.stdout
     if proc.returncode >= 2:
-        text = (
-            f"Error: search failed with exit-code {proc.returncode}.  "
-            f"Tool output:\n\n{text}"
-        )
+        text = f"Error: search failed with exit-code {proc.returncode}.  Tool output:\n\n{text}"
     return _spool(text, "grep")
 
 
@@ -463,8 +537,7 @@ class Mkdir(Tool):
 class Write(Tool):
     name = "Write"
     description = (
-        "Create a new file with the given content. "
-        "Overwrites an existing file — use with care!"
+        "Create a new file with the given content. Overwrites an existing file — use with care!"
     )
     parameters = {
         "type": "object",
@@ -491,7 +564,7 @@ class Write(Tool):
         old_content = ""
         if existed:
             try:
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     old_content = f.read()
             except OSError:
                 old_content = ""
@@ -531,7 +604,7 @@ class Edit(Tool):
         "fenced code block).\n"
         "- The file paths within the diff (e.g. '--- a/filename' "
         "'+++ b/filename') must be appropriate for the `path`.\n\n"
-        "To simply insert text at some line, use the \"Insert\" tool instead."
+        'To simply insert text at some line, use the "Insert" tool instead.'
     )
     parameters = {
         "type": "object",
@@ -572,18 +645,15 @@ class Edit(Tool):
             cwd = os.path.dirname(path) or "/"
         return self._apply_patch(path, cwd, new_str, ctx)
 
-    def _string_replace(
-        self, path: str, old: str | None, new_str: str, ctx: ToolContext
-    ) -> str:
+    def _string_replace(self, path: str, old: str | None, new_str: str, ctx: ToolContext) -> str:
         if os.path.isdir(path):
             return (
-                "Error: String replacement is intended for single files, "
-                f"not directories ({path})"
+                f"Error: String replacement is intended for single files, not directories ({path})"
             )
         if old is None:
             return "Error: old_str is required for non-diff edits"
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 content = f.read()
         except OSError as e:
             return f"Error: cannot read {path}: {e}"
@@ -604,10 +674,7 @@ class Edit(Tool):
         diff_text = unified_diff(content, new, path)
         if diff_text:
             ctx.record_diff(diff_text)
-        return (
-            f"Successfully replaced {old[:20]} (truncated) "
-            f"with {new_str[:20]} (truncated)"
-        )
+        return f"Successfully replaced {old[:20]} (truncated) with {new_str[:20]} (truncated)"
 
     def _apply_patch(self, path: str, cwd: str, diff: str, ctx: ToolContext) -> str:
         """Diff/patch mode: shell out to `patch --forward` (files or dirs).
@@ -630,7 +697,7 @@ class Edit(Tool):
         old_content = None
         if is_file:
             try:
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                with open(path, encoding="utf-8", errors="replace") as f:
                     old_content = f.read()
             except OSError:
                 old_content = None
@@ -638,8 +705,13 @@ class Edit(Tool):
         try:
             proc = subprocess.run(
                 ["patch", *options],
-                input=text, cwd=cwd, capture_output=True,
-                text=True, encoding="utf-8", errors="replace", timeout=60,
+                input=text,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             return f"Error: {e}"
@@ -652,7 +724,7 @@ class Edit(Tool):
             )
         if old_content is not None and os.path.isfile(path):
             try:
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                with open(path, encoding="utf-8", errors="replace") as f:
                     new_content = f.read()
                 diff_text = unified_diff(old_content, new_content, path)
                 if diff_text:
@@ -739,7 +811,10 @@ class Insert(Tool):
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "File path"},
-            "line_number": {"type": "integer", "description": "Line after which to insert (0=start, -1=end)"},
+            "line_number": {
+                "type": "integer",
+                "description": "Line after which to insert (0=start, -1=end)",
+            },
             "new_str": {"type": "string", "description": "Text to insert"},
         },
         "required": ["path", "line_number", "new_str"],
@@ -748,7 +823,7 @@ class Insert(Tool):
     def run(self, args: dict, ctx: ToolContext) -> str:
         path = os.path.realpath(os.path.abspath(args["path"]))
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 old_content = f.read()
                 lines = old_content.splitlines(keepends=True)
         except OSError as e:

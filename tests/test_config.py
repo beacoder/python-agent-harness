@@ -8,10 +8,15 @@ from pathlib import Path
 from python_agent_harness import config
 
 ENV_KEYS = [
-    "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL",
-    "OPENAI_BACKEND", "PYTHON_AGENT_HARNESS_CONFIG",
-    "OPENAI_SUBAGENT_BASE_URL", "OPENAI_SUBAGENT_API_KEY",
-    "OPENAI_SUBAGENT_MODEL", "OPENAI_SUBAGENT_BACKEND",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "OPENAI_BACKEND",
+    "PYTHON_AGENT_HARNESS_CONFIG",
+    "OPENAI_SUBAGENT_BASE_URL",
+    "OPENAI_SUBAGENT_API_KEY",
+    "OPENAI_SUBAGENT_MODEL",
+    "OPENAI_SUBAGENT_BACKEND",
 ]
 
 
@@ -164,8 +169,7 @@ class TestConfigFile(unittest.TestCase):
     def test_paths_empty_values_stay_none(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"paths": {"context_path": "   ", "skill_path": null}}',
-                         encoding="utf-8")
+            p.write_text('{"paths": {"context_path": "   ", "skill_path": null}}', encoding="utf-8")
             settings = config.load_paths_config(p)
             self.assertIsNone(settings["context_path"])
             self.assertIsNone(settings["skill_path"])
@@ -240,8 +244,7 @@ class TestSubagentLlmConfig(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
             p.write_text(
-                '{"subagent_llm": {"model": "file-sub-model",'
-                ' "base_url": "https://file/v1"}}',
+                '{"subagent_llm": {"model": "file-sub-model", "base_url": "https://file/v1"}}',
                 encoding="utf-8",
             )
             main = config.load_llm_config(p)

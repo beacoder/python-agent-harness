@@ -10,17 +10,17 @@ from unittest import mock
 
 import httpx
 
+from python_agent_harness import config
 from python_agent_harness.client import Client
 from python_agent_harness.models import Message, ToolCall, ToolSpec, Usage
-from python_agent_harness import config
 
 # `discover -s tests` puts the tests dir on sys.path, but a direct
 # `-m unittest tests.test_client` invocation does not — make the
 # sibling helper importable either way.
 sys.path.insert(0, os.path.dirname(__file__))
 
-from fake_openai_server import serve  # noqa: E402
 import fake_openai_server  # noqa: E402  (state overrides for sync tests)
+from fake_openai_server import serve  # noqa: E402
 
 
 def make_client(
@@ -64,9 +64,7 @@ class TestClientStreaming(unittest.TestCase):
         self.assertEqual(len(msg.tool_calls), 1)
         self.assertEqual(msg.tool_calls[0].id, "call_1")
         self.assertEqual(msg.tool_calls[0].name, "Read")
-        self.assertEqual(
-            msg.tool_calls[0].arguments, '{"file_path": "/tmp/x.py"}'
-        )
+        self.assertEqual(msg.tool_calls[0].arguments, '{"file_path": "/tmp/x.py"}')
         self.assertEqual(
             tc_fragments,
             [("Read", "call_1", '{"file_path": "/tmp/x.py"}')],
@@ -132,19 +130,33 @@ class TestClientNonStreaming(unittest.TestCase):
         and usage from the single response; callbacks fire once with the
         complete values (reasoning first, mirroring streaming order)."""
         fake_openai_server.NON_STREAM_RESPONSE = {
-            "choices": [{"message": {
-                "role": "assistant",
-                "content": "the answer",
-                "reasoning_content": "mulling",
-                "tool_calls": [
-                    {"id": "call_1", "type": "function",
-                     "function": {"name": "Read",
-                                  "arguments": '{"file_path": "/tmp/a.py"}'}},
-                    {"id": "call_2", "type": "function",
-                     "function": {"name": "Grep",
-                                  "arguments": '{"regex": "x", "path": "/tmp"}'}},
-                ],
-            }}],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "the answer",
+                        "reasoning_content": "mulling",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "Read",
+                                    "arguments": '{"file_path": "/tmp/a.py"}',
+                                },
+                            },
+                            {
+                                "id": "call_2",
+                                "type": "function",
+                                "function": {
+                                    "name": "Grep",
+                                    "arguments": '{"regex": "x", "path": "/tmp"}',
+                                },
+                            },
+                        ],
+                    }
+                }
+            ],
             "usage": {"prompt_tokens": 7, "completion_tokens": 9},
         }
         c = make_client()
@@ -183,15 +195,21 @@ class TestClientNonStreaming(unittest.TestCase):
         """Some backends return tool-call arguments as an object rather
         than a JSON string; they must be normalized to a string."""
         fake_openai_server.NON_STREAM_RESPONSE = {
-            "choices": [{"message": {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "call_9", "type": "function",
-                     "function": {"name": "Bash",
-                                  "arguments": {"command": "ls -la"}}},
-                ],
-            }}],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_9",
+                                "type": "function",
+                                "function": {"name": "Bash", "arguments": {"command": "ls -la"}},
+                            },
+                        ],
+                    }
+                }
+            ],
         }
         c = make_client()
         try:
@@ -210,13 +228,17 @@ class TestClientNonStreaming(unittest.TestCase):
         (multimodal shape); they must be flattened to a plain string
         like Message.text() does — not crash the join."""
         fake_openai_server.NON_STREAM_RESPONSE = {
-            "choices": [{"message": {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "part one "},
-                    {"type": "text", "text": "part two"},
-                ],
-            }}],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "part one "},
+                            {"type": "text", "text": "part two"},
+                        ],
+                    }
+                }
+            ],
         }
         c = make_client()
         try:
@@ -230,16 +252,28 @@ class TestClientNonStreaming(unittest.TestCase):
         """When a non-streaming response carries explicit index fields
         (mirroring the streaming shape), they must be honored."""
         fake_openai_server.NON_STREAM_RESPONSE = {
-            "choices": [{"message": {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"index": 1, "id": "call_b", "type": "function",
-                     "function": {"name": "Grep", "arguments": "{}"}},
-                    {"index": 0, "id": "call_a", "type": "function",
-                     "function": {"name": "Read", "arguments": "{}"}},
-                ],
-            }}],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "index": 1,
+                                "id": "call_b",
+                                "type": "function",
+                                "function": {"name": "Grep", "arguments": "{}"},
+                            },
+                            {
+                                "index": 0,
+                                "id": "call_a",
+                                "type": "function",
+                                "function": {"name": "Read", "arguments": "{}"},
+                            },
+                        ],
+                    }
+                }
+            ],
         }
         c = make_client()
         try:
@@ -255,11 +289,15 @@ class TestClientNonStreaming(unittest.TestCase):
         (e.g. a list of parts) must not crash the parser; the reasoning
         is dropped instead of leaking into the content."""
         fake_openai_server.NON_STREAM_RESPONSE = {
-            "choices": [{"message": {
-                "role": "assistant",
-                "content": "answer",
-                "reasoning_content": [{"type": "text", "text": "mulling"}],
-            }}],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "answer",
+                        "reasoning_content": [{"type": "text", "text": "mulling"}],
+                    }
+                }
+            ],
         }
         c = make_client()
         try:
@@ -300,8 +338,9 @@ class TestClientNonStreaming(unittest.TestCase):
         retry_max=1 disables retries so the error surfaces directly
         (no backoff sleep in the test).
         """
-        from python_agent_harness.client import ApiError
         from unittest import mock
+
+        from python_agent_harness.client import ApiError
 
         c = make_client(retry_max=1)
         try:
@@ -326,9 +365,7 @@ class TestClientRetry(unittest.TestCase):
         fake_openai_server.reset_state()
 
     def make_fast_client(self, retry_max: int = 3) -> Client:
-        return make_client(
-            retry_max=retry_max, retry_base_delay=0.01, retry_max_delay=0.05
-        )
+        return make_client(retry_max=retry_max, retry_base_delay=0.01, retry_max_delay=0.05)
 
     def test_transient_errors_retried_then_success(self):
         """429 then 500 then success: the client retries with backoff
@@ -388,9 +425,7 @@ class TestClientRetry(unittest.TestCase):
         c = self.make_fast_client()
         deltas: list[str] = []
         try:
-            msg, _ = c.chat(
-                [Message(role="user", content="hi")], on_delta=deltas.append
-            )
+            msg, _ = c.chat([Message(role="user", content="hi")], on_delta=deltas.append)
         finally:
             c.close()
         self.assertEqual("".join(deltas), "thinking hardHello world")
@@ -493,9 +528,7 @@ class TestClientHelpers(unittest.TestCase):
                 p = _llm_log_path()
             self.assertTrue(str(p).startswith(d))
             self.assertTrue(os.path.isdir(d))
-            self.assertRegex(
-                p.name, r"^python-agent-harness-\d{8}-[0-9a-f]{8}\.json$"
-            )
+            self.assertRegex(p.name, r"^python-agent-harness-\d{8}-[0-9a-f]{8}\.json$")
 
     def test_llm_log_path_defaults_to_tmp(self):
         from python_agent_harness.client import _llm_log_path
@@ -525,11 +558,11 @@ class TestClientHelpers(unittest.TestCase):
 
         env = os.environ.copy()
         env.pop("SSL_CERT_FILE", None)
-        with mock.patch.dict(os.environ, env):
-            with mock.patch(
-                "python_agent_harness.client.os.path.isfile", return_value=False
-            ):
-                self.assertIs(_resolve_ca_bundle(), True)
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch("python_agent_harness.client.os.path.isfile", return_value=False),
+        ):
+            self.assertIs(_resolve_ca_bundle(), True)
 
 
 class TestClientLogging(unittest.TestCase):
@@ -625,9 +658,11 @@ class TestClientAbort(unittest.TestCase):
     def test_abort_swaps_client_and_closes_old(self):
         c = make_offline_client()
         old = c._http
-        with mock.patch("python_agent_harness.client._abort_inflight_sockets") as ab:
-            with mock.patch.object(old, "close") as cl:
-                c.abort()
+        with (
+            mock.patch("python_agent_harness.client._abort_inflight_sockets") as ab,
+            mock.patch.object(old, "close") as cl,
+        ):
+            c.abort()
         ab.assert_called_once_with(old)
         cl.assert_called_once_with()
         self.assertIsNot(c._http, old)
@@ -647,9 +682,11 @@ class TestClientAbort(unittest.TestCase):
     def test_abort_tolerates_close_failure(self):
         c = make_offline_client()
         old = c._http
-        with mock.patch("python_agent_harness.client._abort_inflight_sockets"):
-            with mock.patch.object(old, "close", side_effect=RuntimeError("boom")):
-                c.abort()  # must not raise
+        with (
+            mock.patch("python_agent_harness.client._abort_inflight_sockets"),
+            mock.patch.object(old, "close", side_effect=RuntimeError("boom")),
+        ):
+            c.abort()  # must not raise
         c.close()
 
 
@@ -771,9 +808,11 @@ class TestClientStreamingEdgeCases(unittest.TestCase):
         c = make_client(retry_max=3)
         try:
             resp = FakeStreamResp([], status_code=400)
-            with mock.patch.object(c._http, "stream", return_value=FakeStreamCM(resp)):
-                with self.assertRaises(ApiError):
-                    c.chat([Message(role="user", content="hi")])
+            with (
+                mock.patch.object(c._http, "stream", return_value=FakeStreamCM(resp)),
+                self.assertRaises(ApiError),
+            ):
+                c.chat([Message(role="user", content="hi")])
         finally:
             c.close()
 
@@ -807,11 +846,11 @@ class TestClientNetworkErrors(unittest.TestCase):
 
         c = make_client(retry_max=2, retry_base_delay=0.01, retry_max_delay=0.05)
         try:
-            with mock.patch.object(
-                c._http, "stream", side_effect=httpx.ConnectError("refused")
+            with (
+                mock.patch.object(c._http, "stream", side_effect=httpx.ConnectError("refused")),
+                self.assertRaises(ApiError) as ctx,
             ):
-                with self.assertRaises(ApiError) as ctx:
-                    c.chat([Message(role="user", content="hi")], cancel_check=lambda: True)
+                c.chat([Message(role="user", content="hi")], cancel_check=lambda: True)
             self.assertIn("network error", str(ctx.exception))
         finally:
             c.close()
@@ -823,11 +862,11 @@ class TestClientNetworkErrors(unittest.TestCase):
         try:
             # patch the class so the fresh client created by
             # _reset_http between attempts is covered too
-            with mock.patch.object(
-                httpx.Client, "post", side_effect=httpx.ConnectError("refused")
+            with (
+                mock.patch.object(httpx.Client, "post", side_effect=httpx.ConnectError("refused")),
+                self.assertRaises(ApiError),
             ):
-                with self.assertRaises(ApiError):
-                    c.chat([Message(role="user", content="hi")], stream=False)
+                c.chat([Message(role="user", content="hi")], stream=False)
         finally:
             c.close()
 
@@ -836,11 +875,11 @@ class TestClientNetworkErrors(unittest.TestCase):
 
         c = make_client(retry_max=1)
         try:
-            with mock.patch.object(
-                c._http, "stream", side_effect=httpx.ReadError("dropped")
+            with (
+                mock.patch.object(c._http, "stream", side_effect=httpx.ReadError("dropped")),
+                self.assertRaises(ApiError),
             ):
-                with self.assertRaises(ApiError):
-                    c.chat([Message(role="user", content="hi")])
+                c.chat([Message(role="user", content="hi")])
         finally:
             c.close()
 
@@ -857,10 +896,12 @@ class TestClientNetworkErrors(unittest.TestCase):
                 state["n"] += 1
                 if state["n"] == 1:
                     return DieAfterDelta()
-                resp = FakeStreamResp([
-                    'data: {"choices": [{"delta": {"content": "full"}}]}',
-                    "data: [DONE]",
-                ])
+                resp = FakeStreamResp(
+                    [
+                        'data: {"choices": [{"delta": {"content": "full"}}]}',
+                        "data: [DONE]",
+                    ]
+                )
                 return FakeStreamCM(resp)
 
             # patch the class so the fresh client created by
@@ -893,9 +934,7 @@ class TestClientNetworkErrors(unittest.TestCase):
         c = make_client(retry_max=2, retry_base_delay=0.01, retry_max_delay=0.01)
         old = c._http
         try:
-            with mock.patch.object(
-                httpx.Client, "stream", return_value=DieAfterDelta()
-            ):
+            with mock.patch.object(httpx.Client, "stream", return_value=DieAfterDelta()):
                 retries = []
                 with self.assertRaises(ApiError):
                     c.chat(
@@ -973,11 +1012,11 @@ class TestClientResetHttp(unittest.TestCase):
 
         c = make_offline_client(retry_max=2, retry_base_delay=0.01, retry_max_delay=0.01)
         # Simulate persistent connection failures
-        with mock.patch.object(
-            c._http, "stream", side_effect=httpx.ConnectError("refused")
+        with (
+            mock.patch.object(c._http, "stream", side_effect=httpx.ConnectError("refused")),
+            self.assertRaises(ApiError),
         ):
-            with self.assertRaises(ApiError):
-                c.chat([Message(role="user", content="hi")])
+            c.chat([Message(role="user", content="hi")])
         # After the error, _http must be a fresh (non-poisoned) client
         # that was NOT the one we patched
         self.assertFalse(c._http.is_closed)
@@ -993,14 +1032,14 @@ class TestClientResetHttp(unittest.TestCase):
 
         c = make_offline_client(retry_max=3, retry_base_delay=60.0, retry_max_delay=60.0)
         old_http = c._http
-        with mock.patch.object(
-            c._http, "stream", side_effect=httpx.ConnectError("refused")
+        with (
+            mock.patch.object(c._http, "stream", side_effect=httpx.ConnectError("refused")),
+            self.assertRaises(ApiError),
         ):
-            with self.assertRaises(ApiError):
-                c.chat(
-                    [Message(role="user", content="hi")],
-                    cancel_check=lambda: True,
-                )
+            c.chat(
+                [Message(role="user", content="hi")],
+                cancel_check=lambda: True,
+            )
         self.assertIsNot(c._http, old_http)
         self.assertFalse(c._http.is_closed)
         c.close()
@@ -1021,9 +1060,11 @@ class TestClientResetHttp(unittest.TestCase):
             attempts["n"] += 1
             raise ConnectionResetError(104, "Connection reset by peer")
 
-        with mock.patch.object(c, "_stream_response", side_effect=boom):
-            with self.assertRaises(ApiError):
-                c.chat([Message(role="user", content="hi")])
+        with (
+            mock.patch.object(c, "_stream_response", side_effect=boom),
+            self.assertRaises(ApiError),
+        ):
+            c.chat([Message(role="user", content="hi")])
 
         # retried up to the budget (not a single-shot failure)
         self.assertEqual(attempts["n"], 3)
@@ -1046,9 +1087,11 @@ class TestClientResetHttp(unittest.TestCase):
             attempts["n"] += 1
             raise ApiError("API error 403: forbidden")
 
-        with mock.patch.object(c, "_stream_response", side_effect=boom):
-            with self.assertRaises(ApiError) as ctx:
-                c.chat([Message(role="user", content="hi")])
+        with (
+            mock.patch.object(c, "_stream_response", side_effect=boom),
+            self.assertRaises(ApiError) as ctx,
+        ):
+            c.chat([Message(role="user", content="hi")])
 
         # exactly one attempt: permanent errors are NOT retried
         self.assertEqual(attempts["n"], 1)
@@ -1178,9 +1221,11 @@ class TestAuthRefreshOn401(unittest.TestCase):
             # second attempt succeeds with the refreshed key
             return (["ok"], [], {})
 
-        with mock.patch.object(c, "_stream_response", side_effect=fake_stream):
-            with mock.patch.object(c, "_refresh_api_key", return_value=True):
-                msg, _ = c.chat([Message(role="user", content="hi")])
+        with (
+            mock.patch.object(c, "_stream_response", side_effect=fake_stream),
+            mock.patch.object(c, "_refresh_api_key", return_value=True),
+        ):
+            msg, _ = c.chat([Message(role="user", content="hi")])
 
         # retried once after refresh
         self.assertEqual(calls["n"], 2)
@@ -1199,10 +1244,12 @@ class TestAuthRefreshOn401(unittest.TestCase):
             calls["n"] += 1
             raise AuthExpiredError("API error 401: Unauthorized")
 
-        with mock.patch.object(c, "_stream_response", side_effect=fake_stream):
-            with mock.patch.object(c, "_refresh_api_key", return_value=False):
-                with self.assertRaises(ApiError) as ctx:
-                    c.chat([Message(role="user", content="hi")])
+        with (
+            mock.patch.object(c, "_stream_response", side_effect=fake_stream),
+            mock.patch.object(c, "_refresh_api_key", return_value=False),
+            self.assertRaises(ApiError) as ctx,
+        ):
+            c.chat([Message(role="user", content="hi")])
 
         # exactly one attempt: key didn't change, no retry
         self.assertEqual(calls["n"], 1)
@@ -1222,10 +1269,12 @@ class TestAuthRefreshOn401(unittest.TestCase):
             calls["n"] += 1
             raise AuthExpiredError("API error 401: Unauthorized")
 
-        with mock.patch.object(c, "_stream_response", side_effect=fake_stream):
-            with mock.patch.object(c, "_refresh_api_key", return_value=True):
-                with self.assertRaises(ApiError) as ctx:
-                    c.chat([Message(role="user", content="hi")])
+        with (
+            mock.patch.object(c, "_stream_response", side_effect=fake_stream),
+            mock.patch.object(c, "_refresh_api_key", return_value=True),
+            self.assertRaises(ApiError) as ctx,
+        ):
+            c.chat([Message(role="user", content="hi")])
 
         # first attempt + one auth-refresh retry = 2 total
         self.assertEqual(calls["n"], 2)
@@ -1243,10 +1292,12 @@ class TestAuthRefreshOn401(unittest.TestCase):
         def fake_stream(payload, on_delta, on_tool_call, usage):
             raise AuthExpiredError("API error 401: Unauthorized")
 
-        with mock.patch.object(c, "_stream_response", side_effect=fake_stream):
-            with mock.patch.object(c, "_refresh_api_key", return_value=False):
-                with self.assertRaises(ApiError):
-                    c.chat([Message(role="user", content="hi")])
+        with (
+            mock.patch.object(c, "_stream_response", side_effect=fake_stream),
+            mock.patch.object(c, "_refresh_api_key", return_value=False),
+            self.assertRaises(ApiError),
+        ):
+            c.chat([Message(role="user", content="hi")])
 
         # pool was swapped out
         self.assertIsNot(c._http, old_http)
@@ -1256,7 +1307,8 @@ class TestAuthRefreshOn401(unittest.TestCase):
     def test_refresh_api_key_polls_until_key_changes(self):
         """_refresh_api_key polls the config file repeatedly until the
         key changes, then returns True."""
-        import tempfile, json
+        import json
+        import tempfile
 
         cfg_path = tempfile.mktemp(suffix=".json")
         # initially same key
@@ -1290,7 +1342,8 @@ class TestAuthRefreshOn401(unittest.TestCase):
     def test_refresh_api_key_times_out_when_key_unchanged(self):
         """_refresh_api_key returns False after timeout if the key
         never changes."""
-        import tempfile, json
+        import json
+        import tempfile
 
         cfg = {"llm": {"api_key": "same-token"}}
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -1313,7 +1366,8 @@ class TestAuthRefreshOn401(unittest.TestCase):
     def test_refresh_api_key_aborts_on_cancel(self):
         """_refresh_api_key respects cancel_check and returns False
         early without waiting the full timeout."""
-        import tempfile, json
+        import json
+        import tempfile
 
         cfg = {"llm": {"api_key": "same-token"}}
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -1364,9 +1418,11 @@ class TestAuthRefreshOn401(unittest.TestCase):
                 raise AuthExpiredError("API error 401: Unauthorized")
             return (["title generated"], [], {})
 
-        with mock.patch.object(c, "_sync_response", side_effect=fake_sync):
-            with mock.patch.object(c, "_refresh_api_key", return_value=True):
-                msg, _ = c.chat_sync([Message(role="user", content="hi")])
+        with (
+            mock.patch.object(c, "_sync_response", side_effect=fake_sync),
+            mock.patch.object(c, "_refresh_api_key", return_value=True),
+        ):
+            msg, _ = c.chat_sync([Message(role="user", content="hi")])
 
         self.assertEqual(calls["n"], 2)
         self.assertEqual(msg.text(), "title generated")

@@ -7,12 +7,14 @@ Moonshot/Kimi, GLM/Zhipu, Qwen/DashScope, ...).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import random
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
 
 import httpx
 
@@ -78,6 +80,7 @@ def _retry_delay(
 def _llm_log_path() -> Path:
     """Return the LLM log file path for a new session."""
     import uuid
+
     date_str = time.strftime("%Y%m%d")
     session_id = uuid.uuid4().hex[:8]
     log_dir = os.environ.get("LLM_LOG_DIR")
@@ -88,12 +91,13 @@ def _llm_log_path() -> Path:
     return Path(f"/tmp/python-agent-harness-{date_str}-{session_id}.json")
 
 
-def _log_llm_interaction(log_file: "Path | None", payload: dict[str, Any], response_msg: "Message", usage: "Usage") -> None:
+def _log_llm_interaction(
+    log_file: Path | None, payload: dict[str, Any], response_msg: Message, usage: Usage
+) -> None:
     """Append an LLM interaction to the log file as pretty-printed JSON."""
     if not log_file:
         return
     try:
-
         # Build the entry in the same format as the conversation:
         # { "model": ..., "messages": [...all messages including response...] }
         messages = list(payload.get("messages", []))
@@ -109,7 +113,8 @@ def _log_llm_interaction(log_file: "Path | None", payload: dict[str, Any], respo
                     "id": tc.id,
                     "function": {
                         "name": tc.name,
-                        "arguments": tc.arguments if isinstance(tc.arguments, str)
+                        "arguments": tc.arguments
+                        if isinstance(tc.arguments, str)
                         else json.dumps(tc.arguments, ensure_ascii=False),
                     },
                 }
@@ -209,14 +214,10 @@ class Client:
         self._aborted = True
         old = self._http
         self._http = httpx.Client(timeout=self.timeout, verify=self.verify)
-        try:
+        with contextlib.suppress(Exception):  # best effort
             _abort_inflight_sockets(old)
-        except Exception:  # noqa: BLE001 - best effort
-            pass
-        try:
+        with contextlib.suppress(Exception):  # best effort
             old.close()
-        except Exception:  # noqa: BLE001 - best effort
-            pass
 
     def _reset_http(self) -> None:
         """Replace the httpx client with a fresh instance.
@@ -227,10 +228,8 @@ class Client:
         """
         old = self._http
         self._http = httpx.Client(timeout=self.timeout, verify=self.verify)
-        try:
+        with contextlib.suppress(Exception):  # best effort
             old.close()
-        except Exception:  # noqa: BLE001 - best effort
-            pass
 
     def _refresh_api_key(
         self,
@@ -352,8 +351,12 @@ class Client:
         output and show that the request is being restarted.
         """
         payload = self._payload(
-            messages, tools, stream=stream, temperature=temperature,
-            max_tokens=max_tokens, system=system,
+            messages,
+            tools,
+            stream=stream,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system=system,
             reasoning_effort=reasoning_effort,
         )
         # a fresh turn may retry connection errors even if a previous
@@ -370,19 +373,15 @@ class Client:
                 # BrokenPipeError on a closed terminal) must never reach
                 # the retry loop below, or it would be mistaken for a
                 # transport error and pointlessly re-send the request
-                try:
+                with contextlib.suppress(Exception):  # streaming UI is best effort
                     on_delta(chunk)
-                except Exception:  # noqa: BLE001 - streaming UI is best effort
-                    pass
 
         def wrap_tool_call(name: str, call_id: str, fragment: str) -> None:
             nonlocal emitted
             emitted = True
             if on_tool_call:
-                try:
+                with contextlib.suppress(Exception):  # streaming UI is best effort
                     on_tool_call(name, call_id, fragment)
-                except Exception:  # noqa: BLE001 - streaming UI is best effort
-                    pass
 
         attempt = 0
         auth_refreshed = False
@@ -549,9 +548,7 @@ class Client:
                 if resp.status_code == 401:
                     raise AuthExpiredError(message)
                 if _retryable_status(resp.status_code):
-                    raise RetryableApiError(
-                        message, resp.headers.get("Retry-After")
-                    )
+                    raise RetryableApiError(message, resp.headers.get("Retry-After"))
                 raise ApiError(message)
             for chunk in _iter_sse(resp.iter_lines()):
                 if not chunk:
@@ -565,7 +562,9 @@ class Client:
                 if data.get("usage"):
                     u = data["usage"]
                     usage.input_tokens = int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
-                    usage.output_tokens = int(u.get("completion_tokens") or u.get("output_tokens") or 0)
+                    usage.output_tokens = int(
+                        u.get("completion_tokens") or u.get("output_tokens") or 0
+                    )
                 choices = data.get("choices") or []
                 if not choices:
                     continue
@@ -580,9 +579,7 @@ class Client:
                     if on_delta:
                         on_delta(delta["reasoning_content"])
                 for tc in delta.get("tool_calls") or []:
-                    self._absorb_tool_call(
-                        tc_index, tc.get("index", 0), tc, on_tool_call
-                    )
+                    self._absorb_tool_call(tc_index, tc.get("index", 0), tc, on_tool_call)
         return content_parts, reasoning_parts, tc_index
 
     def _sync_response(
@@ -599,17 +596,13 @@ class Client:
         the streaming order), and tool-call arguments arrive as one
         complete JSON string instead of fragments.
         """
-        resp = self._http.post(
-            self._url(), headers=self._headers(stream=False), json=payload
-        )
+        resp = self._http.post(self._url(), headers=self._headers(stream=False), json=payload)
         if resp.status_code >= 400:
             message = f"API error {resp.status_code}: {resp.text[:500]}"
             if resp.status_code == 401:
                 raise AuthExpiredError(message)
             if _retryable_status(resp.status_code):
-                raise RetryableApiError(
-                    message, resp.headers.get("Retry-After")
-                )
+                raise RetryableApiError(message, resp.headers.get("Retry-After"))
             raise ApiError(message)
         data = resp.json()
         u = data.get("usage")
@@ -628,8 +621,7 @@ class Client:
         # assembled parts stay strings
         if isinstance(content, list):
             content = "".join(
-                p.get("text", "") if isinstance(p, dict)
-                else (p if isinstance(p, str) else "")
+                p.get("text", "") if isinstance(p, dict) else (p if isinstance(p, str) else "")
                 for p in content
             )
         if not isinstance(reasoning, str):
@@ -697,11 +689,7 @@ class Client:
 
 
 def _default_api_key() -> str | None:
-    return (
-        os.environ.get("OPENAI_API_KEY")
-        or os.environ.get("DEEPSEEK_API_KEY")
-        or None
-    )
+    return os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or None
 
 
 def _abort_inflight_sockets(client: httpx.Client) -> None:
@@ -725,10 +713,8 @@ def _abort_inflight_sockets(client: httpx.Client) -> None:
         except Exception:  # noqa: BLE001 - best effort
             sock = None
         if sock is not None:
-            try:
+            with contextlib.suppress(OSError):
                 sock.shutdown(_socket.SHUT_RDWR)
-            except OSError:
-                pass
 
 
 def _iter_sse(lines: Iterator[str]) -> Iterator[str]:
@@ -736,4 +722,4 @@ def _iter_sse(lines: Iterator[str]) -> Iterator[str]:
     for line in lines:
         line = line.strip()
         if line.startswith("data:"):
-            yield line[len("data:"):].strip()
+            yield line[len("data:") :].strip()

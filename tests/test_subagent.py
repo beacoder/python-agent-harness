@@ -18,20 +18,32 @@ class SpyClient:
     def __init__(self):
         self.systems: list[str | None] = []
 
-    def chat(self, messages, tools=None, system=None, temperature=None,
-              max_tokens=None, reasoning_effort=None, on_delta=None, stream=True,
-              cancel_check=None, on_retry=None):
+    def chat(
+        self,
+        messages,
+        tools=None,
+        system=None,
+        temperature=None,
+        max_tokens=None,
+        reasoning_effort=None,
+        on_delta=None,
+        stream=True,
+        cancel_check=None,
+        on_retry=None,
+    ):
         self.systems.append(system)
         return Message(role="assistant", content="sub-agent done"), Usage(input_tokens=10)
 
-    def chat_sync(self, messages, system=None, temperature=None, max_tokens=None,
-                  reasoning_effort=None):
+    def chat_sync(
+        self, messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+    ):
         return Message(role="assistant", content="SYNC-OK"), Usage()
 
 
 def make_session(system_prompt, subagent_system_prompt, session_dir):
-    import python_agent_harness.config as cfg
     from pathlib import Path
+
+    import python_agent_harness.config as cfg
 
     cfg.SESSION_DIR = Path(session_dir)
     session = AgentSession(
@@ -43,9 +55,13 @@ def make_session(system_prompt, subagent_system_prompt, session_dir):
         registry=default_registry(),
     )
     session.store = SessionStore(
-        project_dir="/tmp/fakeproj", model=session.model, backend=session.backend,
-        system_prompt=session.system_prompt, temperature=session.temperature,
-        max_tokens=session.max_tokens, tool_names=session.store.tool_names,
+        project_dir="/tmp/fakeproj",
+        model=session.model,
+        backend=session.backend,
+        system_prompt=session.system_prompt,
+        temperature=session.temperature,
+        max_tokens=session.max_tokens,
+        tool_names=session.store.tool_names,
     )
     return session
 
@@ -94,9 +110,14 @@ class TestSubagentPromptSelection(unittest.TestCase):
 
     def test_plan_mode_reminder_prepended_but_prompt_still_subagent(self):
         session = make_session("MAIN", "SUB", self._tmp.name)
-        session.plan_mode.set_mode(session.plan_mode.mode.PLAN, {
-            "plan": "P1", "plan-mode": "P2", "build-switch": "B",
-        })
+        session.plan_mode.set_mode(
+            session.plan_mode.mode.PLAN,
+            {
+                "plan": "P1",
+                "plan-mode": "P2",
+                "build-switch": "B",
+            },
+        )
         run_subagent(session, "task", "do something")
         # plan mode changes the *messages*, not which system prompt is used
         self.assertEqual(session.client.systems, ["SUB"])

@@ -137,9 +137,7 @@ class Registry:
         wanted = set(names) if names is not None else {n for n, _ in items}
         return [t.spec() for name, t in items if name in wanted]
 
-    def execute(
-        self, name: str, args: dict[str, Any], ctx: ToolContext
-    ) -> str | PendingToolResult:
+    def execute(self, name: str, args: dict[str, Any], ctx: ToolContext) -> str | PendingToolResult:
         tool = self._tools.get(name)
         if tool is None:
             return f"Error: unknown tool {name!r}"

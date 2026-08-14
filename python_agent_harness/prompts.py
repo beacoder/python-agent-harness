@@ -47,15 +47,15 @@ def _parse_skill_frontmatter(skill_file: Path) -> tuple[str, str] | None:
     name = desc = ""
     for line in m.group(1).splitlines():
         if line.startswith("name:"):
-            name = line[len("name:"):].strip()
+            name = line[len("name:") :].strip()
         elif line.startswith("description:"):
-            desc = line[len("description:"):].strip()
+            desc = line[len("description:") :].strip()
     if name:
         return (name, desc)
     return None
 
 
-def discover_skills(skill_dir: "Path | str | None") -> str:
+def discover_skills(skill_dir: Path | str | None) -> str:
     """Build a skill listing from a skill directory.
 
     Looks for subdirectories containing SKILL.md with frontmatter
@@ -88,7 +88,7 @@ def discover_skills(skill_dir: "Path | str | None") -> str:
     return "\n".join(lines)
 
 
-def load_agent_prompt(path: "Path | str | None", skill_dir: "Path | str | None" = None) -> str | None:
+def load_agent_prompt(path: Path | str | None, skill_dir: Path | str | None = None) -> str | None:
     """Load an opencode-style agent prompt file, or None if unavailable.
 
     Strips the YAML frontmatter header (name/description/tools) since
@@ -113,7 +113,7 @@ def load_agent_prompt(path: "Path | str | None", skill_dir: "Path | str | None" 
     return text or None
 
 
-def load_context_files(context_dir: "Path | str | None") -> str | None:
+def load_context_files(context_dir: Path | str | None) -> str | None:
     """Read all files in *context_dir* and format them as context blocks.
 
     Returns a string like:

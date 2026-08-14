@@ -9,6 +9,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from test_agent import FakeClient, RecordingSession
+
 from python_agent_harness import config
 from python_agent_harness.agent_session import (
     AgentSession,
@@ -16,8 +18,6 @@ from python_agent_harness.agent_session import (
     find_skill_dir,
 )
 from python_agent_harness.models import Message, Usage
-
-from test_agent import FakeClient, RecordingSession
 
 
 class TestFindDirs(unittest.TestCase):
@@ -51,12 +51,14 @@ class TestFindDirs(unittest.TestCase):
                 self.assertEqual(find_skill_dir("/proj", None), emacs)
 
     def test_skill_dir_none_when_missing(self):
-        with tempfile.TemporaryDirectory(prefix="pah-proj-") as proj:
-            with mock.patch(
+        with (
+            tempfile.TemporaryDirectory(prefix="pah-proj-") as proj,
+            mock.patch(
                 "python_agent_harness.agent_session.os.path.expanduser",
                 return_value=os.path.join(proj, "no-home"),
-            ):
-                self.assertIsNone(find_skill_dir(proj, None))
+            ),
+        ):
+            self.assertIsNone(find_skill_dir(proj, None))
 
     def test_context_dir_configured_wins(self):
         with tempfile.TemporaryDirectory(prefix="pah-ctx-") as d:
@@ -73,12 +75,14 @@ class TestFindDirs(unittest.TestCase):
                 self.assertEqual(find_context_dir(proj, None), ctx)
 
     def test_context_dir_none_when_missing(self):
-        with tempfile.TemporaryDirectory(prefix="pah-proj-") as proj:
-            with mock.patch(
+        with (
+            tempfile.TemporaryDirectory(prefix="pah-proj-") as proj,
+            mock.patch(
                 "python_agent_harness.agent_session.os.path.expanduser",
                 return_value=os.path.join(proj, "no-home"),
-            ):
-                self.assertIsNone(find_context_dir(proj, None))
+            ),
+        ):
+            self.assertIsNone(find_context_dir(proj, None))
 
 
 class TestSessionInteractive(unittest.TestCase):
@@ -161,9 +165,7 @@ class TestFindSkill(unittest.TestCase):
             with open(os.path.join(sub, "SKILL.md"), "w") as f:
                 f.write("# Rules")
             session._skill_dir = d
-            self.assertEqual(
-                session.find_skill("rules"), os.path.join(sub, "SKILL.md")
-            )
+            self.assertEqual(session.find_skill("rules"), os.path.join(sub, "SKILL.md"))
 
     def test_flat_skill_file(self):
         session = RecordingSession()
@@ -186,9 +188,11 @@ class TestFindSkill(unittest.TestCase):
 class TestAutoSaveDisabled(unittest.TestCase):
     def test_auto_save_skipped_when_disabled(self):
         session = RecordingSession()
-        with mock.patch.object(config, "AUTO_SAVE_SESSION", False):
-            with mock.patch.object(session.store, "save") as save:
-                session.auto_save([Message(role="user", content="hi")], None)
+        with (
+            mock.patch.object(config, "AUTO_SAVE_SESSION", False),
+            mock.patch.object(session.store, "save") as save,
+        ):
+            session.auto_save([Message(role="user", content="hi")], None)
         save.assert_not_called()
 
 
@@ -210,11 +214,10 @@ class TestTitleGeneration(unittest.TestCase):
         """Reasoning text appearing inside the title (not just as a
         prefix) is removed before sanitization."""
 
-        def chat_sync(messages, system=None, temperature=None, max_tokens=None,
-                      reasoning_effort=None):
-            return Message(
-                role="assistant", content="Title XYZ here", reasoning="XYZ"
-            ), Usage()
+        def chat_sync(
+            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+        ):
+            return Message(role="assistant", content="Title XYZ here", reasoning="XYZ"), Usage()
 
         session = self.make_session(chat_sync)
         session.generate_session_title()
@@ -222,8 +225,9 @@ class TestTitleGeneration(unittest.TestCase):
         self.assertFalse(session.store.title_pending)
 
     def test_title_failure_is_logged(self):
-        def chat_sync(messages, system=None, temperature=None, max_tokens=None,
-                      reasoning_effort=None):
+        def chat_sync(
+            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+        ):
             raise RuntimeError("api down")
 
         session = self.make_session(chat_sync)
@@ -302,8 +306,9 @@ class TestCompactConversation(unittest.TestCase):
         self.assertEqual(msg, "Compaction already in progress.")
 
     def test_empty_summary_fails(self):
-        def chat_sync(messages, system=None, temperature=None, max_tokens=None,
-                      reasoning_effort=None):
+        def chat_sync(
+            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+        ):
             return Message(role="assistant", content=""), Usage()
 
         session = self.make_session(chat_sync)
@@ -314,8 +319,9 @@ class TestCompactConversation(unittest.TestCase):
         self.assertFalse(session.compacting)
 
     def test_client_failure_logged(self):
-        def chat_sync(messages, system=None, temperature=None, max_tokens=None,
-                      reasoning_effort=None):
+        def chat_sync(
+            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+        ):
             raise RuntimeError("boom")
 
         session = self.make_session(chat_sync)
@@ -336,8 +342,9 @@ class TestSummarizeConversation(unittest.TestCase):
         self.assertEqual(session.summarize_conversation(), "Nothing to summarize.")
 
     def test_client_failure(self):
-        def chat_sync(messages, system=None, temperature=None, max_tokens=None,
-                      reasoning_effort=None):
+        def chat_sync(
+            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+        ):
             raise RuntimeError("boom")
 
         session = RecordingSession()
@@ -347,17 +354,16 @@ class TestSummarizeConversation(unittest.TestCase):
         self.assertEqual(session.summarize_conversation(), "Summary failed: boom")
 
     def test_empty_response(self):
-        def chat_sync(messages, system=None, temperature=None, max_tokens=None,
-                      reasoning_effort=None):
+        def chat_sync(
+            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+        ):
             return Message(role="assistant", content=""), Usage()
 
         session = RecordingSession()
         session.client = FakeClient([])
         session.client.chat_sync = chat_sync
         session.last_messages = [Message(role="user", content="hi")]
-        self.assertEqual(
-            session.summarize_conversation(), "Summary failed: empty response."
-        )
+        self.assertEqual(session.summarize_conversation(), "Summary failed: empty response.")
 
 
 class TestTodos(unittest.TestCase):

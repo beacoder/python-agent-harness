@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from . import config
 from .agent import run_agent_loop
-from .prompts import load_agent_prompt
 from .models import Message
+from .prompts import load_agent_prompt
 
 
 def _subagent_system_prompt(session: object) -> str | None:
@@ -49,12 +49,6 @@ def run_subagent(
         )
         if isinstance(result, str):
             return result
-        return (
-            f"Error: Task {description!r} returned an unexpected response "
-            f"{result!r}"
-        )
+        return f"Error: Task {description!r} returned an unexpected response {result!r}"
     except Exception as e:  # noqa: BLE001 - containment boundary
-        return (
-            f'Error: Task "{description}" returned an unexpected response '
-            f"— {e}"
-        )
+        return f'Error: Task "{description}" returned an unexpected response — {e}'

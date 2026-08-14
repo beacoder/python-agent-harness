@@ -12,12 +12,15 @@ class TestMessageText(unittest.TestCase):
     else skipped."""
 
     def test_list_content_parts_flattened(self):
-        m = Message(role="user", content=[
-            "plain ",
-            {"type": "text", "text": "text part "},
-            {"type": "thinking", "thinking": "inner thought"},
-            {"type": "image", "image_url": "x"},
-        ])
+        m = Message(
+            role="user",
+            content=[
+                "plain ",
+                {"type": "text", "text": "text part "},
+                {"type": "thinking", "thinking": "inner thought"},
+                {"type": "image", "image_url": "x"},
+            ],
+        )
         self.assertEqual(m.text(), "plain text part inner thought")
 
     def test_dict_without_text_or_thinking_skipped(self):

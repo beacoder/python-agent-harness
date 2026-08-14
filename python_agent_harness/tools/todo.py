@@ -26,12 +26,20 @@ PARAMETERS = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "content": {"type": "string", "minLength": 1, "description": "Task description (imperative form)"},
+                    "content": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Task description (imperative form)",
+                    },
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed"],
                     },
-                    "activeForm": {"type": "string", "minLength": 1, "description": "Present continuous form"},
+                    "activeForm": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Present continuous form",
+                    },
                 },
                 "required": ["content", "status"],
             },
@@ -49,6 +57,4 @@ class TodoWrite(Tool):
     def run(self, args: dict, ctx: ToolContext) -> str:
         todos = args.get("todos") or []
         ctx.update_todos(todos)
-        return json.dumps(
-            {"todos": todos, "count": len(todos)}, ensure_ascii=False
-        )
+        return json.dumps({"todos": todos, "count": len(todos)}, ensure_ascii=False)

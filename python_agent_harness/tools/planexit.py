@@ -15,7 +15,7 @@ DESCRIPTION = (
     "ready to exit plan mode.\n\n"
     "This tool will ask the user whether they want to switch to the build "
     "agent and start implementing the plan. Do NOT use the Question tool "
-    "to ask \"Is this plan okay?\" — that is what this tool is for.\n\n"
+    'to ask "Is this plan okay?" — that is what this tool is for.\n\n'
     "Call this tool:\n"
     "- After you have written a complete plan to the plan file\n"
     "- After you have clarified any questions with the user\n"

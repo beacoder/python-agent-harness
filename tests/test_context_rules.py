@@ -45,9 +45,7 @@ class TestTaskCompletionRules(unittest.TestCase):
         """include_context=False keeps the rules (this path is NOT used
         for sub-agents — they get subagent.md only)."""
         prompt = assemble_agent_prompt("/tmp", "AGENT PROMPT", include_context=False)
-        self.assertLess(
-            prompt.index("Task Completion Rules"), prompt.index("AGENT PROMPT")
-        )
+        self.assertLess(prompt.index("Task Completion Rules"), prompt.index("AGENT PROMPT"))
 
     def test_assemble_no_agent_prompt_still_has_rules(self):
         prompt = assemble_agent_prompt("/tmp", None, include_context=False)
@@ -55,16 +53,12 @@ class TestTaskCompletionRules(unittest.TestCase):
         self.assertIn("Task Completion Rules", prompt)
 
     def test_assemble_missing_rules_falls_back(self):
-        with mock.patch.object(
-            prompts, "load_task_completion_rules", return_value=None
-        ):
+        with mock.patch.object(prompts, "load_task_completion_rules", return_value=None):
             self.assertEqual(
                 assemble_agent_prompt("/tmp", "AGENT", include_context=False),
                 "AGENT",
             )
-            self.assertIsNone(
-                assemble_agent_prompt("/tmp", None, include_context=False)
-            )
+            self.assertIsNone(assemble_agent_prompt("/tmp", None, include_context=False))
 
     def test_slash_commands_keep_rules_before_command_prompt(self):
         """/init and custom commands (TUI slash path): the command
@@ -79,14 +73,16 @@ class TestTaskCompletionRules(unittest.TestCase):
         from python_agent_harness.tui import Tui
 
         session = AgentSession(
-            project_dir="/tmp", client=Client(
-                base_url="http://127.0.0.1:1/v1", api_key="x", model="m",
+            project_dir="/tmp",
+            client=Client(
+                base_url="http://127.0.0.1:1/v1",
+                api_key="x",
+                model="m",
             ),
-            model="m", registry=default_registry(),
+            model="m",
+            registry=default_registry(),
         )
-        tui = Tui(
-            session, Console(file=io.StringIO(), width=100, force_terminal=False)
-        )
+        tui = Tui(session, Console(file=io.StringIO(), width=100, force_terminal=False))
         captured = {}
 
         def fake_start(text, system=None, restore=None):
@@ -116,7 +112,9 @@ class TestTaskCompletionRules(unittest.TestCase):
         from python_agent_harness.tools import default_registry
 
         s = AgentSession(
-            project_dir="/tmp", client=object(), model="m",
+            project_dir="/tmp",
+            client=object(),
+            model="m",
             system_prompt=assemble_agent_prompt("/tmp", "AGENT", include_context=False),
             registry=default_registry(),
         )
@@ -127,9 +125,7 @@ class TestTaskCompletionRules(unittest.TestCase):
             loop.system.index("AGENT"),
         )
         # explicit system still wins
-        loop2 = AgentLoop(
-            s, messages=[Message(role="user", content="hi")], system="EXPLICIT"
-        )
+        loop2 = AgentLoop(s, messages=[Message(role="user", content="hi")], system="EXPLICIT")
         self.assertEqual(loop2.system, "EXPLICIT")
 
 

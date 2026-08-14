@@ -1,30 +1,34 @@
 import unittest
 
 from python_agent_harness.session_store import (
-    SessionStore, sanitize_title, title_from_filename,
+    SessionStore,
+    sanitize_title,
+    title_from_filename,
 )
 
 
 class TestSession(unittest.TestCase):
     def test_sanitize_title(self):
         self.assertEqual(sanitize_title('  "Fix bug"  '), "Fix-bug")
-        self.assertEqual(sanitize_title("a/b\\c:d*e?f\"g<h>i|j"), "a-b-c-d-e-f-g-h-i-j")
+        self.assertEqual(sanitize_title('a/b\\c:d*e?f"g<h>i|j'), "a-b-c-d-e-f-g-h-i-j")
         self.assertEqual(sanitize_title("  spaced   title  "), "spaced-title")
         self.assertEqual(sanitize_title("x" * 60), "x" * 50)
         self.assertEqual(sanitize_title("multi\nline\rtitle"), "multi-line-title")
 
     def test_title_from_filename(self):
         self.assertEqual(title_from_filename("/sessions/fix-bug_260805120000.md"), "fix bug")
-        self.assertEqual(
-            title_from_filename("/sessions/fix-bug_260805120000-1.md"), "fix bug"
-        )
+        self.assertEqual(title_from_filename("/sessions/fix-bug_260805120000-1.md"), "fix bug")
         self.assertIsNone(title_from_filename("/sessions/singleword_260805120000.md"))
         self.assertIsNone(title_from_filename("/sessions/plain.md"))
 
     def test_metadata_roundtrip(self):
         store = SessionStore(
-            project_dir="/tmp/proj", model="deepseek-v4", backend="DeepSeek",
-            system_prompt="be helpful", temperature=0.7, max_tokens=8192,
+            project_dir="/tmp/proj",
+            model="deepseek-v4",
+            backend="DeepSeek",
+            system_prompt="be helpful",
+            temperature=0.7,
+            max_tokens=8192,
             tool_names=["glob", "grep"],
         )
         meta = store.metadata_block()
@@ -42,7 +46,9 @@ class TestSession(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             store = SessionStore(
-                project_dir=d, model="m", backend="b",
+                project_dir=d,
+                model="m",
+                backend="b",
             )
             path = store.save("hello world")
             self.assertTrue(path)
@@ -64,7 +70,9 @@ class TestSession(unittest.TestCase):
                 store.save("x")
                 store.apply_title("My Great Session")
                 self.assertTrue(os.path.exists(store.file_path))
-                self.assertEqual(os.path.basename(store.file_path).startswith("My-Great-Session_"), True)
+                self.assertEqual(
+                    os.path.basename(store.file_path).startswith("My-Great-Session_"), True
+                )
             finally:
                 config.SESSION_DIR = old_dir
 

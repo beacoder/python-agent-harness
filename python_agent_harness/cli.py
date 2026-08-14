@@ -19,8 +19,8 @@ import os
 import sys
 
 from . import config
-from .client import Client
 from .agent_session import AgentSession
+from .client import Client
 from .tools import default_registry
 
 
@@ -57,8 +57,7 @@ def make_session(
     # -backend); otherwise the sub-agent shares the main client.
     subagent_client = None
     if any(
-        subagent_settings[k] != settings[k]
-        for k in ("base_url", "api_key", "model", "timeout")
+        subagent_settings[k] != settings[k] for k in ("base_url", "api_key", "model", "timeout")
     ):
         subagent_client = Client(
             base_url=subagent_settings["base_url"],
@@ -71,8 +70,8 @@ def make_session(
         # same LLM log file — the TUI advertises the main client's log
         # path, and a separate sub-agent log would fragment debugging
         subagent_client.log_path = client.log_path
-    from .prompts import assemble_agent_prompt, load_agent_prompt
     from .agent_session import find_skill_dir
+    from .prompts import assemble_agent_prompt, load_agent_prompt
 
     abs_project = os.path.abspath(project_dir)
     skill_dir = find_skill_dir(abs_project, paths.get("skill_path"))
@@ -105,9 +104,7 @@ def make_session(
         subagent_temperature=subagent_settings["temperature"],
         subagent_max_tokens=subagent_settings["max_tokens"],
         subagent_reasoning_effort=subagent_settings["reasoning_effort"],
-        subagent_stream=(
-            effective_stream if stream is not None else subagent_settings["stream"]
-        ),
+        subagent_stream=(effective_stream if stream is not None else subagent_settings["stream"]),
         registry=default_registry(),
         context_path=paths.get("context_path"),
         skill_path=paths.get("skill_path"),
@@ -119,7 +116,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     project_dir = getattr(args, "project", None) or os.getcwd()
     session = make_session(
-        project_dir, config_path=args.config,
+        project_dir,
+        config_path=args.config,
         stream=False if getattr(args, "no_stream", False) else None,
     )
     Tui(session).run()
@@ -154,20 +152,21 @@ def cmd_config(args: argparse.Namespace) -> int:
     print(f"timeout: {settings['timeout']}")
     print(f"context_path: {paths['context_path'] or '(auto-discover)'}")
     print(f"skill_path: {paths['skill_path'] or '(auto-discover)'}")
-    print("subagent_llm: (inherits main)" if subagent_settings == settings else
-          f"subagent_llm: model={subagent_settings['model']} "
-          f"base_url={subagent_settings['base_url']} "
-          f"api_key={config.mask_secret(subagent_settings['api_key'])} "
-          f"temperature={subagent_settings['temperature']} "
-          f"max_tokens={subagent_settings['max_tokens']} "
-          f"reasoning_effort={subagent_settings['reasoning_effort']} "
-          f"stream={subagent_settings['stream']} timeout={subagent_settings['timeout']}")
+    print(
+        "subagent_llm: (inherits main)"
+        if subagent_settings == settings
+        else f"subagent_llm: model={subagent_settings['model']} "
+        f"base_url={subagent_settings['base_url']} "
+        f"api_key={config.mask_secret(subagent_settings['api_key'])} "
+        f"temperature={subagent_settings['temperature']} "
+        f"max_tokens={subagent_settings['max_tokens']} "
+        f"reasoning_effort={subagent_settings['reasoning_effort']} "
+        f"stream={subagent_settings['stream']} timeout={subagent_settings['timeout']}"
+    )
     return 0
 
 
-def _add_config_arg(
-    parser: argparse.ArgumentParser, suppress: bool = False
-) -> None:
+def _add_config_arg(parser: argparse.ArgumentParser, suppress: bool = False) -> None:
     parser.add_argument(
         "--config",
         metavar="PATH",
@@ -187,14 +186,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="interactive TUI agent session")
     _add_config_arg(p_run, suppress=True)
     p_run.add_argument(
-        "--no-stream", action="store_true",
+        "--no-stream",
+        action="store_true",
         help="disable streaming (one-shot responses; overrides config file)",
     )
     p_run.add_argument("project", nargs="?", help="project directory (default: cwd)")
 
-    p_config = sub.add_parser(
-        "config", help="show effective LLM config or write a template file"
-    )
+    p_config = sub.add_parser("config", help="show effective LLM config or write a template file")
     p_config.add_argument("--init", action="store_true", help="write a config template")
     p_config.add_argument("--force", action="store_true", help="overwrite an existing file")
     p_config.add_argument("--path", metavar="PATH", help="config file path")

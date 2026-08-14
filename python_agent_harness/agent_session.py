@@ -8,10 +8,12 @@ provide interactive confirmations.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from . import config
 from .client import Client
@@ -21,6 +23,7 @@ from .session_store import SessionStore
 from .subagent import run_subagent
 from .token_estimator import TokenCalibrator
 from .tools import Registry, ToolContext
+from .tools.base import PendingToolResult
 from .tools.filesystem import cleanup_spooled_files
 
 
@@ -70,7 +73,7 @@ class AgentSession:
         system_prompt: str | None = None,
         subagent_system_prompt: str | None = None,
         temperature: float = config.TEMPERATURE,
-        max_tokens: int = config.MAX_TOKENS,
+        max_tokens: int | None = config.MAX_TOKENS,
         reasoning_effort: str | None = None,
         stream: bool = True,
         subagent_client: Client | None = None,
@@ -111,9 +114,7 @@ class AgentSession:
             max_tokens if subagent_max_tokens is None else subagent_max_tokens
         )
         self.subagent_reasoning_effort = (
-            reasoning_effort
-            if subagent_reasoning_effort is None
-            else subagent_reasoning_effort
+            reasoning_effort if subagent_reasoning_effort is None else subagent_reasoning_effort
         )
         self.subagent_stream = stream if subagent_stream is None else subagent_stream
 
@@ -197,14 +198,11 @@ class AgentSession:
     def tool_specs(self, exclude: tuple[str, ...] = ()) -> list:
         """Tool specs exposed to the model; ``exclude`` drops tools by
         name (e.g. one-shot/interactive tools for sub-agent runs)."""
-        return [
-            spec for spec in self.registry.specs()
-            if spec.name not in exclude
-        ]
+        return [spec for spec in self.registry.specs() if spec.name not in exclude]
 
     def execute_tool(
         self, name: str, args: dict[str, Any], call_id: str | None = None
-    ) -> str:
+    ) -> str | PendingToolResult:
         """Execute a tool.
 
         ``call_id`` (when given) lets Edit/Write attach a unified diff
@@ -257,20 +255,23 @@ class AgentSession:
                     "file — use string replacement (old_str/new_str) instead"
                 )
             return (
-                "Error: blocked by plan mode (read-only phase); "
-                "only the plan file may be modified"
+                "Error: blocked by plan mode (read-only phase); only the plan file may be modified"
             )
         return None
 
     def _tool_path(self, name: str, args: dict[str, Any]) -> str | None:
         if name == "Write":
-            return os.path.realpath(os.path.join(str(args.get("path", "")), str(args.get("filename", ""))))
+            return os.path.realpath(
+                os.path.join(str(args.get("path", "")), str(args.get("filename", "")))
+            )
         if name == "Edit":
             return os.path.realpath(str(args.get("path", "")))
         if name == "Insert":
             return os.path.realpath(str(args.get("path", "")))
         if name == "Mkdir":
-            return os.path.realpath(os.path.join(str(args.get("parent", "")), str(args.get("name", ""))))
+            return os.path.realpath(
+                os.path.join(str(args.get("parent", "")), str(args.get("name", "")))
+            )
         return None
 
     # ------------------------------------------------------------------
@@ -328,9 +329,7 @@ class AgentSession:
         )
         if approved:
             self.switch_to_build()
-            msg = config.PLAN_EXIT_APPROVED_MESSAGE % (
-                self.plan_mode.plan_file or ""
-            )
+            msg = config.PLAN_EXIT_APPROVED_MESSAGE % (self.plan_mode.plan_file or "")
             self.pending_user_prompts.append(msg)
             return (
                 "User approved switching to build agent.  You are now in "
@@ -350,6 +349,7 @@ class AgentSession:
 
     def switch_to_plan(self) -> None:
         from .tools import PlanExit
+
         self.plan_mode.set_mode(AgentMode.PLAN, self._mode_prompts())
         self.registry.register(PlanExit())
 
@@ -421,8 +421,8 @@ class AgentSession:
             return
         store.title_pending = True
         try:
-            from .prompts import read_prompt_file
             from .models import Message as Msg
+            from .prompts import read_prompt_file
 
             system = read_prompt_file("title.md")
             resp, _ = self.client.chat_sync(
@@ -458,9 +458,7 @@ class AgentSession:
         cleanup_spooled_files()
         if hasattr(self.client, "close"):
             self.client.close()
-        if self.subagent_client is not self.client and hasattr(
-            self.subagent_client, "close"
-        ):
+        if self.subagent_client is not self.client and hasattr(self.subagent_client, "close"):
             self.subagent_client.close()
 
     def cancel(self) -> None:
@@ -486,10 +484,8 @@ class AgentSession:
             clients.append(self.subagent_client)
         for c in clients:
             if hasattr(c, "abort"):
-                try:
+                with contextlib.suppress(Exception):  # best effort
                     c.abort()
-                except Exception:  # noqa: BLE001 - best effort
-                    pass
 
     # ------------------------------------------------------------------
     # direct commands: compact / summary (no agent loop)
@@ -505,8 +501,8 @@ class AgentSession:
         which resumes the run with it; the manual command just replaces
         the history and waits for the next user message.
         """
-        from .prompts import read_prompt_file
         from .models import Message as Msg
+        from .prompts import read_prompt_file
 
         # Replacing the conversation is a new generation: invalidate any
         # worker still winding down from a cancelled run, or its
@@ -521,9 +517,7 @@ class AgentSession:
         try:
             conversation = self._conversation_text(messages)
             system = read_prompt_file("compact.md")
-            resp, _ = self.client.chat_sync(
-                [Msg(role="user", content=conversation)], system=system
-            )
+            resp, _ = self.client.chat_sync([Msg(role="user", content=conversation)], system=system)
             summary = resp.text_without_reasoning()
             if not summary:
                 return False, "Compaction failed: empty summary."
@@ -552,8 +546,8 @@ class AgentSession:
         text is sent with the summary prompt, and the result is appended
         as an assistant message plus a session save.
         """
-        from .prompts import read_prompt_file
         from .models import Message as Msg
+        from .prompts import read_prompt_file
 
         # Appending to the shared conversation is a new generation: invalidate
         # any worker still winding down from a cancelled run, or its
@@ -565,9 +559,7 @@ class AgentSession:
         conversation = self._conversation_text(messages)
         system = read_prompt_file("summary.md")
         try:
-            resp, _ = self.client.chat_sync(
-                [Msg(role="user", content=conversation)], system=system
-            )
+            resp, _ = self.client.chat_sync([Msg(role="user", content=conversation)], system=system)
             summary = resp.text_without_reasoning()
         except Exception as e:  # noqa: BLE001
             return f"Summary failed: {e}"

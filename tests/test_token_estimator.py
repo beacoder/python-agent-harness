@@ -49,9 +49,13 @@ class TestTokenizer(unittest.TestCase):
     def test_payload_tokens(self):
         msgs = [
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi", "tool_calls": [
-                {"function": {"name": "read", "arguments": '{"file_path": "a.py"}'}}
-            ]},
+            {
+                "role": "assistant",
+                "content": "hi",
+                "tool_calls": [
+                    {"function": {"name": "read", "arguments": '{"file_path": "a.py"}'}}
+                ],
+            },
         ]
         tools = [{"type": "function", "function": {"name": "read"}}]
         self.assertGreater(estimate_payload_tokens("system", msgs, tools), 5)
@@ -80,13 +84,17 @@ class TestTokenizer(unittest.TestCase):
         """Message content lists (text parts, plain strings, thinking,
         arguments) and reasoning_content all land in the buffer."""
         msgs = [
-            {"role": "user", "content": [
-                {"type": "text", "text": "hello"},
-                " world",
-                {"thinking": "ponder"},
-                {"arguments": "{}"},
-                {"other": 42},
-            ], "reasoning_content": "deep thought"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hello"},
+                    " world",
+                    {"thinking": "ponder"},
+                    {"arguments": "{}"},
+                    {"other": 42},
+                ],
+                "reasoning_content": "deep thought",
+            },
         ]
         text = payload_text(None, msgs, [])
         self.assertEqual(text, "hello\n world\nponder\n{}\ndeep thought")
