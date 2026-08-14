@@ -270,7 +270,7 @@ class AgentLoop:
                 [Message(role="user", content=conversation)], system=system,
                 cancel_check=self._is_cancelled,
             )
-            summary = resp.text()
+            summary = resp.text_without_reasoning()
             if not summary:
                 return False
             frame = config.COMPACT_HEADER + summary + config.COMPACT_SEPARATOR
