@@ -38,10 +38,10 @@ from .session_store import SessionStore, title_from_filename
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-# message-body colors - distinct from tool colors (tool calls are cyan,
+# message-body colors - distinct from tool colors (tool calls are magenta,
 # tool results dim) so roles never blend into tool activity
-USER_STYLE = "bright_green"
-ASSISTANT_STYLE = "yellow"
+USER_STYLE = "cyan"
+ASSISTANT_STYLE = "green"
 
 
 def _tail_lines(text: str, n: int) -> str:
@@ -592,7 +592,7 @@ class Tui:
                         else:
                             params = ""
                         label = f"🤖 {tc.name}({params})" if params else f"🤖 {tc.name}"
-                        rows.append(Text(label, style="cyan"))
+                        rows.append(Text(label, style="magenta"))
                 if body.strip():
                     rows.append(Markdown(f"**assistant:** {body}", style=ASSISTANT_STYLE))
             elif m.role == "tool":
@@ -649,7 +649,7 @@ class Tui:
             rows.append(stream_row)
         rows = self._apply_budget(rows)
         group = Group(*rows) if rows else Text("(empty)")
-        return Panel(group, title="python-agent-harness", border_style="green")
+        return Panel(group, title="python-agent-harness", border_style="blue")
 
     def _apply_budget(self, rows: list[Any]) -> list[Any]:
         """Keep the NEWEST rows that fit the visible terminal area.
