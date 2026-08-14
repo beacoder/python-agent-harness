@@ -122,7 +122,7 @@ class TestPlanModeGuard(unittest.TestCase):
     def test_plan_blocked_other_file(self):
         session = self.make_plan_session()
         msg = session._plan_blocked("Edit", {"path": "/tmp/other.py"})
-        self.assertIn("only the plan file", msg)
+        self.assertIn("blocked by plan mode", msg)
 
     def test_plan_blocked_plan_file_allowed(self):
         session = self.make_plan_session()
