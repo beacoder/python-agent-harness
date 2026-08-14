@@ -168,6 +168,15 @@ jobs:
       # Audit the PROJECT's dependency closure resolved from pyproject.toml
       # (rich, httpx, prompt_toolkit + transitives) — NOT the whole runner
       # environment, which would flag unrelated tooling like pip/setuptools.
-      # Record accepted/unfixable advisories with `--ignore-vuln <ID>`.
+      # Record accepted/unfixable advisories in .pip-audit-known-vulnerabilities.
       - name: pip-audit
-        run: pip-audit . --strict --progress-spinner=off
+        run: |
+          IGNORE_VULNS=""
+          if [ -f .pip-audit-known-vulnerabilities ]; then
+            while IFS= read -r vuln_id || [ -n "$vuln_id" ]; do
+              # Skip blank lines and comments
+              case "$vuln_id" in ''|\#*) continue ;; esac
+              IGNORE_VULNS="$IGNORE_VULNS --ignore-vuln $vuln_id"
+            done < .pip-audit-known-vulnerabilities
+          fi
+          pip-audit . --strict --progress-spinner=off $IGNORE_VULNS
