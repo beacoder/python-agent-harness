@@ -676,9 +676,12 @@ class AgentLoop:
             return  # response arrived after cancel: drop it
 
         # persist the assistant response in the conversation history
-        # (text and/or tool calls) so later turns and the UI see it
+        # (text and/or tool calls) so later turns and the UI see it;
+        # always append to maintain role alternation — a missing
+        # assistant message before a nudge creates consecutive user
+        # messages which some APIs reject with a 400 error.
+        self.messages.append(assistant)
         if assistant.text().strip() or assistant.tool_calls:
-            self.messages.append(assistant)
             if not assistant.tool_calls and self.top_level:
                 session.last_messages = list(self.messages)
 
