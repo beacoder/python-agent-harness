@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # Python dependencies declared in pyproject.toml (runtime + [dev] extra).
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      # Batch the dev/CI tooling bumps into a single PR to cut noise.
+      dev-tooling:
+        dependency-type: "development"
+    labels:
+      - "dependencies"
+
+  # Keep the GitHub Actions used in .github/workflows/ up to date.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
