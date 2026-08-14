@@ -681,6 +681,7 @@ class Client:
         temperature: float | None = None,
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[Message, Usage]:
         """Non-streaming request; used for compaction, titles, summary."""
         return self.chat(
@@ -691,6 +692,7 @@ class Client:
             max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
             stream=False,
+            cancel_check=cancel_check,
         )
 
 
