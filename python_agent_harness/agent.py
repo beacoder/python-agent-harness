@@ -66,10 +66,15 @@ class AgentLoop:
         top_level: bool = True,
         system: str | None = None,
         max_rounds: int = 60,
+        client: Any | None = None,
     ) -> None:
         self.session = session
         self.messages: list[Message] = messages if messages is not None else []
         self.top_level = top_level
+        # an explicit per-run client (a dedicated clone for this
+        # sub-agent invocation, see AgentSession.run_subagent) wins
+        # over the session's shared sub-agent client
+        self._client = client
         # fall back to the session's prompt so a run never loses it;
         # sub-agent loops use the session's SUB-AGENT prompt (their own),
         # never the parent's system prompt (which carries the parent's
@@ -619,10 +624,11 @@ class AgentLoop:
                 exclude=config.SUBAGENT_EXCLUDED_TOOLS if not self.top_level else ()
             )
             # sub-agent runs use their own LLM when one is configured
-            # (session.subagent_client, mirroring gptel-agent-harness-
-            # subagent-model/-backend); everything unset inherits the
-            # main agent's settings, so the sub-agent path is identical
-            # when no separate LLM is configured
+            # (a per-invocation clone of session.subagent_client,
+            # mirroring gptel-agent-harness-subagent-model/-backend);
+            # everything unset inherits the main agent's settings, so
+            # the sub-agent path is identical when no separate LLM is
+            # configured
             if self.top_level:
                 client = session.client
                 temperature = session.temperature
@@ -630,7 +636,7 @@ class AgentLoop:
                 reasoning_effort = session.reasoning_effort
                 stream = session.stream
             else:
-                client = session.subagent_client
+                client = self._client or session.subagent_client
                 temperature = session.subagent_temperature
                 max_tokens = session.subagent_max_tokens
                 reasoning_effort = session.subagent_reasoning_effort
@@ -795,14 +801,19 @@ def run_agent_loop(
     top_level: bool = True,
     system: str | None = None,
     max_rounds: int = 60,
+    client: Any | None = None,
 ) -> str | None:
-    """Convenience wrapper running a full agent run (FSM)."""
+    """Convenience wrapper running a full agent run (FSM).
+
+    ``client`` (when given) overrides the session's client for this
+    run — the per-invocation sub-agent clone."""
     return AgentLoop(
         session,
         messages=messages,
         top_level=top_level,
         system=system,
         max_rounds=max_rounds,
+        client=client,
     ).run()
 
 

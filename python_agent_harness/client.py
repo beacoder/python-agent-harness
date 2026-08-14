@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import random
+import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -20,6 +21,12 @@ import httpx
 
 from . import config
 from .models import Message, ToolCall, ToolSpec, Usage
+
+# serializes appends to the shared LLM log file: concurrent sub-agents
+# (each with its own client but ONE shared log_path, see Client.clone)
+# finish their interactions in parallel, and interleaved write() calls
+# would corrupt the JSON stream
+_log_lock = threading.Lock()
 
 
 class ApiError(Exception):
@@ -134,7 +141,7 @@ def _log_llm_interaction(
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-        with open(log_file, "a", encoding="utf-8") as f:
+        with _log_lock, open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(marker, indent=2, ensure_ascii=False) + "\n")
             f.write(json.dumps(body, indent=2, ensure_ascii=False) + "\n")
     except Exception:  # noqa: BLE001 - logging must never break the agent
@@ -174,6 +181,7 @@ class Client:
         retry_base_delay: float | None = None,
         retry_max_delay: float | None = None,
         config_path: str | None = None,
+        log_path: Path | None = None,
     ) -> None:
         self.base_url = (base_url or config.DEFAULT_BASE_URL).rstrip("/")
         self.api_key = api_key or _default_api_key()
@@ -194,10 +202,42 @@ class Client:
         # the user asked to stop.  Cleared at the start of each chat()
         # so a fresh turn may retry normally.
         self._aborted = False
-        self.log_path: Path | None = _llm_log_path() if config.LLM_LOG_ENABLED else None
+        # an explicit log file is inherited by clones so every request
+        # of one session (main + all sub-agents) lands in a single log
+        self.log_path = (
+            log_path
+            if log_path is not None
+            else (_llm_log_path() if config.LLM_LOG_ENABLED else None)
+        )
 
     def close(self) -> None:
         self._http.close()
+
+    def clone(self) -> Client:
+        """A fresh Client with identical settings (no shared state).
+
+        Concurrent requests must never share one Client: ``_reset_http``
+        and ``abort`` swap and close the underlying httpx pool, and
+        ``_aborted`` is per-request flag state — so one request's
+        connection failure (or Ctrl-C abort) would tear down a
+        sibling's in-flight request on the same client.  Each
+        concurrent sub-agent clones its own client (see
+        ``AgentSession.run_subagent``), keeping pools and the abort
+        flag strictly per-request.  The log file is shared so one
+        session's LLM interactions stay in one log.
+        """
+        return Client(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            model=self.model,
+            timeout=self.timeout,
+            verify=self.verify,
+            retry_max=self.retry_max,
+            retry_base_delay=self.retry_base_delay,
+            retry_max_delay=self.retry_max_delay,
+            config_path=self._config_path,
+            log_path=self.log_path,
+        )
 
     def abort(self) -> None:
         """Abort the in-flight request (called on cancel).

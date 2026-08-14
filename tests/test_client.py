@@ -1103,6 +1103,86 @@ class TestClientResetHttp(unittest.TestCase):
         c.close()
 
 
+class TestClientClone(unittest.TestCase):
+    """clone() gives each concurrent request its own httpx pool and
+    abort flag — the shared-Client race fix.  A connection failure on
+    one client swaps and closes ONLY its own pool, and abort() marks
+    only its own request aborted; siblings on other clones (concurrent
+    sub-agents) must never be affected."""
+
+    def test_clone_shares_settings_but_not_state(self):
+        c = make_offline_client(
+            retry_max=4,
+            retry_base_delay=0.5,
+            retry_max_delay=9.0,
+            config_path="/tmp/nonexistent-config.json",
+        )
+        try:
+            clone = c.clone()
+            self.assertIsNot(clone, c)
+            # the pool is per-client: the shared _http was the race
+            self.assertIsNot(clone._http, c._http)
+            self.assertFalse(clone._http.is_closed)
+            # settings are inherited verbatim
+            self.assertEqual(clone.base_url, c.base_url)
+            self.assertEqual(clone.api_key, c.api_key)
+            self.assertEqual(clone.model, c.model)
+            self.assertEqual(clone.timeout, c.timeout)
+            self.assertEqual(clone.verify, c.verify)
+            self.assertEqual(clone.retry_max, 4)
+            self.assertEqual(clone.retry_base_delay, 0.5)
+            self.assertEqual(clone.retry_max_delay, 9.0)
+            self.assertEqual(clone._config_path, c._config_path)
+            # the LLM log file is shared (one session, one log)
+            self.assertEqual(clone.log_path, c.log_path)
+        finally:
+            c.close()
+
+    def test_abort_flag_is_per_client(self):
+        """abort() marks only the aborted client; a sibling's flag is
+        untouched — a shared flag made one request's cancel state leak
+        into the other's retry decision."""
+        c = make_offline_client()
+        clone = c.clone()
+        try:
+            c.abort()
+            self.assertTrue(c._aborted)
+            self.assertFalse(clone._aborted)
+            clone.abort()
+            self.assertTrue(clone._aborted)
+            # a fresh turn clears ONLY its own client's flag at chat()
+            # start: clearing one must never clear the other's
+            c._aborted = False
+            self.assertTrue(clone._aborted)
+        finally:
+            c.close()
+            clone.close()
+
+    def test_reset_http_only_touches_own_pool(self):
+        """_reset_http on one client closes its own pool; a sibling's
+        pool stays exactly where it was — the operation that used to
+        tear down a concurrent request's connection."""
+        c = make_offline_client()
+        clone = c.clone()
+        try:
+            sibling_pool = clone._http
+            c._reset_http()
+            self.assertIs(clone._http, sibling_pool)
+            self.assertFalse(clone._http.is_closed)
+            self.assertIsNot(c._http, sibling_pool)
+        finally:
+            c.close()
+            clone.close()
+
+    def test_close_is_independent(self):
+        c = make_offline_client()
+        clone = c.clone()
+        clone.close()
+        self.assertTrue(clone._http.is_closed)
+        self.assertFalse(c._http.is_closed)
+        c.close()
+
+
 class TestClientCallbackIsolation(unittest.TestCase):
     """A presentational callback (on_delta / on_tool_call) failure must
     never be mistaken for a transport error and trigger a retry — even

@@ -104,8 +104,10 @@ class AgentSession:
         # timeout) and per-request options when a different LLM is
         # configured for sub-agents (mirrors gptel-agent-harness-
         # subagent-model/-backend); every unset option inherits the
-        # main agent's value.  The Agent tool's sub-agent loop uses
-        # these instead of the main client.
+        # main agent's value.  The sub-agent loop never uses this
+        # client directly — each Agent tool invocation clones it
+        # (see run_subagent) so concurrent sub-agents never share a
+        # Client's pool/abort state.
         self.subagent_client = subagent_client or client
         self.subagent_temperature = (
             temperature if subagent_temperature is None else subagent_temperature
@@ -132,6 +134,13 @@ class AgentSession:
         # serializes interactive prompts (Question tool, PlanExit
         # confirmation): the TUI can only ask one question at a time
         self._interactive_lock = threading.Lock()
+        # dedicated per-invocation sub-agent clients (see run_subagent):
+        # concurrent sub-agents each run on their own Client clone, so
+        # one sub-agent's connection failure / abort can never tear
+        # down a sibling's in-flight request on a shared client.  The
+        # active clones are tracked so cancel()/close() can reach them.
+        self._subagent_clients_lock = threading.Lock()
+        self._active_subagent_clients: list[Client] = []
         self.store = SessionStore(
             project_dir=project_dir,
             model=model,
@@ -310,8 +319,42 @@ class AgentSession:
 
         The sub-agent has no TodoWrite (parent-only), so it can never
         touch the parent's todo list.
+
+        Each invocation runs on a DEDICATED client, cloned from the
+        configured sub-agent client: concurrent Agent tool calls share
+        this session, and a shared Client would race — ``_reset_http``
+        / ``abort`` swap and close the underlying httpx pool and
+        ``_aborted`` is per-request state, so one sub-agent's
+        connection failure (or a Ctrl-C) would tear down a sibling's
+        in-flight request.  The clone is tracked for cancel/close and
+        released when the sub-agent finishes.
         """
-        return run_subagent(self, description, prompt)
+        client, owned = self._new_subagent_client()
+        if owned:
+            with self._subagent_clients_lock:
+                self._active_subagent_clients.append(client)
+        try:
+            return run_subagent(self, description, prompt, client=client)
+        finally:
+            if owned:
+                with self._subagent_clients_lock:
+                    if client in self._active_subagent_clients:
+                        self._active_subagent_clients.remove(client)
+                client.close()
+
+    def _new_subagent_client(self) -> tuple[Any, bool]:
+        """A dedicated Client for one sub-agent invocation.
+
+        Real Clients are cloned (fresh httpx pool, own ``_aborted``
+        flag, same endpoint/credentials/log).  A non-Client
+        ``subagent_client`` (a test double) is passed through
+        untouched — the isolation concern does not apply to it, and
+        custom clients keep working as-is.
+        """
+        base = self.subagent_client
+        if isinstance(base, Client):
+            return base.clone(), True
+        return base, False
 
     def plan_exit(self) -> str:
         """PlanExit tool implementation.
@@ -460,6 +503,16 @@ class AgentSession:
             self.client.close()
         if self.subagent_client is not self.client and hasattr(self.subagent_client, "close"):
             self.subagent_client.close()
+        # defensive: sub-agent workers close their own clones in
+        # run_subagent's finally; close any stragglers (e.g. a worker
+        # still winding down after cancel) so no pool leaks
+        with self._subagent_clients_lock:
+            strays = list(self._active_subagent_clients)
+            self._active_subagent_clients.clear()
+        for c in strays:
+            if hasattr(c, "close"):
+                with contextlib.suppress(Exception):  # best effort
+                    c.close()
 
     def cancel(self) -> None:
         """Cancel the in-flight agent run (Ctrl-C).
@@ -478,10 +531,14 @@ class AgentSession:
         # A sub-agent streams on its own client when a separate LLM is
         # configured — abort BOTH pools so a blocked sub-agent read is
         # interrupted too (see Client.abort for why close() alone is
-        # not enough).  A shared client is aborted once.
+        # not enough).  A shared client is aborted once; dedicated
+        # per-invocation sub-agent clones (see run_subagent) are each
+        # aborted so every in-flight sub-agent request is interrupted.
         clients = [self.client]
         if self.subagent_client is not self.client:
             clients.append(self.subagent_client)
+        with self._subagent_clients_lock:
+            clients.extend(self._active_subagent_clients)
         for c in clients:
             if hasattr(c, "abort"):
                 with contextlib.suppress(Exception):  # best effort

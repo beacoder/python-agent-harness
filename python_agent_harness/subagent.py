@@ -31,8 +31,14 @@ def run_subagent(
     parent_session: object,
     description: str,
     prompt: str,
+    client: object | None = None,
 ) -> str:
-    """Run a sub-agent task; return a result string (never raises)."""
+    """Run a sub-agent task; return a result string (never raises).
+
+    ``client`` (when given) is the per-invocation dedicated client
+    (see ``AgentSession.run_subagent``); the loop falls back to the
+    session's shared sub-agent client otherwise.
+    """
     session = parent_session
     try:
         messages = [Message(role="user", content=prompt)]
@@ -46,6 +52,7 @@ def run_subagent(
             top_level=False,
             system=_subagent_system_prompt(session),
             max_rounds=config.SUBAGENT_MAX_ROUNDS,
+            client=client,
         )
         if isinstance(result, str):
             return result

@@ -279,6 +279,238 @@ class TestCancel(unittest.TestCase):
         self.assertEqual(main.aborted, 2)
 
 
+class TestSubagentDedicatedClient(unittest.TestCase):
+    """Each Agent invocation runs on a dedicated client clone: the
+    session's sub-agent client is a TEMPLATE, never shared by
+    concurrent sub-agents.  A shared Client would race — _reset_http/
+    abort swap and close the one httpx pool, and _aborted is per-request
+    state — so one sub-agent's connection failure (or a Ctrl-C) could
+    tear down a sibling's in-flight request."""
+
+    def _run_concurrently(self, session, n=2):
+        import threading
+        from unittest import mock
+
+        entered = threading.Barrier(n)
+        seen = []
+        pools_open = []
+
+        def fake_run_subagent(session_, description, prompt, client=None):
+            seen.append(client)
+            pools_open.append(not client._http.is_closed)
+            entered.wait(timeout=5)
+            return f"done-{description}"
+
+        with mock.patch(
+            "python_agent_harness.agent_session.run_subagent", side_effect=fake_run_subagent
+        ):
+            threads = [
+                threading.Thread(target=lambda i=i: session.run_subagent("subagent", f"t{i}", "p"))
+                for i in range(n)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+            self.assertEqual([t.is_alive() for t in threads], [False, False])
+        return seen, pools_open
+
+    def test_concurrent_invocations_get_distinct_clients(self):
+        """Concurrent sub-agents never share the session client: each
+        invocation gets its own clone, distinct from the others and
+        from the shared (default) session client."""
+        from python_agent_harness.client import Client
+
+        main = Client(base_url="http://127.0.0.1:1/v1", api_key="k", model="m", timeout=1)
+        session = RecordingSession()
+        session.client = main
+        session.subagent_client = main  # no separate subagent LLM: the old shared case
+        try:
+            seen, pools_open = self._run_concurrently(session)
+            self.assertEqual(len(seen), 2)
+            for c in seen:
+                self.assertIsNot(c, main)
+            self.assertIsNot(seen[0], seen[1])
+            # every clone is its own open pool while in flight (a
+            # shared pool was the race)
+            self.assertEqual(pools_open, [True, True])
+        finally:
+            main.close()
+
+    def test_active_clients_tracked_aborted_on_cancel_and_released(self):
+        """While a sub-agent is in flight its dedicated client is
+        tracked; session.cancel() aborts every active clone (a blocked
+        sub-agent read is interrupted on Ctrl-C); completion releases
+        the clone and closes its pool."""
+        import threading
+        from unittest import mock
+
+        from python_agent_harness.client import Client
+
+        main = Client(base_url="http://127.0.0.1:1/v1", api_key="k", model="m", timeout=1)
+        session = RecordingSession()
+        session.client = main
+        session.subagent_client = main
+
+        entered = threading.Event()
+        release = threading.Event()
+        seen = []
+
+        def fake_run_subagent(session_, description, prompt, client=None):
+            seen.append(client)
+            entered.set()
+            release.wait(timeout=10)
+            return "done"
+
+        try:
+            with mock.patch(
+                "python_agent_harness.agent_session.run_subagent", side_effect=fake_run_subagent
+            ):
+                t = threading.Thread(target=lambda: session.run_subagent("subagent", "t0", "p"))
+                t.start()
+                self.assertTrue(entered.wait(timeout=5))
+                clone = seen[0]
+                self.assertIn(clone, session._active_subagent_clients)
+                session.cancel()
+                # abort() swapped the clone's pool and set its flag
+                self.assertTrue(clone._aborted)
+                release.set()
+                t.join(timeout=5)
+                self.assertFalse(t.is_alive())
+                # released on completion: no stragglers, pool closed
+                self.assertNotIn(clone, session._active_subagent_clients)
+                self.assertTrue(clone._http.is_closed)
+        finally:
+            release.set()
+            main.close()
+
+    def test_session_close_releases_inflight_clients(self):
+        """close() (defensive path) closes clones still tracked from
+        workers that have not finished winding down."""
+        import threading
+        from unittest import mock
+
+        from python_agent_harness.client import Client
+
+        main = Client(base_url="http://127.0.0.1:1/v1", api_key="k", model="m", timeout=1)
+        session = RecordingSession()
+        session.client = main
+        session.subagent_client = main
+
+        entered = threading.Event()
+        release = threading.Event()
+        seen = []
+
+        def fake_run_subagent(session_, description, prompt, client=None):
+            seen.append(client)
+            entered.set()
+            release.wait(timeout=10)
+            return "done"
+
+        try:
+            with mock.patch(
+                "python_agent_harness.agent_session.run_subagent", side_effect=fake_run_subagent
+            ):
+                t = threading.Thread(target=lambda: session.run_subagent("subagent", "t0", "p"))
+                t.start()
+                self.assertTrue(entered.wait(timeout=5))
+                clone = seen[0]
+                session.close()
+                self.assertTrue(clone._http.is_closed)
+                self.assertEqual(session._active_subagent_clients, [])
+                release.set()
+                t.join(timeout=5)
+                self.assertFalse(t.is_alive())
+        finally:
+            release.set()
+            main.close()
+
+    def test_non_client_subagent_client_passed_through(self):
+        """A non-Client subagent_client (test doubles / custom clients)
+        is used as-is: no clone, no tracking, no closing."""
+        from unittest import mock
+
+        session = RecordingSession()
+        stub = object()
+        session.subagent_client = stub
+        seen = []
+
+        def fake_run_subagent(session_, description, prompt, client=None):
+            seen.append(client)
+            return "done"
+
+        with mock.patch(
+            "python_agent_harness.agent_session.run_subagent", side_effect=fake_run_subagent
+        ):
+            result = session.run_subagent("subagent", "t0", "p")
+        self.assertEqual(result, "done")
+        self.assertIs(seen[0], stub)
+        self.assertEqual(session._active_subagent_clients, [])
+
+    def test_clone_inherits_subagent_own_llm_config(self):
+        """The per-invocation clone is cloned from the SUB-AGENT client,
+        not the main one: when a separate subagent_llm is configured
+        (different model/base_url/api_key/timeout), every sub-agent runs
+        on the sub-agent's OWN LLM settings — never the main model."""
+        from python_agent_harness.client import Client
+
+        main = Client(
+            base_url="https://main.example/v1",
+            api_key="sk-main",
+            model="main-model",
+            timeout=600,
+        )
+        sub = Client(
+            base_url="https://sub.example/v1",
+            api_key="sk-sub",
+            model="cheap-model",
+            timeout=300,
+        )
+        session = RecordingSession()
+        session.client = main
+        session.subagent_client = sub
+        try:
+            clone, owned = session._new_subagent_client()
+            self.assertTrue(owned)
+            self.assertIsNot(clone, sub)
+            self.assertIsNot(clone, main)
+            # the clone carries the SUB-AGENT's LLM, not the main one
+            self.assertEqual(clone.model, "cheap-model")
+            self.assertEqual(clone.base_url, "https://sub.example/v1")
+            self.assertEqual(clone.api_key, "sk-sub")
+            self.assertEqual(clone.timeout, 300)
+            clone.close()
+        finally:
+            main.close()
+            sub.close()
+
+    def test_clone_inherits_main_config_when_no_subagent_llm(self):
+        """Without a separate subagent_llm the template IS the main
+        client, so the clone inherits the main settings — the sub-agent
+        path is then identical to the main agent's."""
+        from python_agent_harness.client import Client
+
+        main = Client(
+            base_url="https://main.example/v1",
+            api_key="sk-main",
+            model="main-model",
+            timeout=600,
+        )
+        session = RecordingSession()
+        session.client = main
+        session.subagent_client = main  # unset subagent_llm: shares the main client
+        try:
+            clone, owned = session._new_subagent_client()
+            self.assertTrue(owned)
+            self.assertEqual(clone.model, "main-model")
+            self.assertEqual(clone.base_url, "https://main.example/v1")
+            self.assertEqual(clone.api_key, "sk-main")
+            self.assertEqual(clone.timeout, 600)
+            clone.close()
+        finally:
+            main.close()
+
+
 class TestCompactConversation(unittest.TestCase):
     """Manual /compact failure paths: empty history, concurrent
     compaction, empty summary, client exceptions."""
