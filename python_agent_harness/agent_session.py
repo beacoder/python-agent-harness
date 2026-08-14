@@ -122,6 +122,7 @@ class AgentSession:
         self.plan_mode = PlanMode(project_dir)
         self.tool_ctx = ToolContext(self)
         self._tool_diffs: dict[str, str] = {}
+        self._tool_diffs_lock = threading.Lock()
         # thread-local: sub-agents each execute tools in their own
         # background thread; the "currently executing call" that
         # Edit/Write attach their diff to must be per-thread, or
@@ -229,11 +230,13 @@ class AgentSession:
         """Attach a unified diff to the tool call currently executing."""
         call_id = getattr(self._active_call, "call_id", None)
         if call_id and diff_text:
-            self._tool_diffs[call_id] = diff_text
+            with self._tool_diffs_lock:
+                self._tool_diffs[call_id] = diff_text
 
     def take_diff(self, call_id: str) -> str | None:
         """Pop and return the diff recorded for CALL_ID, if any."""
-        return self._tool_diffs.pop(call_id, None)
+        with self._tool_diffs_lock:
+            return self._tool_diffs.pop(call_id, None)
 
     def _plan_blocked(self, name: str, args: dict[str, Any]) -> str | None:
         if name == "Bash":
@@ -276,14 +279,15 @@ class AgentSession:
     def find_skill(self, name: str) -> str | None:
         if not self._skill_dir:
             return None
+        skill_root = os.path.realpath(self._skill_dir)
         # Check subdirectory with SKILL.md (e.g. skills/cba-rules/SKILL.md)
-        p = os.path.join(self._skill_dir, name, "SKILL.md")
-        if os.path.isfile(p):
+        p = os.path.realpath(os.path.join(skill_root, name, "SKILL.md"))
+        if p.startswith(skill_root + os.sep) and os.path.isfile(p):
             return p
         # Fallback: flat file (e.g. skills/cba-rules.md or .txt)
         for ext in (".md", ".txt"):
-            p = os.path.join(self._skill_dir, name + ext)
-            if os.path.isfile(p):
+            p = os.path.realpath(os.path.join(skill_root, name + ext))
+            if p.startswith(skill_root + os.sep) and os.path.isfile(p):
                 return p
         return None
 
