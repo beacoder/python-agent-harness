@@ -118,19 +118,24 @@ class Tool(ABC):
 class Registry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self._lock = __import__("threading").Lock()
 
     def register(self, tool: Tool) -> None:
-        self._tools[tool.name] = tool
+        with self._lock:
+            self._tools[tool.name] = tool
 
     def unregister(self, name: str) -> None:
-        self._tools.pop(name, None)
+        with self._lock:
+            self._tools.pop(name, None)
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 
     def specs(self, names: list[str] | None = None) -> list[ToolSpec]:
-        wanted = set(names) if names is not None else set(self._tools)
-        return [t.spec() for name, t in self._tools.items() if name in wanted]
+        with self._lock:
+            items = list(self._tools.items())
+        wanted = set(names) if names is not None else {n for n, _ in items}
+        return [t.spec() for name, t in items if name in wanted]
 
     def execute(
         self, name: str, args: dict[str, Any], ctx: ToolContext
