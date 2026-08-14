@@ -1263,7 +1263,8 @@ class Tui:
             return
         for f in files:
             try:
-                text = open(f, encoding="utf-8").read()
+                with open(f, encoding="utf-8") as fh:
+                    text = fh.read()
             except OSError:
                 continue
             meta = SessionStore.parse_metadata(text)
@@ -1302,7 +1303,8 @@ class Tui:
             self.console.print(f"[red]file not found: {path}[/red]")
             return
         try:
-            text = open(path, encoding="utf-8").read()
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
         except OSError as e:
             self.console.print(f"[red]cannot read {path}: {e}[/red]")
             return
