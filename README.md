@@ -1,98 +1,79 @@
+<div align="center">
+
 # python-agent-harness
 
-A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gptel-agent-harness): a minimal-dependency coding agent designed for daily use and easy customization.
+**A minimal-dependency coding agent for your terminal** — FSM-driven execution, OpenAI-compatible, made for daily use and easy customization.
+
+[![CI](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+</div>
+
+A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gptel-agent-harness): a terminal coding agent that reads your repo, plans, edits files, runs commands, and verifies its own work — with only **three runtime dependencies** (`rich`, `httpx`, `prompt_toolkit`) and any OpenAI-compatible API. No heavy frameworks, no vendor lock-in.
+
+## Demo
+
+![Demo](demo.png)
+
+## Quick start
+
+```sh
+git clone git@github.com:beacoder/python-agent-harness.git
+cd python-agent-harness
+make install                        # create venv, install deps + package
+. venv/bin/activate                 # add venv/bin to PATH
+python-agent-harness config --init  # write ~/.config/python-agent-harness/config.json
+python-agent-harness run            # launch the agent in your project dir
+```
+
+Edit `~/.config/python-agent-harness/config.json`, set your `base_url`, `api_key` and `model`, and you're ready to go:
+
+```sh
+python-agent-harness run ~/my-project
+```
 
 ## Features
 
-- **FSM-driven agent execution with completion supervision** — the run is
-  driven by a finite state machine (WAIT/TOOL/TRET/SUPERVISE/DONE/ERRS/
-  ABRT); the model is nudged (max 2) when it tries to stop before the task
-  is complete; the nudge counter resets on tool calls; tool results are
-  sanitized so a failed call never strands the machine.
-- **API retry with backoff** — transient failures (HTTP 429 / 5xx, connection
-  errors) are retried automatically with exponential backoff + jitter
-  (honoring `Retry-After`), so a rate limit or a dropped connection no longer
-  kills the run; retries never duplicate streamed output and a Ctrl-C aborts
-  the backoff wait promptly. Permanent errors (other 4xx) fail fast.
-- **Context management** — CJK-aware token estimation, per-model context
-  windows (deepseek-v4/glm-5.2 1M, gpt-5 400k, kimi-k2.7 256k, claude 200k,
-  ...), self-calibrating estimates from API-reported input tokens, and
-  automatic compaction at 70% usage that summarizes the conversation and
-  resumes with the last user request.
-- **Tools** — Agent (sub-agents), TodoWrite, Glob (git-aware), Grep
-  (git grep → rg → grep), Read, Insert, Edit (incl. unified diffs), Write,
-  Mkdir, Bash, Skill, Question, and PlanExit (registered while in plan
-  mode) — all OpenAI-compatible tool schemas.  Tool execution mirrors
-  gptel's `gptel--handle-tool-use`: synchronous tools (Read, Edit,
-  Glob, ...) run ONE AT A TIME in model-emitted order, while the
-  asynchronous tools (Bash, Agent) are dispatched and run concurrently
-  in the background — results are delivered in the original call order.
-- **Default agent prompts** — the main agent and sub-agents each get a
-  distinct default system prompt bundled with the package
-  (`prompts/agent.md`, `prompts/subagent.md`), with YAML frontmatter
-  stripped and the `{{SKILLS}}` placeholder filled from the discovered
-  skill directory. The main prompt is prefixed with the project context
-  files and the task-completion rules; sub-agents get only their own
-  prompt. `/init` `/review` `/explain` and custom commands
-  (`prompts/commands/*.md`) run with their own prompt for that run.
-- **Plan / Build modes** — plan mode is read-only except the per-session
-  plan file; PlanExit switches back to build with an "execute the plan"
-  prompt; sub-agents in plan mode receive the read-only reminder.
-- **Sessions** — auto-saved after every response to
-  `~/.local/share/python-agent-harness/sessions/`, LLM-generated titles
-  (one-shot per session, fired when the agent run finishes; the file is
-  renamed to `<title>_<TS>.md`), `/restore` (with `--latest`) and
-  `/sessions` TUI commands.
-- **Commands** — `/init` (create/update AGENTS.md), `/review` (uncommitted
-  changes / commit / branch / PR), `/summary`, `/explain` and custom
-  commands from `prompts/commands/*.md` — all TUI slash commands.
-  Tool availability: `/init`/`/review` may use **all
-  tools except PlanExit** (the PlanExit tool is hidden for the run,
-  including for spawned sub-agents); custom commands may use all tools
-  including PlanExit; `compact`/`summary` run with **no tools** (a
-  one-shot `chat_sync` call, like session-title generation).
-- **Editing input** — `prompt_toolkit`-backed multi-line editor with
-  persistent history (Up/Down recall), Enter for a newline, Esc+Enter
-  (or Alt+Enter) to submit, and **Tab completion** (Tab to complete,
-  Shift+Tab to cycle backwards): the first token starting with `/`
-  completes against the slash commands (builtins + custom
-  `prompts/commands/*.md`); after a slash command's space, Tab
-  completes paths relative to the project dir (absolute and `~` paths
-  work too; directories get a trailing `/` to keep drilling).  In plain
-  messages, any token containing `/` or starting with `~` (e.g.
-  `~/wor`, `docs/`) completes as a path the same way — `~` against
-  `$HOME`, otherwise relative to the project dir — so `~/wor` + Tab
-  becomes `~/workspace/`.
-- **TUI** — rich live interface with a pinned status bar (mode, context
-  usage, spinner), streaming assistant output, tool-result previews, a
-  pinned Todos panel (sub-agent lists shown with a `sub:` label), and
-  numbered-choice questions for Question tool / PlanExit confirmations.
-- **Diff rendering** — Edit/Write tool calls capture a unified diff of
-  the file change and render it inline (red/green) in the TUI, so file
-  edits are visible without leaving the app.
+### Reliable by design
 
-## Screenshot
+- **FSM-driven execution with completion supervision** — the run is driven by a finite state machine (`WAIT`/`TOOL`/`TRET`/`SUPERVISE`/`DONE`/`ERRS`/`ABRT`). When the model tries to stop before the task is done, it is nudged (max 2); the nudge counter resets on tool calls, and tool results are sanitized so a failed call never strands the machine.
+- **Automatic retry with backoff** — transient failures (HTTP 429 / 5xx, connection errors) retry with exponential backoff + jitter, honoring `Retry-After`; retries never duplicate streamed output, Ctrl-C aborts the wait promptly, and permanent 4xx errors fail fast.
 
-![demo.png](demo.png)
+### Long conversations, no babysitting
 
-## Install
+- **Context management** — CJK-aware token estimation, per-model context windows (deepseek-v4/glm-5.2 1M, gpt-5 400k, kimi-k2.7 256k, claude 200k, ...), self-calibrating estimates from API-reported input tokens, and automatic compaction at 70% usage that summarizes the conversation and resumes with the last user request.
 
-```sh
-python -m venv venv
-venv/bin/pip install rich httpx prompt_toolkit
-venv/bin/pip install -e python-agent-harness
-```
+### Real coding tools
+
+All OpenAI-compatible tool schemas: **Agent** (sub-agents), **TodoWrite**, **Glob** (git-aware), **Grep** (git grep → rg → grep), **Read**, **Insert**, **Edit** (incl. unified diffs), **Write**, **Mkdir**, **Bash**, **Skill**, **Question**, and **PlanExit** (plan mode only).
+
+Tool execution mirrors gptel's `gptel--handle-tool-use`: synchronous tools (Read, Edit, Glob, ...) run one at a time in model-emitted order, while asynchronous tools (Bash, Agent) run concurrently in the background — results delivered in original call order.
+
+### Plan before you build
+
+- **Plan / Build modes** — plan mode is read-only except the per-session plan file; `PlanExit` switches back to build with an "execute the plan" prompt; sub-agents in plan mode get the read-only reminder.
+
+### Sessions that survive
+
+- Auto-saved after every response to `~/.local/share/python-agent-harness/sessions/`
+- LLM-generated titles (one-shot, when the run finishes; file renamed to `<title>_<TS>.md`)
+- `/restore` (with `--latest`) and `/sessions` TUI commands
+
+### A TUI built for focus
+
+- Rich live interface: pinned status bar (mode, context usage, spinner), streaming output, tool-result previews, pinned Todos panel (sub-agent lists labeled `sub:`), and numbered-choice prompts for Question / PlanExit.
+- **Inline diff rendering** — Edit/Write calls capture a unified diff and render it red/green in the TUI, so file changes are visible without leaving the app.
+- `prompt_toolkit` editor: Enter for newline, **Esc+Enter** (or Alt+Enter) to submit, **Tab completion** for slash commands and paths (`~/` and relative, Shift+Tab to cycle backwards), Up/Down history recall (persisted to `~/.local/share/python-agent-harness/input_history`), **Ctrl-D** quits, **Ctrl-C** cancels the current input or run without leaving the app — history is preserved so you can immediately ask a follow-up, and a cancelled worker can never clobber the next run's state (per-run cancellation identity).
+
+### Extensible
+
+- **Default agent prompts** — distinct system prompts for the main agent and sub-agents (`prompts/agent.md`, `prompts/subagent.md`), YAML frontmatter stripped, `{{SKILLS}}` filled from the discovered skill directory; the main prompt is prefixed with project context files and task-completion rules.
+- **Slash commands** — `/init`, `/review`, `/explain`, plus custom commands from `prompts/commands/*.md` become TUI slash commands automatically.
 
 ## Configuration
 
-LLM settings live in a JSON config file — no environment variables needed:
-
-```sh
-python-agent-harness config --init        # write ~/.config/python-agent-harness/config.json
-python-agent-harness config               # show effective settings (API key masked)
-```
-
-Edit `~/.config/python-agent-harness/config.json`:
+LLM settings live in a JSON config file — no environment variables required:
 
 ```json
 {
@@ -120,33 +101,14 @@ Edit `~/.config/python-agent-harness/config.json`:
 }
 ```
 
-`reasoning_effort` is passed to the API as-is (omitted when unset), so you
-can use whatever your provider accepts ("low"/"medium"/"high" for OpenAI
-and compatible providers). Other optional keys: `backend`, `temperature`,
-`max_tokens`, `timeout`, `stream` (`true` by default; set `false` for
-non-streaming one-shot responses — `python-agent-harness run --no-stream`
-overrides it on the command line). The `paths` object (`context_path`,
-`skill_path`) overrides the context/skill directory discovery — defaults
-are `<project>/contexts` or `~/.emacs.d/contexts` for context files, and
-`<project>/skills` or `~/.emacs.d/skills` for skills.
+- `reasoning_effort` is passed to the API as-is (omitted when unset) — whatever your provider accepts ("low"/"medium"/"high").
+- Other optional keys: `backend`, `temperature`, `max_tokens`, `timeout`, `stream` (`true` by default; `run --no-stream` overrides on the command line).
+- `subagent_llm` configures the LLM for Agent-tool requests: every key is optional and unset keys inherit the main `llm`, so a cheaper/smaller model (or a different provider) can serve delegated work.
+- `paths.context_path` / `paths.skill_path` override context/skill discovery — defaults are `<project>/contexts` or `~/.emacs.d/contexts` (skills: `<project>/skills` or `~/.emacs.d/skills`).
+- Precedence: code defaults < config file < `OPENAI_*` env vars (env still wins if set, but nothing is required). Sub-agent settings honor `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`, `_BACKEND`).
+- Use a custom config with `--config PATH` (or `PYTHON_AGENT_HARNESS_CONFIG`).
 
-`subagent_llm` configures the LLM used for sub-agent (Agent tool)
-requests, mirroring `gptel-agent-harness-subagent-model`/`-backend`: every
-key is optional and an unset key inherits the main `llm` settings, so a
-cheaper/smaller model (or even a different provider via `base_url` +
-`api_key`) can serve delegated work.  When no key differs from the main
-`llm`, the sub-agent shares the main client.
-
-Precedence: code defaults < config file < `OPENAI_*` environment variables
-(env still wins if you set them, but nothing is required).  Sub-agent
-settings additionally honor `OPENAI_SUBAGENT_*` variables
-(`OPENAI_SUBAGENT_BASE_URL`, `OPENAI_SUBAGENT_API_KEY`,
-`OPENAI_SUBAGENT_MODEL`, `OPENAI_SUBAGENT_BACKEND`).  Use a custom
-file with `--config PATH` (also settable via `PYTHON_AGENT_HARNESS_CONFIG`).
-
-LLM request/response bodies are logged as JSON to
-`/tmp/python-agent-harness-<date>-<id>.json` (override the directory with
-`LLM_LOG_DIR`); the path is printed at TUI startup.
+LLM request/response bodies are logged as JSON to `/tmp/python-agent-harness-<date>-<id>.json` (override the directory with `LLM_LOG_DIR`); the path is printed at TUI startup.
 
 ## Usage
 
@@ -154,24 +116,23 @@ LLM request/response bodies are logged as JSON to
 python-agent-harness run [project-dir]   # interactive TUI agent
 ```
 
-TUI slash commands: `/plan` `/build` `/init` `/review` `/explain`
-`/compact` `/save` `/summary` `/sessions`
-`/restore` `/clear` `/exit` — `/explain [project] [target]` explains
-code and `/summary` appends a conversation summary (both TUI-only);
-`/sessions` lists saved sessions and `/restore [path|title|--latest]`
-restores one (`/restore` matches sessions by title substring). Custom
-commands from `prompts/commands/*.md` are TUI slash commands too
-(TUI-only — no CLI subcommand is registered for them).
+| Command | What it does |
+|---|---|
+| `/plan` / `/build` | switch between read-only plan and build mode |
+| `/init` | create/update `AGENTS.md` |
+| `/review` | review uncommitted changes / commit / branch / PR |
+| `/explain [project] [target]` | explain code |
+| `/compact` | compact the conversation |
+| `/summary` | append a conversation summary |
+| `/save` | save the session |
+| `/sessions` | list saved sessions |
+| `/restore [path\|title\|--latest]` | restore a session (title substring match) |
+| `/clear` | start a fresh conversation |
+| `/exit` | quit |
 
-Input editing: type your message, press **Enter** for a new line, and
-**Esc then Enter** (or **Alt+Enter**) to submit. **Up/Down** recall
-previous inputs from `~/.local/share/python-agent-harness/input_history`.
-**Ctrl-D** quits; **Ctrl-C** cancels the current input or agent run
-without leaving the app — the conversation history is preserved, so you
-can immediately ask a follow-up question; a cancelled worker can never
-clobber the next run's state (per-run cancellation identity).
+Custom commands from `prompts/commands/*.md` are registered as slash commands too (TUI-only — no CLI subcommand is registered for them). Tool availability differs per command: `/init` and `/review` may use all tools except `PlanExit` (hidden for the run, including for spawned sub-agents); custom commands may use everything; `compact`/`summary` run with no tools (a one-shot `chat_sync` call, like session-title generation).
 
-## Layout
+## Project layout
 
 ```
 python_agent_harness/
@@ -191,15 +152,20 @@ python_agent_harness/
 └── tools/          tool implementations + registry
 ```
 
-## Tests
+## Development
+
+Python ≥ 3.11 required (CI runs 3.11 / 3.12 / 3.13).
 
 ```sh
-venv/bin/python -m unittest discover -s tests -v
+make test                           # unit tests (unittest discover)
+venv/bin/pip install -e ".[dev]"    # dev tools: ruff, pyright, build, pip-audit
+venv/bin/ruff check .               # lint (CI blocks on this)
+venv/bin/pyright                    # type check, basic mode (CI blocks on this)
+venv/bin/python -m build            # sdist + wheel
+venv/bin/pip-audit                  # dependency audit
 ```
 
-Python ≥ 3.11 is required (CI runs 3.11 / 3.12 / 3.13).
-
-## Verification checklist (ported semantics)
+### Verification checklist (ported semantics)
 
 - [x] Nudge supervision with fail-closed dead-session budget
 - [x] Tool-result sanitization (None → error placeholder)
@@ -209,3 +175,7 @@ Python ≥ 3.11 is required (CI runs 3.11 / 3.12 / 3.13).
 - [x] Session metadata round-trip and title sanitization
 - [x] One-shot LLM title generation after the agent run finishes
 - [x] Ctrl-C cancel: stale workers can't clobber the next run's history
+
+## License
+
+MIT
