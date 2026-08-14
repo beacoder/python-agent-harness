@@ -381,6 +381,10 @@ class AgentLoop:
                     "Error: tool call cancelled (user aborted the run)."
                 )
                 continue
+            # Notify the TUI which tool is currently executing so the
+            # status bar can show the active tool name beside the spinner.
+            if self.top_level:
+                self.session.notify("tool_running", p.name)
             try:
                 result = self._execute_tool_call(p)
             except Exception as e:  # noqa: BLE001 - containment boundary
