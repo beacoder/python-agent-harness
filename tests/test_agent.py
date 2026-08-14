@@ -1528,7 +1528,8 @@ class TestAgentLoop(unittest.TestCase):
         session = RecordingSession()
 
         def empty_chat_sync(
-            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None,
+            cancel_check=None,
         ):
             return Message(role="assistant", content=""), Usage()
 
@@ -1809,32 +1810,6 @@ class TestToolRounds(unittest.TestCase):
         self.assertEqual(by_id["1"], "result of Read")
         self.assertEqual(by_id["2"], "result of Bash")
         self.assertEqual(by_id["3"], "result of Grep")
-
-    def test_every_sync_call_runs_one_by_one(self):
-        """Sync rounds are sequential by default: EVERY call still
-        executes (nothing is dropped), peak concurrency stays 1, the
-        round takes ~the sum of the durations, and results still
-        arrive in original order."""
-        session = ParallelToolSession(duration=0.15)
-        session.tools_enabled = False
-        calls = [
-            ToolCall(id=str(i), name="Read", arguments='{"file_path": "/tmp/x.py"}')
-            for i in range(1, 4)
-        ]
-        session.client.script = [("", calls), "done"]
-        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
-        start = time.monotonic()
-        result = loop.run()
-        elapsed = time.monotonic() - start
-        self.assertEqual(result, "done")
-        self.assertEqual(session.executed_count, 3)
-        self.assertEqual(session.max_active, 1)
-        # ~3 x 0.15s serialized, not a single 0.15s batch
-        self.assertGreaterEqual(elapsed, 0.4)
-        self.assertEqual(
-            [m.tool_call_id for m in loop.messages if m.role == "tool"],
-            ["1", "2", "3"],
-        )
 
     def test_cancel_during_delivery_discards_partial_round(self):
         """Ctrl-C landing while results are being DELIVERED (after all

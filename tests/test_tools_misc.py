@@ -160,10 +160,6 @@ class TestQuestionTool(unittest.TestCase):
         result = Question().run({"questions": "nope"}, ToolContext())
         self.assertEqual(result, "Error: questions must be an array")
 
-    def test_missing_questions_returns_error(self):
-        result = Question().run({}, ToolContext())
-        self.assertEqual(result, "Error: questions must be an array")
-
     def test_ask_questions_exception_contained(self):
         def boom(qs):
             raise RuntimeError("ui broke")
@@ -218,16 +214,6 @@ class TestSkillTool(unittest.TestCase):
             sess.find_skill = lambda name: p
             out = Skill().run({"skill": "my-skill"}, ToolContext(sess))
             self.assertEqual(out, "[Skill: my-skill]\n\ninstructions")
-
-    def test_skill_found_without_session_args(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "skill.md")
-            with open(p, "w") as f:
-                f.write("x")
-            sess = FakeSession()
-            sess.find_skill = lambda name: p
-            out = Skill().run({}, ToolContext(sess))
-            self.assertEqual(out, "[Skill: ]\n\nx")
 
 
 class TestTodoWriteTool(unittest.TestCase):

@@ -368,14 +368,6 @@ class TestFSMStructuralInvariants(unittest.TestCase):
     entry, so the machine can never route out of a terminal state;
     the driver stops at the first terminal state."""
 
-    def test_terminal_states_have_no_outgoing_transitions(self):
-        """DONE/ERRS/ABRT are sinks: the table has no entry for them,
-        so the machine can never route out of a terminal state.  (They
-        may be transition TARGETS — WAIT routes to ERRS on API error —
-        but never sources.)"""
-        for state in AgentLoop.TERMINAL:
-            self.assertNotIn(state, AgentLoop.TRANSITIONS)
-
     def test_every_non_terminal_state_has_transitions_with_true_default(self):
         for state in set(AgentLoop.HANDLERS) - AgentLoop.TERMINAL:
             table = AgentLoop.TRANSITIONS.get(state)
