@@ -7,6 +7,8 @@ to reduce drift.
 
 from __future__ import annotations
 
+import json
+
 from . import config
 
 
@@ -116,7 +118,7 @@ def payload_text(system: object, messages: list[dict], tools: list[dict]) -> str
             if isinstance(args, str):
                 buf.append(args)
     for tool in tools:
-        buf.append(str(tool))
+        buf.append(json.dumps(tool, separators=(",", ":")))
     return "\n".join(buf)
 
 
