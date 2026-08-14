@@ -1528,7 +1528,11 @@ class TestAgentLoop(unittest.TestCase):
         session = RecordingSession()
 
         def empty_chat_sync(
-            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None,
+            messages,
+            system=None,
+            temperature=None,
+            max_tokens=None,
+            reasoning_effort=None,
             cancel_check=None,
         ):
             return Message(role="assistant", content=""), Usage()
