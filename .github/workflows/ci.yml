@@ -1,9 +1,13 @@
-name: test
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly (Mon 06:00 UTC) so pip-audit catches newly disclosed CVEs even
+    # without a code change.
+    - cron: "0 6 * * 1"
 
 jobs:
   lint:
@@ -70,10 +74,27 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install -e . "coverage[toml]>=7.0"
 
-      - name: Run tests
-        run: python -m unittest discover -s tests -v
+      - name: Run tests with coverage
+        run: coverage run -m unittest discover -s tests -v
+
+      # `coverage report` enforces `fail_under` from pyproject.toml (90%),
+      # so an insufficiently-tested change fails this job.
+      - name: Coverage report (enforces fail_under)
+        run: coverage report
+
+      - name: Coverage XML
+        if: always()
+        run: coverage xml
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: ignore
 
   package:
     name: Build wheel, install & CLI smoke test
@@ -128,3 +149,25 @@ jobs:
         with:
           name: dist
           path: dist/*
+
+  audit:
+    name: pip-audit (dependency CVEs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pip-audit>=2.7"
+
+      # Audit the PROJECT's dependency closure resolved from pyproject.toml
+      # (rich, httpx, prompt_toolkit + transitives) — NOT the whole runner
+      # environment, which would flag unrelated tooling like pip/setuptools.
+      # Record accepted/unfixable advisories with `--ignore-vuln <ID>`.
+      - name: pip-audit
+        run: pip-audit . --strict --progress-spinner=off
