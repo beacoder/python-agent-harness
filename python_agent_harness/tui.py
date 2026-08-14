@@ -372,6 +372,7 @@ class Tui:
         self.question: UiQuestion | None = None
         self.agent_running = False
         self.status = " idle"
+        self._current_tool = ""
         self.run_seq = 0
         self._restore: Callable[[], None] | None = None
         self.conversation_history: list[Message] = []
@@ -423,9 +424,17 @@ class Tui:
                 self.stream_text = ""
             names = data if isinstance(data, list) else []
             label = ", ".join(names) if names else "tools"
+            self._current_tool = label
             self.status = f" ⏳ {label}"
             self._history_dirty = True
+        elif kind == "tool_running":
+            # Per-tool notification: update the current tool name shown
+            # beside the spinner as each sync tool starts executing.
+            name = data if isinstance(data, str) else ""
+            self._current_tool = name
+            self.status = f" ⏳ {name}" if name else " ⏳ tools"
         elif kind == "tools":
+            self._current_tool = ""
             self.status = " running tools"
             # tool round finished: session.last_messages now contains the
             # tool-call + result rows — rebuild the cached history so
@@ -752,6 +761,8 @@ class Tui:
         if self.agent_running:
             frame = SPINNER_FRAMES[int(time.time() * 10) % len(SPINNER_FRAMES)]
             t.append(f" {frame}", style="bold cyan")
+            if self._current_tool:
+                t.append(f" {self._current_tool}", style="cyan")
         elif self.question is not None:
             t.append(" ❓", style="yellow")
         t.append(f"{self.status}", style="dim")
@@ -884,6 +895,7 @@ class Tui:
         """
         self.stream_text = ""
         self.status = " running"
+        self._current_tool = ""
         # Mark where this round begins in the shared history: the live
         # panel renders only from here on (the latest round), while the
         # end-of-run dump prints the full conversation.  Captured before
