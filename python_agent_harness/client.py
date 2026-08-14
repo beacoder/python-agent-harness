@@ -70,7 +70,7 @@ def _retry_delay(
         except ValueError:
             pass
         else:
-            return min(secs, max_delay) + random.uniform(0, 0.5)
+            return min(max(0, secs), max_delay) + random.uniform(0, 0.5)
     delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
     return delay + random.uniform(0, delay * 0.3)
 
