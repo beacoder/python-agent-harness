@@ -78,8 +78,8 @@ class TestTui(unittest.TestCase):
 
     def test_message_colors_distinct(self):
         """User and assistant bodies get distinct colors that do NOT
-        collide with the tool colors (tool calls are cyan, tool results
-        dim): bright green for user, bright blue for assistant."""
+        collide with the tool colors (tool calls are magenta, tool
+        results dim): cyan for user, green for assistant."""
         from python_agent_harness.tui import ASSISTANT_STYLE, USER_STYLE
 
         tui, _ = make_tui()
@@ -87,13 +87,13 @@ class TestTui(unittest.TestCase):
         styles = [getattr(r, "style", None) for r in rows]
         self.assertIn(USER_STYLE, styles)       # user body
         self.assertIn(ASSISTANT_STYLE, styles)  # assistant body
-        self.assertIn("cyan", styles)           # tool call label
+        self.assertIn("magenta", styles)        # tool call label
         self.assertIn("dim", styles)            # tool result
         self.assertNotEqual(USER_STYLE, ASSISTANT_STYLE)
-        # user must not be confused with tool activity (cyan/dim) nor
-        # with the panel border (plain green)
-        self.assertNotIn(USER_STYLE, ("cyan", "dim", "green"))
-        self.assertNotIn(ASSISTANT_STYLE, ("cyan", "dim", "green"))
+        # user must not be confused with tool activity (magenta/dim) nor
+        # with the panel border (plain blue)
+        self.assertNotIn(USER_STYLE, ("magenta", "dim", "blue"))
+        self.assertNotIn(ASSISTANT_STYLE, ("magenta", "dim", "blue"))
 
     def test_stream_row_assistant_color(self):
         """The live stream row uses the assistant color so the in-flight
