@@ -246,6 +246,16 @@ class AgentSession:
             )
         path = self._tool_path(name, args)
         if path and path != self.plan_mode.plan_file:
+            # Edit diff-mode (no old_str, diff not explicitly False) runs
+            # `patch` which can write to arbitrary files via relative paths
+            # in the diff content — block it even if the target path looks
+            # innocent, because patch follows paths within the diff.
+            if name == "Edit" and args.get("old_str") is None and args.get("diff") is not False:
+                return (
+                    "Error: blocked by plan mode (read-only phase); "
+                    "diff/patch mode cannot target files other than the plan "
+                    "file — use string replacement (old_str/new_str) instead"
+                )
             return (
                 "Error: blocked by plan mode (read-only phase); "
                 "only the plan file may be modified"
@@ -254,13 +264,13 @@ class AgentSession:
 
     def _tool_path(self, name: str, args: dict[str, Any]) -> str | None:
         if name == "Write":
-            return os.path.abspath(os.path.join(str(args.get("path", "")), str(args.get("filename", ""))))
+            return os.path.realpath(os.path.join(str(args.get("path", "")), str(args.get("filename", ""))))
         if name == "Edit":
-            return os.path.abspath(str(args.get("path", "")))
+            return os.path.realpath(str(args.get("path", "")))
         if name == "Insert":
-            return os.path.abspath(str(args.get("path", "")))
+            return os.path.realpath(str(args.get("path", "")))
         if name == "Mkdir":
-            return os.path.abspath(os.path.join(str(args.get("parent", "")), str(args.get("name", ""))))
+            return os.path.realpath(os.path.join(str(args.get("parent", "")), str(args.get("name", ""))))
         return None
 
     # ------------------------------------------------------------------
