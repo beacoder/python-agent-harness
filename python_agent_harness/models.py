@@ -105,6 +105,23 @@ class Message:
             return "".join(parts)
         return ""
 
+    def text_without_reasoning(self) -> str:
+        """Plain text with the reasoning preamble stripped.
+
+        Use this for one-shot results (compaction, summary, title) where
+        the reasoning chain should not leak into the stored output.
+        """
+        t = self.text()
+        if self.reasoning and t:
+            if t.startswith(self.reasoning):
+                return t[len(self.reasoning):].lstrip("\n")
+            stripped = t.lstrip()
+            if stripped.startswith(self.reasoning):
+                return stripped[len(self.reasoning):].lstrip("\n")
+            # Fallback: remove the reasoning anywhere in the text
+            return t.replace(self.reasoning, "").strip()
+        return t
+
 
 @dataclass
 class ToolSpec:
