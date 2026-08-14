@@ -430,14 +430,7 @@ class AgentSession:
                 system=system,
                 temperature=self.temperature,
             )
-            title = resp.text()
-            if resp.reasoning:
-                r = resp.reasoning
-                if title.startswith(r):
-                    title = title[len(r):]
-                else:
-                    title = title.replace(r, "")
-                title = title.strip()
+            title = resp.text_without_reasoning()
             if title:
                 store.apply_title(title)
                 if self.store.title:
@@ -531,7 +524,7 @@ class AgentSession:
             resp, _ = self.client.chat_sync(
                 [Msg(role="user", content=conversation)], system=system
             )
-            summary = resp.text()
+            summary = resp.text_without_reasoning()
             if not summary:
                 return False, "Compaction failed: empty summary."
             frame = config.COMPACT_HEADER + summary + config.COMPACT_SEPARATOR
@@ -575,7 +568,7 @@ class AgentSession:
             resp, _ = self.client.chat_sync(
                 [Msg(role="user", content=conversation)], system=system
             )
-            summary = resp.text()
+            summary = resp.text_without_reasoning()
         except Exception as e:  # noqa: BLE001
             return f"Summary failed: {e}"
         if not summary:
