@@ -6,6 +6,7 @@ session, and must never clobber the parent's history.
 import json
 import unittest
 
+from python_agent_harness import config
 from python_agent_harness.agent import run_agent_loop
 from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall, Usage
@@ -213,7 +214,7 @@ class TestSubagentIsolation(unittest.TestCase):
                 Message(role="assistant", content="ok"),
                 Message(
                     role="user",
-                    content="Review the original user request and the Task Completion Rules in the context. Verify whether all completion criteria are satisfied. If not, continue by making tool calls. Do not stop until the rules are fully met.",
+                    content=config.NUDGE_MESSAGE,
                 ),
             ]
         )
