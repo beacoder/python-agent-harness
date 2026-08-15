@@ -17,6 +17,19 @@ happy paths:
   itself stays writable)
 - every tool call eventually gets exactly one terminal result (no
   duplicate tool rows, no orphans, no dangling rounds)
+- the shared history after any non-stale run is exactly the run's
+  salvage cut — always a valid conversation, so the next turn never
+  sees a dangling tool round
+- completion supervision is bounded: an agentic run never nudges more
+  than MAX_NUDGES times per tool-free stretch, and a nudge message
+  never splits a tool round
+- a sub-agent run never exceeds its round budget and never surfaces
+  raw tool output as its final answer
+- hostile tools (crash / None / garbage) never escape a round: every
+  call still gets exactly one terminal result
+- injected prompts (plan/build/pending) never break role alternation
+- a server that never succeeds cannot hang the run: retries are
+  bounded and the loop ends in ERRS
 - a mid-stream retry never duplicates assistant stream content
 
 Each randomized property is deterministic (a seeded ``random.Random``
@@ -104,6 +117,44 @@ def random_script(rng, rounds=None):
             script.append(("", calls))
     script.append(f"final {rng.randint(0, 10**6)}")
     return script
+
+
+def random_conversation(rng, seed, dangling=False):
+    """A conversation of exactly the shapes the loop produces: opens
+    with a user message, then alternates text replies and fully-closed
+    tool rounds (with optional user turns in between).  When DANGLING
+    it additionally ends with an OPEN tool round — assistant tool-calls
+    followed by only a leading subset of their results — the shape a
+    cancelled run leaves for the salvage cut."""
+    msgs = [Message(role="user", content=f"user-{seed}")]
+    for r in range(rng.randint(0, 4)):
+        if rng.random() < 0.4:
+            msgs.append(Message(role="assistant", content=f"text-{seed}-{r}"))
+        else:
+            ids = [f"c{seed}-{r}-{i}" for i in range(rng.randint(1, 3))]
+            msgs.append(
+                Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=[ToolCall(id=i, name="Read", arguments="{}") for i in ids],
+                )
+            )
+            for i in ids:
+                msgs.append(Message(role="tool", content="result", tool_call_id=i, name="Read"))
+        if rng.random() < 0.4:
+            msgs.append(Message(role="user", content=f"user-{seed}-{r}"))
+    if dangling:
+        ids = [f"c{seed}-open-{i}" for i in range(rng.randint(1, 3))]
+        msgs.append(
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[ToolCall(id=i, name="Read", arguments="{}") for i in ids],
+            )
+        )
+        for i in ids[: rng.randint(0, len(ids) - 1)]:
+            msgs.append(Message(role="tool", content="result", tool_call_id=i, name="Read"))
+    return msgs
 
 
 class ScriptedClient:
@@ -810,6 +861,257 @@ class TestToolResultCompleteness(unittest.TestCase):
                 assert_conversation_valid(self, session.last_messages)
 
 
+class TestSalvageInvariant(unittest.TestCase):
+    """The salvage cut is the machine's guarantee to the NEXT turn: a
+    shared history is always a valid conversation.  `_salvage_messages`
+    must return a valid prefix of any loop-reachable conversation and
+    leave fully-closed conversations untouched; after any non-stale
+    top-level run the shared history is exactly that cut."""
+
+    def test_randomized_salvage_always_yields_valid_prefix(self):
+        for seed in range(40):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                dangling = rng.random() < 0.5
+                msgs = random_conversation(rng, seed, dangling=dangling)
+                session = RecordingSession()
+                loop = AgentLoop(session, messages=list(msgs))
+                salvaged = loop._salvage_messages()
+                # a prefix of the input...
+                self.assertEqual(salvaged, msgs[: len(salvaged)])
+                # ...that is always a well-formed conversation
+                assert_conversation_valid(self, salvaged)
+                # fully-closed conversations pass through untouched
+                if not dangling:
+                    self.assertEqual(
+                        [m.to_api() for m in salvaged], [m.to_api() for m in msgs]
+                    )
+
+    def test_randomized_runs_mirror_exact_salvage_to_shared_history(self):
+        """End to end: whatever happened during the run (clean finish,
+        cancel before/during chat, mid-tool, mid-delivery), the shared
+        history equals the run's salvage EXACTLY — a complete run
+        mirrors the full conversation, a cancelled owner mirrors the
+        truncated prefix — so the next turn always starts from a valid
+        conversation."""
+        variants = (None, "pre-cancel", "chat-cancel", "tool-cancel", "deliver-cancel")
+        for seed in range(30):
+            variant = variants[seed % len(variants)]
+            with self.subTest(seed=seed, variant=variant):
+                rng = random.Random(seed)
+                if variant is None:
+                    session = RecordingSession()
+                    session.tools_enabled = False
+                    session.client.script = random_script(rng)
+                    loop = AgentLoop(session, messages=[Message(role="user", content=f"q-{seed}")])
+                    result = loop.run()
+                    self.assertEqual(loop.state, AgentLoop.DONE)
+                    self.assertIsInstance(result, str)
+                else:
+                    session, loop, state, stack = make_abort_scenario(rng, variant)
+                    with stack:
+                        self.assertIsNone(loop.run())
+                self.assertEqual(
+                    [m.to_api() for m in session.last_messages],
+                    [m.to_api() for m in loop._salvage_messages()],
+                    f"{variant}: shared history diverged from the run's salvage",
+                )
+                assert_conversation_valid(self, session.last_messages)
+
+
+class TestNudgeBudgetInvariant(unittest.TestCase):
+    """Completion supervision is bounded: an agentic top-level run
+    whose model keeps answering with terminal text must terminate —
+    never more than MAX_NUDGES nudges per tool-free stretch — and a
+    nudge is injected as a user message that never splits a tool
+    round."""
+
+    def test_randomized_terminal_streak_terminates_with_bounded_nudges(self):
+        """A model that NEVER stops answering with terminal text cannot
+        hang the run: after exactly MAX_NUDGES nudges the machine goes
+        DONE, one WAIT visit per nudge, the result is the last terminal
+        text, and every nudge is an injected user message."""
+        for seed in range(15):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                max_nudges = rng.choice((1, 2, 3, 5))
+                script = [f"answer {i}" for i in range(rng.randint(3, 8))]
+                session = RecordingSession()
+                session.tools_enabled = True
+                session.client.script = list(script)
+                with mock.patch("python_agent_harness.config.MAX_NUDGES", max_nudges):
+                    loop = AgentLoop(session, messages=[Message(role="user", content=f"q-{seed}")])
+                    result = loop.run()
+                self.assertEqual(loop.state, AgentLoop.DONE)
+                self.assertEqual(loop.supervisor.nudge_count, max_nudges)
+                self.assertEqual(loop.history.count(AgentLoop.WAIT), max_nudges + 1)
+                expected = script[max_nudges] if len(script) > max_nudges else "done"
+                self.assertEqual(result, expected)
+                nudges = [m for m in loop.messages if m.role == "user" and m.injected]
+                self.assertEqual(len(nudges), max_nudges)
+                self.assertTrue(all(m.text() == config.NUDGE_MESSAGE for m in nudges))
+                assert_conversation_valid(self, loop.messages)
+
+    def test_randomized_agentic_runs_nudges_never_exceed_or_split_rounds(self):
+        """Mixed runs (tool rounds + terminal texts): the run always
+        terminates in DONE, the nudge budget never exceeds MAX_NUDGES
+        per tool-free stretch (tool rounds reset it), and no nudge
+        lands inside a tool round."""
+        for seed in range(20):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                session = RecordingSession()
+                session.tools_enabled = True
+                script = random_script(rng)
+                session.client.script = list(script)
+                n_tool_rounds = sum(1 for item in script if isinstance(item, tuple))
+                max_nudges = rng.choice((1, 2))
+                with mock.patch("python_agent_harness.config.MAX_NUDGES", max_nudges):
+                    loop = AgentLoop(session, messages=[Message(role="user", content=f"q-{seed}")])
+                    result = loop.run()
+                self.assertEqual(loop.state, AgentLoop.DONE)
+                self.assertIsInstance(result, str)
+                self.assertLessEqual(
+                    loop.supervisor.nudge_count,
+                    max_nudges * (n_tool_rounds + 1),
+                )
+                # the conversation carries every injected nudge (a tool
+                # round RESETS the counter but earlier nudge messages
+                # stay in the history), so the total is what is bounded
+                nudges = [m for m in loop.messages if m.role == "user" and m.injected]
+                self.assertLessEqual(len(nudges), max_nudges * (n_tool_rounds + 1))
+                self.assertTrue(all(m.text() == config.NUDGE_MESSAGE for m in nudges))
+                assert_conversation_valid(self, loop.messages)
+
+
+class TestSubagentBudgetInvariant(unittest.TestCase):
+    """Sub-agent loops are bounded: whatever the model emits, the run
+    never exceeds max_rounds WAIT visits, always terminates in DONE,
+    and the result is one of {last real assistant text, an error
+    string, None} — never raw tool output."""
+
+    def test_randomized_subagent_runs_terminate_within_budget(self):
+        for seed in range(20):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                session = RecordingSession()
+                session.tools_enabled = False
+                max_rounds = rng.randint(1, 4)
+                session.client.script = random_script(rng, rounds=rng.randint(2, 6))
+                loop = AgentLoop(
+                    session,
+                    messages=[Message(role="user", content=f"q-{seed}")],
+                    top_level=False,
+                    max_rounds=max_rounds,
+                )
+                result = loop.run()
+                self.assertEqual(loop.state, AgentLoop.DONE)
+                self.assertLessEqual(loop.rounds, max_rounds)
+                self.assertLessEqual(loop.history.count(AgentLoop.WAIT), max_rounds + 1)
+                assert_conversation_valid(self, loop.messages)
+                if result is None:
+                    self.assertFalse(
+                        any(m.text().strip() for m in loop.messages if m.role == "assistant")
+                    )
+                elif not result.startswith("Error:"):
+                    # a real assistant text from the run — never a tool
+                    # result, never an empty string
+                    texts = [m.text() for m in loop.messages if m.role == "assistant"]
+                    self.assertIn(result, texts)
+
+
+class TestToolFaultContainment(unittest.TestCase):
+    """Hostile tools cannot break a round: whatever a tool does —
+    raise, return None, return garbage — run() never raises, every
+    call id gets exactly one terminal result, and the run completes in
+    DONE."""
+
+    def test_randomized_faulty_tools_never_escape_or_orphan(self):
+        for seed in range(20):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                session = RecordingSession()
+                session.tools_enabled = False
+                names = list(TOOL_NAMES)
+                rng.shuffle(names)
+                n_crash = rng.randint(1, min(3, len(names)))
+                crashers = set(names[:n_crash])
+                nil = set(names[n_crash : n_crash + rng.randint(0, 2)])
+                calls = [well_formed_call(rng, 0, i) for i in range(rng.randint(1, 4))]
+                session.client.script = [("", calls), f"done-{seed}"]
+                orig = RecordingSession.execute_tool
+
+                def hostile(name, args, call_id=None):
+                    if name in crashers:
+                        raise RuntimeError(f"hostile {name}")
+                    if name in nil:
+                        return None
+                    return orig(session, name, args, call_id=call_id)
+
+                session.execute_tool = hostile
+                loop = AgentLoop(session, messages=[Message(role="user", content=f"q-{seed}")])
+                result = loop.run()
+                self.assertEqual(loop.state, AgentLoop.DONE)
+                self.assertIsInstance(result, str)
+                assert_conversation_valid(self, loop.messages)
+                assistant_ids = [
+                    tc.id for m in loop.messages if m.tool_calls for tc in m.tool_calls
+                ]
+                tool_ids = [m.tool_call_id for m in loop.messages if m.role == "tool"]
+                self.assertEqual(len(assistant_ids), len(tool_ids))
+                self.assertEqual(len(set(tool_ids)), len(tool_ids))
+                by_id = {
+                    tc.id: tc.name for m in loop.messages if m.tool_calls for tc in m.tool_calls
+                }
+                for m in loop.messages:
+                    if m.role != "tool":
+                        continue
+                    name = by_id.get(m.tool_call_id)
+                    if name in crashers:
+                        self.assertIn("crashed during execution", m.text())
+                    elif name in nil:
+                        self.assertIn("produced no result", m.text())
+
+
+class TestPromptInjectionPlacement(unittest.TestCase):
+    """Injected prompts (plan/build prompts, pending user prompts) are
+    inserted at positions that never break role alternation: before the
+    trailing user message when the conversation ends with one,
+    otherwise appended — never between an assistant tool-call round and
+    its results."""
+
+    def test_randomized_injection_never_splits_tool_rounds(self):
+        for seed in range(25):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                session = RecordingSession()
+                msgs = random_conversation(rng, seed, dangling=False)
+                prompts = [f"prompt {seed}-{i}" for i in range(rng.randint(1, 3))]
+                session.pending_user_prompts = list(prompts)
+                loop = AgentLoop(session, messages=list(msgs))
+                loop._inject_pending_prompts()
+                self.assertEqual(session.pending_user_prompts, [])
+                assert_conversation_valid(self, loop.messages)
+                # the injected prompts arrived, in order, as user messages
+                injected_pos = [i for i, m in enumerate(loop.messages) if m.injected]
+                self.assertEqual(
+                    [loop.messages[i].text() for i in injected_pos], prompts
+                )
+                self.assertTrue(
+                    all(loop.messages[i].role == "user" for i in injected_pos)
+                )
+                # contiguous, and placed before the trailing user message
+                # when there is one, otherwise at the tail
+                self.assertEqual(
+                    injected_pos, list(range(injected_pos[0], injected_pos[-1] + 1))
+                )
+                if msgs[-1].role == "user":
+                    self.assertEqual(injected_pos[-1] + 1, len(loop.messages) - 1)
+                    self.assertEqual(loop.messages[-1].text(), msgs[-1].text())
+                else:
+                    self.assertEqual(injected_pos[-1], len(loop.messages) - 1)
+
+
 class TestRetryNoDuplication(unittest.TestCase):
     """A mid-stream retry never duplicates assistant stream content:
     text (or tool-call fragments) from a dropped attempt never leaks
@@ -920,6 +1222,47 @@ class TestRetryNoDuplication(unittest.TestCase):
         self.assertNotIn("partial-dropped-text", all_text)
         shared = "".join(m.text() for m in session.last_messages)
         self.assertEqual(shared.count("the retried final answer"), 1)
+
+
+class TestRetryExhaustionTerminates(unittest.TestCase):
+    """Retries are bounded: a server that drops EVERY stream cannot
+    hang the run — the client gives up after its attempt budget, the
+    loop surfaces ERRS, and no partial stream text ever reaches the
+    conversation."""
+
+    def test_unrecoverable_drops_end_in_errs_not_hang(self):
+        with tempfile.TemporaryDirectory(prefix="pah-prop-retry-") as d:
+            config.SESSION_DIR = Path(d)
+            with serve_drop_server() as (host, port):
+                client = make_fast_client(f"http://{host}:{port}/v1")
+                session = AgentSession(
+                    project_dir=d,
+                    client=client,
+                    model="fake",
+                    registry=default_registry(),
+                    stream=True,
+                )
+                session.tools_enabled = False
+                try:
+                    DropHandler.script = [("drop", ["x-part-"])] * 8
+                    DropHandler.stream_count = 0
+                    loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
+                    start = time.monotonic()
+                    result = loop.run()
+                    elapsed = time.monotonic() - start
+                finally:
+                    session.close()
+        self.assertEqual(loop.state, AgentLoop.ERRS)
+        self.assertTrue(result.startswith("Error:"), result)
+        # retry_max=5 -> exactly 5 attempts (the failing attempt at the
+        # budget boundary raises), then give up: no unbounded retrying,
+        # and the tiny backoff bounds the wall time
+        self.assertEqual(DropHandler.stream_count, 5)
+        self.assertLess(elapsed, 5.0)
+        # nothing was committed: no partial stream text ever reached
+        # the conversation or the shared history
+        self.assertEqual([m.text() for m in loop.messages], ["hi"])
+        self.assertEqual([m.text() for m in session.last_messages], ["hi"])
 
 
 if __name__ == "__main__":
