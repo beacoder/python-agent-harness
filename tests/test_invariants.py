@@ -883,9 +883,7 @@ class TestSalvageInvariant(unittest.TestCase):
                 assert_conversation_valid(self, salvaged)
                 # fully-closed conversations pass through untouched
                 if not dangling:
-                    self.assertEqual(
-                        [m.to_api() for m in salvaged], [m.to_api() for m in msgs]
-                    )
+                    self.assertEqual([m.to_api() for m in salvaged], [m.to_api() for m in msgs])
 
     def test_randomized_runs_mirror_exact_salvage_to_shared_history(self):
         """End to end: whatever happened during the run (clean finish,
@@ -1041,7 +1039,16 @@ class TestToolFaultContainment(unittest.TestCase):
                 session.client.script = [("", calls), f"done-{seed}"]
                 orig = RecordingSession.execute_tool
 
-                def hostile(name, args, call_id=None):
+                def hostile(
+                    name,
+                    args,
+                    call_id=None,
+                    *,
+                    crashers=crashers,
+                    nil=nil,
+                    orig=orig,
+                    session=session,
+                ):
                     if name in crashers:
                         raise RuntimeError(f"hostile {name}")
                     if name in nil:
@@ -1094,17 +1101,11 @@ class TestPromptInjectionPlacement(unittest.TestCase):
                 assert_conversation_valid(self, loop.messages)
                 # the injected prompts arrived, in order, as user messages
                 injected_pos = [i for i, m in enumerate(loop.messages) if m.injected]
-                self.assertEqual(
-                    [loop.messages[i].text() for i in injected_pos], prompts
-                )
-                self.assertTrue(
-                    all(loop.messages[i].role == "user" for i in injected_pos)
-                )
+                self.assertEqual([loop.messages[i].text() for i in injected_pos], prompts)
+                self.assertTrue(all(loop.messages[i].role == "user" for i in injected_pos))
                 # contiguous, and placed before the trailing user message
                 # when there is one, otherwise at the tail
-                self.assertEqual(
-                    injected_pos, list(range(injected_pos[0], injected_pos[-1] + 1))
-                )
+                self.assertEqual(injected_pos, list(range(injected_pos[0], injected_pos[-1] + 1)))
                 if msgs[-1].role == "user":
                     self.assertEqual(injected_pos[-1] + 1, len(loop.messages) - 1)
                     self.assertEqual(loop.messages[-1].text(), msgs[-1].text())
