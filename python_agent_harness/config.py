@@ -35,10 +35,10 @@ DEFAULT_CONTEXT_WINDOW = 32768
 # ---- completion supervision ----------------------------------------------
 MAX_NUDGES = 2
 NUDGE_MESSAGE = (
-    "Review the original user request and the Task Completion Rules in the context."
-    "Verify whether all completion criteria are satisfied."
-    "If all criteria are already satisfied and verified, finish the task normally."
-    "Otherwise, continue working and make the necessary tool calls."
+    "Review the original user request and the Task Completion Rules in the context. "
+    "Verify whether all completion criteria are satisfied. "
+    "If all criteria are already satisfied and verified, finish the task normally. "
+    "Otherwise, continue working and make the necessary tool calls. "
     "Do not stop until the rules are fully met."
 )
 
