@@ -1,4 +1,3 @@
-
 """Configuration defaults for python-agent-harness.
 
 Mirrors the defcustom defaults of the Emacs gptel-agent-harness.
