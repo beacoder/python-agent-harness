@@ -15,14 +15,26 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# MCP (Model Context Protocol) client support: exposes MCP server tools to
+# the agent as namespaced mcp__<server>__<tool> tools.  Install with:
+#   pip install -e ".[mcp]"
+# The SDK is NOT a core dependency: the harness works without it, and the
+# mcp/ modules degrade gracefully (MCPUnavailableError) when it is absent.
+mcp = [
+    "mcp>=2.0,<3",
+]
+
 # Tooling used by CI (lint + type check + wheel build + coverage + audit).
 # Install with:  pip install -e ".[dev]"
+# The mcp extra is included so CI's type-check/lint jobs can resolve the
+# optional SDK imports in python_agent_harness/mcp/.
 dev = [
     "ruff>=0.6",
     "pyright>=1.1.380",
     "build>=1.2",
     "coverage[toml]>=7.0",
     "pip-audit>=2.7",
+    "mcp>=2.0,<3",
 ]
 
 [project.scripts]

@@ -27,6 +27,8 @@ python-agent-harness config --init  # write ~/.config/python-agent-harness/confi
 python-agent-harness run            # launch the agent in your project dir
 ```
 
+Optional extras: `pip install -e ".[mcp]"` enables MCP server integration (see below); `pip install -e ".[dev]"` installs the development tooling.
+
 Edit `~/.config/python-agent-harness/config.json`, set your `base_url`, `api_key` and `model`, and you're ready to go:
 
 ```sh
@@ -68,6 +70,7 @@ Tool execution mirrors gptel's `gptel--handle-tool-use`: synchronous tools (Read
 
 ### Extensible
 
+- **MCP servers (optional)** — with `pip install -e ".[mcp]"`, any MCP server's tools become ordinary agent tools, namespaced `mcp__<server>__<tool>` (so `search` from two servers never collides). Supported transports: `stdio` (spawn a command), `streamable-http` and `sse` (remote URLs). Tool discovery happens once at session start; results are normalized into the harness's tool-result format, MCP errors surface as normal tool errors, and `parallel: true` opts a read-only server into concurrent execution (serial by default). Configured in the `mcp` section of the config file (or programmatically via `MCPConfig` + `session.connect_mcp()`); `enabled: false` keeps an entry without connecting it. The `mcp` extra is never required — the base harness works without it.
 - **Default agent prompts** — distinct system prompts for the main agent and sub-agents (`prompts/agent.md`, `prompts/subagent.md`), YAML frontmatter stripped, `{{SKILLS}}` filled from the discovered skill directory; the main prompt is prefixed with project context files and task-completion rules.
 - **Slash commands** — `/init`, `/review`, `/explain`, plus custom commands from `prompts/commands/*.md` become TUI slash commands automatically.
 
@@ -97,6 +100,19 @@ LLM settings live in a JSON config file — no environment variables required:
   "paths": {
     "context_path": null,
     "skill_path": null
+  },
+  "mcp": {
+    "servers": {
+      "example": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        "env": [],
+        "parallel": false,
+        "timeout": null,
+        "enabled": false
+      }
+    }
   }
 }
 ```
@@ -105,6 +121,7 @@ LLM settings live in a JSON config file — no environment variables required:
 - Other optional keys: `backend`, `temperature`, `max_tokens`, `timeout`, `stream` (`true` by default; `run --no-stream` overrides on the command line).
 - `subagent_llm` configures the LLM for Agent-tool requests: every key is optional and unset keys inherit the main `llm`, so a cheaper/smaller model (or a different provider) can serve delegated work.
 - `paths.context_path` / `paths.skill_path` override context/skill discovery — defaults are `<project>/contexts` or `~/.emacs.d/contexts` (skills: `<project>/skills` or `~/.emacs.d/skills`).
+- `mcp.servers` configures MCP servers (requires the `[mcp]` extra). Each server is `{transport, command, args, env, url, headers, parallel, timeout, enabled}` — `stdio` needs `command`/`args` (optionally `env` naming environment variables to pass through, e.g. `["GITHUB_TOKEN"]`); `streamable-http`/`sse` need `url` (optionally `headers`). Its tools appear as `mcp__<server>__<tool>`.
 - Precedence: code defaults < config file < `OPENAI_*` env vars (env still wins if set, but nothing is required). Sub-agent settings honor `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`, `_BACKEND`).
 - Use a custom config with `--config PATH` (or `PYTHON_AGENT_HARNESS_CONFIG`).
 
@@ -143,13 +160,14 @@ python_agent_harness/
 ├── planmode.py     build/plan mode + plan file lifecycle
 ├── prompts.py      prompt loading + system prompt assembly
 ├── session_store.py  session persistence + titles
-├── agent_session.py  AgentSession (wiring hub)
+├── agent_session.py  AgentSession (wiring hub; MCP lifecycle)
 ├── subagent.py     sub-agent runner (error containment, plan reminder)
 ├── commands.py     init/review/custom command definitions
 ├── cli.py          argparse entry points
 ├── tui.py          rich + prompt_toolkit TUI
 ├── diffrender.py   unified diff generation + rich rendering
-└── tools/          tool implementations + registry
+├── mcp/            optional MCP client (config, SDK wrapper, manager)
+└── tools/          tool implementations + registry (incl. MCPTool adapter)
 ```
 
 ## Development

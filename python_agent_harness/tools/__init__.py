@@ -6,6 +6,7 @@ from .agent_tool import AgentTool
 from .base import PendingToolResult, Registry, Tool, ToolContext
 from .bash import Bash
 from .filesystem import Edit, GlobTool, Grep, Insert, Mkdir, Read, Write
+from .mcp import MCPTool, mcp_tools_from_manager, normalize_mcp_result
 from .planexit import PlanExit
 from .question import Question
 from .skill import Skill
@@ -22,6 +23,7 @@ __all__ = [
     "GlobTool",
     "Grep",
     "Insert",
+    "MCPTool",
     "Mkdir",
     "PlanExit",
     "Question",
@@ -29,6 +31,8 @@ __all__ = [
     "Skill",
     "TodoWrite",
     "Write",
+    "mcp_tools_from_manager",
+    "normalize_mcp_result",
 ]
 
 

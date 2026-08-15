@@ -17,6 +17,8 @@ from typing import Any
 
 from . import config
 from .client import Client
+from .mcp.config import MCPConfig
+from .mcp.manager import MCPManager
 from .models import AgentMode
 from .planmode import PlanMode
 from .session_store import SessionStore
@@ -25,6 +27,7 @@ from .token_estimator import TokenCalibrator
 from .tools import Registry, ToolContext
 from .tools.base import PendingToolResult
 from .tools.filesystem import cleanup_spooled_files
+from .tools.mcp import mcp_tools_from_manager
 
 
 def find_skill_dir(project_dir: str, configured: str | None = None) -> str | None:
@@ -85,6 +88,8 @@ class AgentSession:
         registry: Registry | None = None,
         context_path: str | None = None,
         skill_path: str | None = None,
+        mcp: MCPConfig | None = None,
+        mcp_manager: MCPManager | None = None,
     ) -> None:
         self.project_dir = project_dir
         self.client = client
@@ -121,6 +126,13 @@ class AgentSession:
         self.subagent_stream = stream if subagent_stream is None else subagent_stream
 
         self.registry = registry or Registry()
+        # MCP (Model Context Protocol) integration: an optional adapter
+        # around the official SDK (requires the `mcp` extra).  The MCP
+        # manager owns the server connections and one-time tool
+        # discovery; its tools are registered into the SAME registry as
+        # built-ins, so the agent loop never knows MCP exists.
+        self.mcp_manager = mcp_manager if mcp_manager is not None else MCPManager(mcp)
+        self.mcp_errors: list[tuple[str, str]] = []
         self.calibrator = TokenCalibrator()
         self.plan_mode = PlanMode(project_dir)
         self.tool_ctx = ToolContext(self)
@@ -282,6 +294,36 @@ class AgentSession:
                 os.path.join(str(args.get("parent", "")), str(args.get("name", "")))
             )
         return None
+
+    # ------------------------------------------------------------------
+    # MCP (optional; requires the `mcp` extra)
+    # ------------------------------------------------------------------
+    def connect_mcp(self) -> list[tuple[str, str]]:
+        """Connect the configured MCP servers and register their tools.
+
+        Call once when the session starts: discovery happens ONCE (not
+        per turn) and the resulting tools are ordinary registry tools
+        from then on.  Failures are per-server and non-fatal — the
+        session keeps working with the servers that did connect.  The
+        returned ``[(server, error)]`` list is also stored in
+        ``self.mcp_errors`` and logged.
+        """
+        if not self.mcp_manager.config.servers:
+            return []
+        failures = self.mcp_manager.connect_all()
+        discovered = self.mcp_manager.discover_tools()
+        for tool in mcp_tools_from_manager(self.mcp_manager):
+            self.registry.register(tool)
+        self.mcp_errors = list(failures) + [e for e in self.mcp_manager.errors if e not in failures]
+        for server, err in self.mcp_errors:
+            self.log(f"MCP: [{server}] {err}")
+        if discovered:
+            self.log(
+                f"MCP: registered {len(discovered)} tool(s) from "
+                f"{len(self.mcp_manager.connected)} server(s)"
+            )
+        self.notify("mcp")
+        return failures
 
     # ------------------------------------------------------------------
     # ToolContext-facing API
@@ -499,6 +541,9 @@ class AgentSession:
         self.alive = False
         self.plan_mode.cleanup_plan_file()
         cleanup_spooled_files()
+        # MCP server connections + event-loop thread (no-op when no MCP
+        # servers are configured or none connected)
+        self.mcp_manager.close_all()
         if hasattr(self.client, "close"):
             self.client.close()
         if self.subagent_client is not self.client and hasattr(self.subagent_client, "close"):

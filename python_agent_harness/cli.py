@@ -39,6 +39,7 @@ def make_session(
     """
     settings = config.load_llm_config(config_path)
     paths = config.load_paths_config(config_path)
+    mcp_config = config.load_mcp_config(config_path)
     model = model or settings["model"]
     # resolve sub-agent overrides against the EFFECTIVE main settings
     # (so a CLI/caller model override is inherited too when the
@@ -108,14 +109,36 @@ def make_session(
         registry=default_registry(),
         context_path=paths.get("context_path"),
         skill_path=paths.get("skill_path"),
+        mcp=mcp_config,
     )
+
+
+def make_session_with_mcp(
+    project_dir: str,
+    config_path: str | None = None,
+    model: str | None = None,
+    stream: bool | None = None,
+) -> AgentSession:
+    """Create an AgentSession and connect its configured MCP servers.
+
+    Wraps ``make_session``: the session's MCP servers are connected and
+    their tools registered before the session is returned (discovery
+    happens once, at session start).  Per-server failures are printed
+    to stderr and never prevent the session from running — the agent
+    keeps working with the built-in tools.
+    """
+    session = make_session(project_dir, config_path=config_path, model=model, stream=stream)
+    failures = session.connect_mcp()
+    for server, err in failures:
+        print(f"python-agent-harness: [{server}] {err}", file=sys.stderr)
+    return session
 
 
 def cmd_run(args: argparse.Namespace) -> int:
     from .tui import Tui
 
     project_dir = getattr(args, "project", None) or os.getcwd()
-    session = make_session(
+    session = make_session_with_mcp(
         project_dir,
         config_path=args.config,
         stream=False if getattr(args, "no_stream", False) else None,
@@ -139,6 +162,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     settings = config.load_llm_config(args.path)
     subagent_settings = config.load_subagent_llm_config(args.path, main=settings)
     paths = config.load_paths_config(args.path)
+    mcp_config = config.load_mcp_config(args.path)
     print(f"config file: {path}")
     if not path.exists():
         print("(file does not exist yet — run `python-agent-harness config --init` to create it)")
@@ -152,6 +176,20 @@ def cmd_config(args: argparse.Namespace) -> int:
     print(f"timeout: {settings['timeout']}")
     print(f"context_path: {paths['context_path'] or '(auto-discover)'}")
     print(f"skill_path: {paths['skill_path'] or '(auto-discover)'}")
+    if mcp_config.servers:
+        for name, server in mcp_config.servers.items():
+            status = "enabled" if server.enabled else "disabled"
+            target = (
+                f"command={server.command} {' '.join(server.args)}"
+                if server.transport == "stdio"
+                else f"url={server.url}"
+            )
+            print(
+                f"mcp server {name}: {status}, transport={server.transport}, "
+                f"{target}, parallel={server.parallel}"
+            )
+    else:
+        print('mcp: (none configured — add an "mcp" section to the config file)')
     print(
         "subagent_llm: (inherits main)"
         if subagent_settings == settings

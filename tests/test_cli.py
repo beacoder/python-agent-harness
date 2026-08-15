@@ -331,7 +331,9 @@ class TestCliEntryPoints(unittest.TestCase):
 
         session = mock.Mock()
         with (
-            mock.patch("python_agent_harness.cli.make_session", return_value=session) as ms,
+            mock.patch(
+                "python_agent_harness.cli.make_session_with_mcp", return_value=session
+            ) as ms,
             mock.patch("python_agent_harness.tui.Tui") as tui_cls,
         ):
             rc = cli.main(["run", "/tmp/proj"])
@@ -351,7 +353,9 @@ class TestCliEntryPoints(unittest.TestCase):
 
         session = mock.Mock()
         with (
-            mock.patch("python_agent_harness.cli.make_session", return_value=session) as ms,
+            mock.patch(
+                "python_agent_harness.cli.make_session_with_mcp", return_value=session
+            ) as ms,
             mock.patch("python_agent_harness.tui.Tui") as tui_cls,
         ):
             rc = cli.main([])
@@ -365,7 +369,7 @@ class TestCliEntryPoints(unittest.TestCase):
         import unittest.mock as mock
 
         with (
-            mock.patch("python_agent_harness.cli.make_session") as ms,
+            mock.patch("python_agent_harness.cli.make_session_with_mcp") as ms,
             mock.patch("python_agent_harness.tui.Tui"),
         ):
             rc = cli.main(["run", "/tmp/proj", "--no-stream"])

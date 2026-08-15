@@ -1,4 +1,5 @@
-"""Configuration defaults for python-agent-harness.
+
+0;10;1c"""Configuration defaults for python-agent-harness.
 
 Mirrors the defcustom defaults of the Emacs gptel-agent-harness.
 """
@@ -7,6 +8,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .mcp.config import MCPConfig
 
 # ---- context management -------------------------------------------------
 CONTEXT_TRIGGER = 0.70
@@ -31,9 +36,11 @@ DEFAULT_CONTEXT_WINDOW = 32768
 # ---- completion supervision ----------------------------------------------
 MAX_NUDGES = 2
 NUDGE_MESSAGE = (
-    "Review the original user request and the Task Completion Rules "
-    "in the context. Verify whether all completion criteria are satisfied. "
-    "If not, continue by making tool calls. Do not stop until the rules are fully met."
+    "Review the original user request and the Task Completion Rules in the context."
+    "Verify whether all completion criteria are satisfied."
+    "If all criteria are already satisfied and verified, finish the task normally."
+    "Otherwise, continue working and make the necessary tool calls."
+    "Do not stop until the rules are fully met."
 )
 
 # ---- compaction -----------------------------------------------------------
@@ -156,6 +163,11 @@ DEFAULT_PATHS: dict = {
     "skill_path": None,
 }
 
+# MCP servers are configured in the config file's "mcp" object (see
+# CONFIG_TEMPLATE); no servers configured = MCP integration disabled.
+# Requires the optional `mcp` extra: pip install -e ".[mcp]".
+DEFAULT_MCP: dict = {"servers": {}}
+
 # Sub-agent LLM overrides: every key defaults to None, meaning "inherit
 # the main LLM setting" (mirrors gptel-agent-harness-subagent-model /
 # -backend).  Only the keys the user actually sets differ from the main
@@ -196,6 +208,21 @@ CONFIG_TEMPLATE = """\
     "_comment": "Optional overrides for context and skill directories. Absolute paths or ~ expansion supported.",
     "context_path": null,
     "skill_path": null
+  }},
+  "mcp": {{
+    "_comment": "Optional MCP servers (requires: pip install -e '.[mcp]'). Each server's tools become agent tools named mcp__<server>__<tool>. Transports: stdio (spawn command+args, pass through env var names), streamable-http / sse (connect to url, optional headers). 'parallel: true' marks read-only servers whose tools may run concurrently; default is serial. 'timeout' bounds connects, discovery and calls (seconds).",
+    "servers": {{
+      "example": {{
+        "_comment": "Example only — enabled: false keeps it from connecting. Set enabled: true and adjust command/args.",
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        "env": [],
+        "parallel": false,
+        "timeout": null,
+        "enabled": false
+      }}
+    }}
   }}
 }}
 """
@@ -331,6 +358,33 @@ def load_paths_config(path: str | os.PathLike | None = None) -> dict:
             if isinstance(val, str) and val.strip():
                 settings[key] = os.path.abspath(os.path.expanduser(val.strip()))
     return settings
+
+
+def load_mcp_config(path: str | os.PathLike | None = None) -> MCPConfig:
+    """Load MCP server settings from the config file's ``mcp`` object.
+
+    Returns an ``MCPConfig`` (empty when the file has no ``mcp``
+    section or it has no servers).  Malformed server entries raise
+    ValueError so config errors surface at session start.  The optional
+    ``mcp`` SDK is only needed when servers are actually configured and
+    connected — reading the config never requires it.
+    """
+    import json
+
+    from .mcp.config import MCPConfig
+
+    cfg_path = _config_path(path)
+    data: dict = {}
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, "rb") as f:
+                data = json.load(f)
+        except Exception as e:  # noqa: BLE001 - mirror load_llm_config's tolerance
+            raise ValueError(f"cannot read config file {cfg_path}: {e}") from e
+    section = data.get("mcp") or {}
+    if not isinstance(section, dict):
+        raise ValueError(f"config file {cfg_path}: mcp must be an object")
+    return MCPConfig.from_dict(section.get("servers"))
 
 
 def mask_secret(value: str | None) -> str:
