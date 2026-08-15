@@ -53,6 +53,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))  # sibling test helpers
 
+import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
 from test_agent import ParallelToolSession, RecordingSession, agent_call  # noqa: E402
 
 from python_agent_harness import config  # noqa: E402

@@ -2,10 +2,14 @@
 
 import io
 import os
+import sys
 import tempfile
 import unittest
 import unittest.mock as mock
 
+sys.path.insert(0, os.path.dirname(__file__))
+
+import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
 from rich.console import Console
 from rich.live import Live
 

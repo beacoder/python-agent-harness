@@ -9,6 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
 from test_agent import FakeClient, RecordingSession
 
 from python_agent_harness import config
@@ -655,10 +656,11 @@ class TestSwitchModes(unittest.TestCase):
 
 
 class TestClose(unittest.TestCase):
-    """close() cancels the run, marks the session dead, cleans up the
-    plan file and closes the client."""
+    """close() cancels the run, marks the session dead and closes the
+    client; the plan file is kept (one per session) for later
+    reference."""
 
-    def test_close_cancels_and_cleans_up(self):
+    def test_close_cancels_and_keeps_plan_file(self):
         session = RecordingSession()
         session.switch_to_plan()  # creates a real plan file
         plan_file = session.plan_mode.plan_file
@@ -674,7 +676,7 @@ class TestClose(unittest.TestCase):
         session.close()
         self.assertFalse(session.alive)
         self.assertTrue(session.cancel_event.is_set())
-        self.assertFalse(os.path.exists(plan_file))
+        self.assertTrue(os.path.exists(plan_file))
         self.assertTrue(ClosableClient.closed)
 
     def test_close_closes_subagent_client_too(self):

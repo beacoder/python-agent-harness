@@ -539,7 +539,6 @@ class AgentSession:
     def close(self) -> None:
         self.cancel()
         self.alive = False
-        self.plan_mode.cleanup_plan_file()
         cleanup_spooled_files()
         # MCP server connections + event-loop thread (no-op when no MCP
         # servers are configured or none connected)

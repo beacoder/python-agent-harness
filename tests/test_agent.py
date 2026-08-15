@@ -12,6 +12,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))  # sibling fake server import
 
+import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+
 from python_agent_harness.agent import AgentLoop, Supervisor, sanitize_tool_result
 from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall, Usage

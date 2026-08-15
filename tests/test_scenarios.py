@@ -20,6 +20,10 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
+sys.path.insert(0, os.path.dirname(__file__))
+
+import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+
 from python_agent_harness import config
 from python_agent_harness.agent import AgentLoop
 from python_agent_harness.agent_session import AgentSession
