@@ -10,7 +10,7 @@
 
 </div>
 
-A Python port of the Emacs [gptel-agent-harness](https://github.com/beacoder/gptel-agent-harness): a terminal coding agent that reads your repo, plans, edits files, runs commands, and verifies its own work — with only **three runtime dependencies** (`rich`, `httpx`, `prompt_toolkit`) and any OpenAI-compatible API. No heavy frameworks, no vendor lock-in.
+Python coding-agent inspired by [gptel-agent-harness](https://github.com/beacoder/gptel-agent-harness): a terminal coding agent that reads your repo, plans, edits files, runs commands, and verifies its own work — with only **three runtime dependencies** (`rich`, `httpx`, `prompt_toolkit`) and any OpenAI-compatible API. No heavy frameworks, no vendor lock-in.
 
 ## Demo
 
@@ -183,7 +183,7 @@ venv/bin/python -m build            # sdist + wheel
 venv/bin/pip-audit                  # dependency audit
 ```
 
-### Verification checklist (ported semantics)
+### Verification checklist (inherited semantics)
 
 - [x] Nudge supervision with fail-closed dead-session budget
 - [x] Tool-result sanitization (None → error placeholder)
