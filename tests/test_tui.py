@@ -65,7 +65,10 @@ class TestTui(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("hello agent", out)
         self.assertIn("[BUILD]", out)
-        self.assertIn("Ctx:55%", out)
+        self.assertIn("Ctx:", out)
+        self.assertIn("55%", out)  # context percentage
+        self.assertIn("▓", out)  # context mini progress bar
+        self.assertIn("░", out)
 
     def test_status_bar_pinned_on_top(self):
         """The status bar must come BEFORE the conversation panel so a

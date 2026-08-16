@@ -22,6 +22,7 @@ class ToolCall:
     arguments: dict[str, Any] | str
     result: str | None = None
     diff: str | None = None  # unified diff for Edit/Write, for TUI rendering
+    elapsed: float | None = None  # execution wall-time in seconds (TUI display)
 
 
 @dataclass

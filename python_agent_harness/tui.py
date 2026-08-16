@@ -23,6 +23,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
+from rich import box
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
@@ -630,30 +631,40 @@ class Tui:
                         else:
                             params = ""
                         label = f"tool: {tc.name}({params})" if params else f"tool: {tc.name}"
-                        rows.append(Text(label, style="magenta"))
+                        rows.append(Text(f"▶ {label}", style="magenta"))
                 if body.strip():
                     rows.append(Markdown(f"**assistant:** {body}", style=ASSISTANT_STYLE))
             elif m.role == "tool":
                 preview = _tool_result_preview(m.text())
                 name = (m.name or "tool").lower()
-                rows.append(Text(f"{name} result:\n{preview}", style="dim"))
                 call = calls_by_id.get(m.tool_call_id)
+                # tool failures surface as "Error: ..." results (agent
+                # containment, missing args, MCP-reported errors)
+                failed = (m.text() or "").startswith("Error")
+                marker = "✗" if failed else "✓"
+                marker_style = "bold red" if failed else "green"
+                elapsed = ""
+                if call is not None and call.elapsed is not None:
+                    elapsed = f" ({call.elapsed:.1f}s)"
+                row = Text(style="dim")
+                row.append(f"{marker} {name} result{elapsed}:", style=marker_style)
+                row.append(f"\n{preview}")
+                rows.append(row)
                 if call is not None and call.diff:
                     rows.append(render_diff(call.diff))
         return rows
 
-    def _todos_panel(self) -> Panel | None:
-        """Todos panel — rebuilt every frame (not cached), so a
+    def _todos_panel(self) -> Group | None:
+        """Todos section — rebuilt every frame (not cached), so a
         TodoWrite call shows up immediately even mid-run."""
         if not self.session.todos:
             return None
-        title = "Todos"
         t = Table.grid(padding=(0, 1))
         for todo in self.session.todos[-8:]:
             status = todo.get("status", "")
             mark = {"completed": "✅", "in_progress": "⏳", "pending": "⬜"}.get(status, "•")
             t.add_row(mark, todo.get("content", ""))
-        return Panel(t, title=title, border_style="blue", expand=False)
+        return Group(Text("Todos", style="bold"), t)
 
     def _history_rows(self) -> list[Any]:
         """Cached history rows; rebuilt only when the conversation changes.
@@ -679,16 +690,19 @@ class Tui:
         lines = max(3, cap - 3)
         preview = _tail_lines(stream, lines)
         preview = _tail_chars(preview, lines * max(1, width))
-        return Text(f"assistant: {preview}", style=ASSISTANT_STYLE)
+        row = Text(f"assistant: {preview}", style=ASSISTANT_STYLE)
+        # blinking block cursor, 2 Hz phase (same clock as the spinner)
+        if int(time.time() * 2) % 2 == 0:
+            row.append("▍")
+        return row
 
-    def _render_conversation(self) -> Panel:
+    def _render_conversation(self) -> Group | Text:
         rows = self._history_rows()
         stream_row = self._stream_row()
         if stream_row is not None:
             rows.append(stream_row)
         rows = self._apply_budget(rows)
-        group = Group(*rows) if rows else Text("(empty)")
-        return Panel(group, title="python-agent-harness", border_style="blue")
+        return Group(*rows) if rows else Text("(empty)")
 
     def _apply_budget(self, rows: list[Any]) -> list[Any]:
         """Keep the NEWEST rows that fit the visible terminal area.
@@ -741,11 +755,11 @@ class Tui:
         height = getattr(self.console, "height", None)
         if not height or height <= 0:
             return 60
-        # reserve: status bar (1) + panel borders (2) + input prompt (1)
-        # + the pinned Todos panel when visible (its rows + 2 borders)
-        reserved = 4
+        # reserve: status bar (1) + input prompt (1)
+        # + the pinned Todos section when visible (its title line + rows)
+        reserved = 2
         if self.session.todos:
-            reserved += min(len(self.session.todos), 8) + 2
+            reserved += min(len(self.session.todos), 8) + 1
         return max(5, height - reserved)
 
     @staticmethod
@@ -777,26 +791,40 @@ class Tui:
 
     def _status_bar(self) -> Text:
         mode = self.session.plan_mode.mode.value
-        mode_style = "yellow" if mode == "plan" else "green"
+        mode_style = "bold yellow" if mode == "plan" else "bold green"
         ratio = self.session.context_ratio
         ctx = ""
         if ratio is not None:
             pct = round(ratio * 100)
-            ctx = f" [Ctx:{pct}%/{round(config.CONTEXT_TRIGGER * 100)}%]"
+            trigger = round(config.CONTEXT_TRIGGER * 100)
+            filled = round(ratio * 10)
+            bar = "▓" * filled + "░" * (10 - filled)
+            ctx = f" [Ctx:{bar} {pct}%/{trigger}%]"
         t = Text()
         t.append(f" [{mode.upper()}]", style=mode_style)
-        t.append(ctx)
+        if ctx:
+            over = ratio is not None and ratio >= config.CONTEXT_TRIGGER
+            t.append(ctx, style="bold" if over else "")
         if getattr(self.session, "_save_error", None):
             t.append(" [!save]", style="red bold")
         if self.agent_running:
             frame = SPINNER_FRAMES[int(time.time() * 10) % len(SPINNER_FRAMES)]
             t.append(f" {frame}", style="bold cyan")
             if self._current_tool:
-                t.append(f" {self._current_tool}", style="cyan")
+                t.append(f" {self._current_tool}", style="bold cyan")
         elif self.question is not None:
             t.append(" ❓", style="yellow")
-        t.append(f"{self.status}", style="dim")
+        t.append(f"{self.status}", style=self._status_style())
         return t
+
+    def _status_style(self) -> str:
+        """Status-bar color by state: errors red, activity cyan, idle dim."""
+        s = self.status
+        if "error" in s or "failed" in s:
+            return "bold red"
+        if " ⏳" in s or " running" in s or "retrying" in s:
+            return "cyan"
+        return "dim"
 
     # ------------------------------------------------------------------
     # main loop
@@ -804,21 +832,19 @@ class Tui:
     def run(self) -> None:
         self.console.print(
             Panel(
-                "python-agent-harness — agent execution harness\n"
-                "Commands: /plan /build /init /review /explain /compact "
-                "/save /summary /sessions /restore /help /exit\n"
-                "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
-                "/review [project] [commit|branch|PR] review code changes\n"
-                "/explain [project] [target]          explain code\n"
-                "/sessions                            list saved sessions\n"
-                "/restore [path | title | --latest]   restore a saved session\n"
-                "Ctrl-C cancels the current execution (the app stays open); "
-                "Ctrl-D or /exit quits.\n"
-                "Type a message — Enter for a new line, Esc then Enter "
-                "(or Alt+Enter) to submit. Up/Down recall history.",
-                border_style="blue",
-            ),
-            markup=False,
+                Text.from_markup(
+                    "[bold]Commands:[/bold] /plan /build /init /review /explain "
+                    "/compact /save /summary /sessions /restore /help /exit\n\n"
+                    "Ctrl-C cancels the current execution (the app stays open); "
+                    "Ctrl-D or /exit quits.\n"
+                    "Type a message — Enter for a new line, Esc then Enter "
+                    "(or Alt+Enter) to submit. Up/Down recall history.\n\n"
+                    "[dim]Type [bold]/help[/bold] for the full command reference.[/dim]"
+                ),
+                title="[bold cyan]python-agent-harness — agent execution harness[/bold cyan]",
+                border_style="cyan",
+                box=box.ROUNDED,
+            )
         )
         if config.LLM_LOG_ENABLED:
             self.console.print(f"[dim]LLM logs: {self.session.client.log_path}[/dim]")

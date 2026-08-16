@@ -32,6 +32,7 @@ completion supervision as an extension:
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Protocol
 
 from . import config
@@ -385,9 +386,11 @@ class AgentLoop:
             # status bar can show the active tool name beside the spinner.
             if self.top_level:
                 self.session.notify("tool_running", p.name)
+            start = time.monotonic()
             try:
                 result = self._execute_tool_call(p)
             except Exception as e:  # noqa: BLE001 - containment boundary
+                p.elapsed = time.monotonic() - start
                 results[p.id] = f"Error: tool {p.name!r} crashed during execution — {e}"
                 continue
             if isinstance(result, PendingToolResult):
@@ -397,12 +400,17 @@ class AgentLoop:
                 # executing in the meantime
                 async_calls.append((p, result))
             else:
+                p.elapsed = time.monotonic() - start
                 results[p.id] = sanitize_tool_result(result)
         for p, pending in async_calls:
+            start = time.monotonic()
             try:
-                results[p.id] = sanitize_tool_result(pending.wait())
+                result = pending.wait()
             except Exception as e:  # noqa: BLE001 - containment boundary
                 results[p.id] = f"Error: tool {p.name!r} crashed during execution — {e}"
+            else:
+                p.elapsed = time.monotonic() - start
+                results[p.id] = sanitize_tool_result(result)
 
     def _execute_pending(self) -> None:
         """TOOL state: run the round's pending tool calls.
