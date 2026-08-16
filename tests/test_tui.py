@@ -58,9 +58,9 @@ class TestTui(unittest.TestCase):
         self.assertIn("file contents", out)
         self.assertIn("Todos", out)
 
-    def test_tool_result_boxed_with_marker_title(self):
-        """Tool results render as a box whose title carries the
-        ✓/✗ marker (and the elapsed time when recorded)."""
+    def test_tool_result_marker_with_elapsed(self):
+        """Tool results render as a plain dim text row whose first line
+        carries the ✓/✗ marker (and the elapsed time when recorded)."""
         tui, buf = make_tui()
         tui.session.last_messages = [
             Message(role="user", content="run it"),

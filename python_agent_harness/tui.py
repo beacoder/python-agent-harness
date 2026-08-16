@@ -650,17 +650,10 @@ class Tui:
                 elapsed = ""
                 if call is not None and call.elapsed is not None:
                     elapsed = f" ({call.elapsed:.1f}s)"
-                title = Text(f"{marker} {name} result{elapsed}:", style=marker_style)
-                rows.append(
-                    Panel(
-                        preview,
-                        title=title,
-                        box=box.ROUNDED,
-                        expand=False,
-                        padding=(0, 1),
-                        style="dim",
-                    )
-                )
+                row = Text(style="dim")
+                row.append(f"{marker} {name} result{elapsed}:", style=marker_style)
+                row.append(f"\n{preview}")
+                rows.append(row)
                 if call is not None and call.diff:
                     rows.append(render_diff(call.diff))
         return rows
