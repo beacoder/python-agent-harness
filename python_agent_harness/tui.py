@@ -635,7 +635,8 @@ class Tui:
                     rows.append(Markdown(f"**assistant:** {body}", style=ASSISTANT_STYLE))
             elif m.role == "tool":
                 preview = _tool_result_preview(m.text())
-                rows.append(Text(f"tool: {m.name or 'tool'}: {preview}", style="dim"))
+                name = (m.name or "tool").lower()
+                rows.append(Text(f"{name} result:\n{preview}", style="dim"))
                 call = calls_by_id.get(m.tool_call_id)
                 if call is not None and call.diff:
                     rows.append(render_diff(call.diff))

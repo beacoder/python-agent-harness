@@ -82,7 +82,9 @@ class TestTui(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("user: hello agent", out)
         self.assertIn("assistant: hi", out)
-        self.assertIn("tool: Read: file contents", out)
+        self.assertIn("read result:", out)
+        self.assertIn("file contents", out)
+        self.assertNotIn("read result: file contents", out)  # body on its own line
         self.assertNotIn("You:", out)
         self.assertNotIn("Agent:", out)
 
