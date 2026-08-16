@@ -291,7 +291,7 @@ class TestTui(unittest.TestCase):
         ]
         tui.console.print(tui._render_conversation())
         out = buf.getvalue()
-        self.assertIn("🤔 ...", out)
+        self.assertIn("reasoning ...", out)
         self.assertIn("Rayleigh scattering.", out)
         self.assertNotIn("Let me think", out)
         # the stored message keeps its reasoning — only the display hides it
@@ -312,7 +312,7 @@ class TestTui(unittest.TestCase):
         ]
         tui.console.print(tui._render_conversation())
         out = buf.getvalue()
-        self.assertIn("🤔 ...", out)
+        self.assertIn("reasoning ...", out)
         self.assertNotIn("pensive thoughts", out)
 
     def test_reasoning_marker_before_tool_call_label(self):
@@ -332,9 +332,9 @@ class TestTui(unittest.TestCase):
         ]
         tui.console.print(tui._render_conversation())
         out = buf.getvalue()
-        self.assertIn("🤔 ...", out)
-        self.assertIn("⚙️ Read", out)
-        self.assertLess(out.index("🤔 ..."), out.index("⚙️ Read"))
+        self.assertIn("reasoning ...", out)
+        self.assertIn("tool: Read", out)
+        self.assertLess(out.index("reasoning ..."), out.index("tool: Read"))
         self.assertNotIn("let me check", out)
 
     def test_non_string_reasoning_does_not_crash(self):
@@ -352,7 +352,7 @@ class TestTui(unittest.TestCase):
         tui.console.print(tui._render_conversation())
         out = buf.getvalue()
         self.assertIn("full text here", out)
-        self.assertNotIn("🤔 ...", out)
+        self.assertNotIn("reasoning ...", out)
 
     def test_strip_reasoning(self):
         """_strip_reasoning removes the leading reasoning prefix and
@@ -1646,7 +1646,7 @@ class TestTui(unittest.TestCase):
         ]
         tui.console.print(tui._render_conversation())
         out = buf.getvalue()
-        self.assertIn("⚙️ Read", out)
+        self.assertIn("tool: Read", out)
 
     def test_tool_call_non_dict_arguments(self):
         """A JSON array of arguments renders as a bare tool label."""
@@ -1662,7 +1662,7 @@ class TestTui(unittest.TestCase):
         ]
         tui.console.print(tui._render_conversation())
         out = buf.getvalue()
-        self.assertIn("⚙️ Bash", out)
+        self.assertIn("tool: Bash", out)
         self.assertNotIn("ls", out)
 
     # ------------------------------------------------------------------

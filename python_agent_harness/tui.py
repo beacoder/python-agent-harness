@@ -612,7 +612,7 @@ class Tui:
                     # the reasoning streamed live while it was being
                     # produced; once it is done it collapses to a marker
                     # so it doesn't eat the visible-row budget
-                    rows.append(Text("🤔 ...", style="dim"))
+                    rows.append(Text("reasoning ...", style="dim"))
                 if m.tool_calls:
                     for tc in m.tool_calls:
                         args = tc.arguments
@@ -629,7 +629,7 @@ class Tui:
                             )
                         else:
                             params = ""
-                        label = f"⚙️ {tc.name}({params})" if params else f"⚙️ {tc.name}"
+                        label = f"tool: {tc.name}({params})" if params else f"tool: {tc.name}"
                         rows.append(Text(label, style="magenta"))
                 if body.strip():
                     rows.append(Markdown(f"**assistant:** {body}", style=ASSISTANT_STYLE))
