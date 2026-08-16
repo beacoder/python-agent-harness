@@ -172,6 +172,58 @@ class TestSession(unittest.TestCase):
             finally:
                 config.SESSION_DIR = old_dir
 
+    def test_concurrent_save_and_apply_title_do_not_split(self):
+        """A save racing a title rename must not split the conversation
+        across two files: save and apply_title are serialized, so the
+        rename can never land between a save's tmp write and its
+        os.replace."""
+        import os
+        import tempfile
+        import threading
+        import time
+        import unittest.mock as mock
+
+        from python_agent_harness import config
+
+        with tempfile.TemporaryDirectory() as d:
+            old_dir = config.SESSION_DIR
+            config.SESSION_DIR = __import__("pathlib").Path(d)
+            try:
+                store = SessionStore(project_dir="/tmp/proj", model="m", backend="b")
+                store.save("old content")
+                before = store.file_path
+
+                real_replace = os.replace
+
+                def slow_replace(src, dst):
+                    time.sleep(0.3)
+                    real_replace(src, dst)
+
+                with mock.patch(
+                    "python_agent_harness.session_store.os.replace",
+                    side_effect=slow_replace,
+                ):
+                    t = threading.Thread(target=lambda: store.apply_title("My Great Session"))
+                    t.start()
+                    time.sleep(0.05)  # land mid-rename: the split window
+                    store.save("new content")
+                    t.join(10)
+                self.assertFalse(t.is_alive())
+
+                # exactly one session file survives, titled, holding the
+                # latest content — no stale untitled twin
+                from python_agent_harness.session_store import session_dir
+
+                files = sorted(session_dir().glob("*.md"))
+                self.assertEqual(len(files), 1, files)
+                self.assertEqual(store.file_path, str(files[0]))
+                self.assertEqual(store.title, "My-Great-Session")
+                with open(store.file_path) as f:
+                    self.assertIn("new content", f.read())
+                self.assertFalse(os.path.exists(before))
+            finally:
+                config.SESSION_DIR = old_dir
+
     def test_parse_metadata_without_block(self):
         self.assertEqual(SessionStore.parse_metadata("just a conversation"), {})
 

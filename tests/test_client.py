@@ -836,6 +836,69 @@ class TestClientStreamingEdgeCases(unittest.TestCase):
         finally:
             c.close()
 
+    def test_stream_mid_body_error_raises_api_error(self):
+        """A 200 stream that emits an error object mid-body (no choices)
+        must raise ApiError instead of silently returning an empty
+        message that the loop would treat as a terminal answer."""
+        from python_agent_harness.client import ApiError
+
+        c = make_client(retry_max=3)
+        try:
+            lines = [
+                'data: {"choices": [{"delta": {"content": "part"}}]}',
+                'data: {"error": {"message": "model overloaded"}}',
+                "data: [DONE]",
+            ]
+            resp = FakeStreamResp(lines)
+            with (
+                mock.patch.object(c._http, "stream", return_value=FakeStreamCM(resp)),
+                self.assertRaises(ApiError) as ctx,
+            ):
+                c.chat([Message(role="user", content="hi")])
+            self.assertIn("model overloaded", str(ctx.exception))
+        finally:
+            c.close()
+
+    def test_stream_mid_body_string_error_raises_api_error(self):
+        """String-form error bodies surface the same way."""
+        from python_agent_harness.client import ApiError
+
+        c = make_client(retry_max=3)
+        try:
+            lines = ['data: {"error": "server exploded"}', "data: [DONE]"]
+            resp = FakeStreamResp(lines)
+            with (
+                mock.patch.object(c._http, "stream", return_value=FakeStreamCM(resp)),
+                self.assertRaises(ApiError) as ctx,
+            ):
+                c.chat([Message(role="user", content="hi")])
+            self.assertIn("server exploded", str(ctx.exception))
+        finally:
+            c.close()
+
+    def test_sync_body_error_raises_api_error(self):
+        """A non-streaming 200 response carrying an error object raises
+        ApiError instead of returning an empty message."""
+        from types import SimpleNamespace
+
+        from python_agent_harness.client import ApiError
+
+        c = make_client(retry_max=1)
+        try:
+            resp = SimpleNamespace(
+                status_code=200,
+                text="{}",
+                json=lambda: {"error": {"message": "bad request body"}},
+            )
+            with (
+                mock.patch.object(c._http, "post", return_value=resp),
+                self.assertRaises(ApiError) as ctx,
+            ):
+                c.chat([Message(role="user", content="hi")], stream=False)
+            self.assertIn("bad request body", str(ctx.exception))
+        finally:
+            c.close()
+
 
 class TestClientNetworkErrors(unittest.TestCase):
     """Connection-level failures (httpx.HTTPError) are retried until the

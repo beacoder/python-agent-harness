@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -248,7 +249,9 @@ class _FakeManager:
         self.results = results or {}
         self.errors = errors or {}
 
-    def call_tool(self, server: str, tool: str, arguments: dict, timeout=None) -> dict:
+    def call_tool(
+        self, server: str, tool: str, arguments: dict, timeout=None, cancel_check=None
+    ) -> dict:
         self.calls.append((server, tool, arguments))
         if tool in self.errors:
             raise self.errors[tool]
@@ -635,6 +638,95 @@ class TestMCPToolCallTimeout(unittest.TestCase):
         self.assertEqual(manager.calls, [("s", "echo", {})])
 
 
+class TestConnectFailureCleanup(unittest.TestCase):
+    """A failed connect must close the MCP client: connect() may have
+    spawned the server process / opened an HTTP session before failing,
+    and dropping the client without close() orphans it."""
+
+    def test_failed_connect_closes_client(self):
+        import python_agent_harness.mcp.manager as mgr_mod
+
+        closed: list[bool] = []
+
+        class BoomClient:
+            def __init__(self, config):
+                self.config = config
+
+            async def connect(self):
+                raise RuntimeError("boom")
+
+            async def close(self):
+                closed.append(True)
+
+        manager = MCPManager(
+            MCPConfig(servers={"ghost": MCPServerConfig(name="ghost", command="true", timeout=5)})
+        )
+        try:
+            with mock.patch.object(mgr_mod, "MCPClient", BoomClient):
+                failures = manager.connect_all()
+            self.assertEqual(len(failures), 1)
+            self.assertIn("failed to connect", failures[0][1])
+            self.assertEqual(manager.connected, [])
+            self.assertEqual(len(closed), 1)
+        finally:
+            manager.close_all()
+
+
+class TestMCPCallCancel(unittest.TestCase):
+    """Ctrl-C must unblock a hung MCP call: the manager polls the
+    cancel check while waiting and cancels the underlying future."""
+
+    def test_cancelled_call_unblocks(self):
+        import asyncio
+        import threading
+
+        import python_agent_harness.mcp.manager as mgr_mod
+
+        started = threading.Event()
+        gate = asyncio.Event()
+
+        class HangClient:
+            def __init__(self, config):
+                self.config = config
+
+            async def connect(self):
+                pass
+
+            async def close(self):
+                pass
+
+            async def call_tool(self, name, arguments):
+                started.set()
+                await gate.wait()
+                return {"content": [], "is_error": False}
+
+        manager = MCPManager(
+            MCPConfig(servers={"hang": MCPServerConfig(name="hang", command="true", timeout=30)})
+        )
+        outcome: dict[str, Any] = {}
+        try:
+            with mock.patch.object(mgr_mod, "MCPClient", HangClient):
+                self.assertEqual(manager.connect_all(), [])
+                cancel = threading.Event()
+
+                def worker():
+                    try:
+                        manager.call_tool("hang", "t", {}, cancel_check=cancel.is_set)
+                    except Exception as e:  # noqa: BLE001 - recorded for assertions
+                        outcome["error"] = e
+
+                t = threading.Thread(target=worker, daemon=True)
+                t.start()
+                self.assertTrue(started.wait(5))
+                cancel.set()
+                t.join(5)
+                self.assertFalse(t.is_alive(), "worker thread still blocked after cancel")
+                self.assertIsInstance(outcome.get("error"), mgr_mod.MCPCallCancelled)
+        finally:
+            gate.set()
+            manager.close_all()
+
+
 @unittest.skipUnless(HAS_MCP_SDK, "requires the optional `mcp` extra")
 class TestAgentSessionMCP(unittest.TestCase):
     """AgentSession lifecycle: connect_mcp registers tools into the
@@ -695,6 +787,36 @@ class TestAgentSessionMCP(unittest.TestCase):
             self.assertEqual(failures[0][0], "ghost")
             # built-in tools keep working
             self.assertIn("Read", {spec.name for spec in session.registry.specs()})
+        finally:
+            session.close()
+
+    def test_plan_mode_blocks_mcp_tools(self):
+        """Plan mode refuses every mcp__ tool: the read-only guarantee
+        must hold even though the harness cannot inspect what an
+        external server's tool does."""
+        from python_agent_harness.models import AgentMode
+
+        session = self.make_session()
+        try:
+            failures = session.connect_mcp()
+            self.assertEqual(failures, [], failures)
+            session.plan_mode.set_mode(
+                AgentMode.PLAN,
+                {"plan": "P1", "plan-mode": "P2", "build-switch": "B"},
+            )
+            result = AgentSession.execute_tool(session, "mcp__demo__echo", {"text": "hi"})
+            self.assertIn("blocked by plan mode", result)
+            self.assertIn("MCP tools are disabled", result)
+            # the write-capable fake tool is refused the same way
+            result = AgentSession.execute_tool(session, "mcp__demo__fail", {})
+            self.assertIn("blocked by plan mode", result)
+            # back in build mode the tool runs again
+            session.plan_mode.set_mode(
+                AgentMode.BUILD,
+                {"plan": "P1", "plan-mode": "P2", "build-switch": "B"},
+            )
+            result = AgentSession.execute_tool(session, "mcp__demo__echo", {"text": "hi"})
+            self.assertEqual(result, "echo:hi")
         finally:
             session.close()
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -74,6 +75,12 @@ class SessionStore:
         self.file_path: str | None = None
         self.title_pending = False
         self._first_user_msg: str | None = None
+        # serializes save vs. apply_title: the rename must never
+        # interleave with a save's write+replace, or the conversation
+        # would split across two files (a titled stale file plus a
+        # fresh untitled one) when title generation races a new run's
+        # auto-save
+        self._io_lock = threading.Lock()
 
     # -- file naming ----------------------------------------------------------
     @staticmethod
@@ -128,30 +135,36 @@ class SessionStore:
         return "\n".join(lines)
 
     def save(self, conversation_text: str) -> str | None:
-        path = self.session_file()
-        if path is None:
-            return None
-        session_dir().mkdir(parents=True, exist_ok=True)
-        content = conversation_text.rstrip("\n") + "\n\n" + self.metadata_block() + "\n"
-        tmp = path + ".tmp"
-        Path(tmp).write_text(content, encoding="utf-8")
-        os.replace(tmp, path)
-        return path
+        # under the IO lock so a concurrent apply_title rename cannot
+        # land between the tmp write and the os.replace (see _io_lock)
+        with self._io_lock:
+            path = self.session_file()
+            if path is None:
+                return None
+            session_dir().mkdir(parents=True, exist_ok=True)
+            content = conversation_text.rstrip("\n") + "\n\n" + self.metadata_block() + "\n"
+            tmp = path + ".tmp"
+            Path(tmp).write_text(content, encoding="utf-8")
+            os.replace(tmp, path)
+            return path
 
     def apply_title(self, title: str) -> None:
         """Rename the session file to <title>_<TS>.md (never overwriting)."""
-        title = sanitize_title(title)
-        if not title:
-            return
-        if self.file_path and os.path.exists(self.file_path):
-            stamp = time.strftime("%y%m%d%H%M%S")
-            new_path = self._unique_path(f"{title}_{stamp}")
-            try:
-                os.replace(self.file_path, new_path)
-                self.file_path = str(new_path)
-            except OSError:
+        # under the IO lock: the rename must not interleave with a
+        # concurrent save's write+replace (see _io_lock)
+        with self._io_lock:
+            title = sanitize_title(title)
+            if not title:
                 return
-        self.title = title
+            if self.file_path and os.path.exists(self.file_path):
+                stamp = time.strftime("%y%m%d%H%M%S")
+                new_path = self._unique_path(f"{title}_{stamp}")
+                try:
+                    os.replace(self.file_path, new_path)
+                    self.file_path = str(new_path)
+                except OSError:
+                    return
+            self.title = title
 
     # -- restoring ---------------------------------------------------------------
     @staticmethod

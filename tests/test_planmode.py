@@ -11,6 +11,7 @@ import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs
 
 from python_agent_harness.models import AgentMode
 from python_agent_harness.planmode import PlanMode, _plan_temp_dir
+from python_agent_harness.tools.base import Tool
 
 PROMPTS = {
     "plan": "PLAN-PROMPT",
@@ -185,6 +186,52 @@ class TestPlanExitConfirm(unittest.TestCase):
             s.close()
             self.assertFalse(os.path.exists(m.group(1)))
             self.assertEqual(fs._spooled_files, [])
+
+
+class TestPlanModeMCPGuard(unittest.TestCase):
+    """Plan mode must refuse every mcp__ tool too: the harness cannot
+    verify what an external server's tool does (the README's example
+    server alone exposes write_file), so the read-only guarantee holds
+    by blocking all of them."""
+
+    class DummyMCPTool(Tool):
+        name = "mcp__server__write_file"
+
+        def run(self, args, ctx):
+            return "SHOULD NOT RUN"
+
+    def make_session(self):
+        from python_agent_harness.agent_session import AgentSession
+        from python_agent_harness.tools import default_registry
+
+        s = AgentSession(
+            project_dir="/tmp/proj",
+            client=TestPlanExitConfirm.FakeClient(),
+            model="m",
+            registry=default_registry(),
+        )
+        s.registry.register(self.DummyMCPTool())
+        return s
+
+    def test_plan_mode_blocks_mcp_tool(self):
+        s = self.make_session()
+        try:
+            s.switch_to_plan()
+            result = s.execute_tool("mcp__server__write_file", {})
+            self.assertIn("blocked by plan mode", result)
+            self.assertIn("MCP tools are disabled", result)
+            self.assertNotIn("SHOULD NOT RUN", result)
+        finally:
+            s.close()
+
+    def test_build_mode_allows_mcp_tool(self):
+        s = self.make_session()
+        try:
+            s.switch_to_plan()
+            s.switch_to_build()
+            self.assertEqual(s.execute_tool("mcp__server__write_file", {}), "SHOULD NOT RUN")
+        finally:
+            s.close()
 
 
 if __name__ == "__main__":

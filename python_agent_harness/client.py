@@ -61,6 +61,21 @@ def _retryable_status(status: int) -> bool:
     return status == 429 or status >= 500
 
 
+def _error_text(data: dict[str, Any]) -> str | None:
+    """A readable message from an API error body, if any.
+
+    Some backends return ``{"error": "message"}`` or
+    ``{"error": {"message": "..."}}`` as the JSON payload (or as a
+    mid-stream chunk); ``None`` when the payload carries no error.
+    """
+    err = data.get("error")
+    if not err:
+        return None
+    if isinstance(err, dict):
+        return str(err.get("message") or err)
+    return str(err)
+
+
 def _retry_delay(
     attempt: int,
     retry_after: str | None,
@@ -599,6 +614,12 @@ class Client:
                     data = json.loads(chunk)
                 except json.JSONDecodeError:
                     continue
+                # a 200 stream can still end in an error object
+                # (no choices); surface it instead of silently
+                # returning an empty message
+                err = _error_text(data)
+                if err:
+                    raise ApiError(f"API error: {err}")
                 if data.get("usage"):
                     u = data["usage"]
                     usage.input_tokens = int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
@@ -645,6 +666,9 @@ class Client:
                 raise RetryableApiError(message, resp.headers.get("Retry-After"))
             raise ApiError(message)
         data = resp.json()
+        err = _error_text(data)
+        if err:
+            raise ApiError(f"API error: {err}")
         u = data.get("usage")
         if u:
             usage.input_tokens = int(u.get("prompt_tokens") or u.get("input_tokens") or 0)

@@ -135,15 +135,31 @@ class MCPTool(Tool):
 
     def run(self, args: dict[str, Any], ctx: ToolContext) -> str | PendingToolResult:
         if not self._parallel:
-            return self._execute(args)
+            return self._execute(args, ctx)
         pending = PendingToolResult()
-        threading.Thread(target=lambda: pending.deliver(self._execute(args)), daemon=True).start()
+        threading.Thread(
+            target=lambda: pending.deliver(self._execute(args, ctx)),
+            daemon=True,
+        ).start()
         return pending
 
-    def _execute(self, args: dict[str, Any]) -> str:
+    def _execute(self, args: dict[str, Any], ctx: ToolContext | None) -> str:
+        # The session's cancel event is polled by the manager while the
+        # SDK call is in flight, so Ctrl-C unblocks a hung server call
+        # instead of wedging the loop thread (serial) or the background
+        # worker (parallel).
+        cancel_check = None
+        if ctx is not None:
+            event = ctx.cancel_event
+            if event is not None and hasattr(event, "is_set"):
+                cancel_check = event.is_set
         try:
             result = self._manager.call_tool(
-                self.server_name, self.mcp_name, args or {}, timeout=self._timeout
+                self.server_name,
+                self.mcp_name,
+                args or {},
+                timeout=self._timeout,
+                cancel_check=cancel_check,
             )
         except Exception as e:  # noqa: BLE001 - errors become tool results
             return f"Error: tool {self.name} failed — {e}"

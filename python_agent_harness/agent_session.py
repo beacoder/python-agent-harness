@@ -230,8 +230,14 @@ class AgentSession:
         for the TUI to render; retrieve it afterwards with
         ``take_diff(call_id)``.
         """
-        # plan-mode guard: only the plan file is writable
-        if self.plan_mode.is_plan and name in ("Write", "Edit", "Insert", "Mkdir", "Bash"):
+        # plan-mode guard: only the plan file is writable.  MCP tools
+        # are blocked too — the harness cannot verify what an external
+        # server's tool does (the README example config alone exposes
+        # write_file/create_directory), so plan mode stays read-only
+        # by refusing every mcp__ tool.
+        if self.plan_mode.is_plan and (
+            name in ("Write", "Edit", "Insert", "Mkdir", "Bash") or name.startswith("mcp__")
+        ):
             blocked = self._plan_blocked(name, args)
             if blocked:
                 return blocked
@@ -258,6 +264,12 @@ class AgentSession:
             return self._tool_diffs.pop(call_id, None)
 
     def _plan_blocked(self, name: str, args: dict[str, Any]) -> str | None:
+        if name.startswith("mcp__"):
+            return (
+                "Error: blocked by plan mode (read-only phase); "
+                "MCP tools are disabled — they may modify external state — "
+                "use Read/Glob/Grep for read-only access"
+            )
         if name == "Bash":
             return (
                 "Error: blocked by plan mode (read-only phase); "
