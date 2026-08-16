@@ -379,7 +379,7 @@ class TestAgentLoop(unittest.TestCase):
             loop._run_tool_round()
             elapsed = time.monotonic() - start
             by_id = {m.tool_call_id: m.text().strip() for m in loop.messages if m.role == "tool"}
-            self.assertEqual(by_id["b1"], "one")
+            self.assertEqual(by_id["b1"], "one\nExit code: 0")
             self.assertEqual(by_id["b2"], "file content")
             # ~0.5s if the Bash ran in the background during the Read,
             # ~0.6s+ if the Read waited for the Bash to finish
@@ -784,8 +784,8 @@ class TestAgentLoop(unittest.TestCase):
             loop._run_tool_round()
             elapsed = time.monotonic() - start
             by_id = {m.tool_call_id: m.text().strip() for m in loop.messages if m.role == "tool"}
-            self.assertEqual(by_id["b1"], "one")
-            self.assertEqual(by_id["b2"], "two")
+            self.assertEqual(by_id["b1"], "one\nExit code: 0")
+            self.assertEqual(by_id["b2"], "two\nExit code: 0")
             # ~0.5s if the subprocesses ran concurrently, ~1.0s if serialized
             self.assertLess(elapsed, 0.9)
 
@@ -2116,7 +2116,7 @@ class TestBashAsync(unittest.TestCase):
             session = RecordingSession(project_dir=tmpdir)
             result = Bash().run({"command": "echo hello"}, ToolContext(session))
             self.assertIsInstance(result, PendingToolResult)
-            self.assertEqual(result.wait().strip(), "hello")
+            self.assertEqual(result.wait(), "hello\nExit code: 0")
 
     def test_round_delivers_async_result(self):
         with tempfile.TemporaryDirectory(prefix="pah-bash-") as tmpdir:
@@ -2133,7 +2133,7 @@ class TestBashAsync(unittest.TestCase):
             ]
             loop._run_tool_round()
             by_id = {m.tool_call_id: m.text().strip() for m in loop.messages if m.role == "tool"}
-            self.assertEqual(by_id["b1"], "one")
+            self.assertEqual(by_id["b1"], "one\nExit code: 0")
             # sync sibling delivered alongside the async one
             self.assertEqual(by_id["b2"], "file content")
             self.assertEqual(

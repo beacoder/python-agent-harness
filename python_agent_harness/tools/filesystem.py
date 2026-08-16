@@ -46,10 +46,10 @@ import time
 from pathlib import Path
 from typing import TypeGuard
 
+from ..config import MAX_OUTPUT_CHARS as MAX_OUTPUT
 from ..diffrender import unified_diff
 from .base import Tool, ToolContext
 
-MAX_OUTPUT = 20_000  # spill threshold (chars), matching gptel-agent--truncate-buffer
 SPOOL_LINES = 50  # preview lines kept when results are spilled
 READ_SIZE_LIMIT = 400 * 1024  # whole-file reads above this are refused
 # (mirrors gptel-agent-read-file-size-threshold)

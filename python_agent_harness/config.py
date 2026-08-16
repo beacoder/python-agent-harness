@@ -97,6 +97,23 @@ DEFAULT_TOOLS: list[str] = [
     "Question",
 ]
 
+# ---- tool output limits --------------------------------------------------------
+# Shared cap for tool results.  Bash truncates output to a head+tail at
+# this size; Read/Glob/Grep spill results larger than this to a temp
+# file (the model then Reads the file for the full content).  One
+# definition, used by all tools, so the limits never drift apart.
+MAX_OUTPUT_CHARS = 20_000
+
+# ---- Bash tool timeout --------------------------------------------------------
+# Silence-based timeout: a command that produces no output for this
+# long (seconds) is killed (SIGTERM, then SIGKILL after 2s) and
+# reported as timed out.  Builds that keep printing are never affected
+# — only genuinely stuck commands surface.  None disables the check.
+BASH_TIMEOUT_SILENCE: float | None = 120.0
+# Optional absolute wall-clock cap (seconds): no command may run longer
+# than this regardless of output.  None disables the cap (default).
+BASH_TIMEOUT_MAX: float | None = None
+
 # ---- LLM client ----------------------------------------------------------------
 DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")

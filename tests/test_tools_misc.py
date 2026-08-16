@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -271,37 +273,34 @@ class TestAgentTool(unittest.TestCase):
 
 
 class TestBashInternals(unittest.TestCase):
-    """Bash process-group kill fallbacks and communicate-failure path."""
+    """Bash process-group kill, bounded output collection, and
+    read-failure containment."""
 
-    def test_kill_process_falls_back_to_proc_kill(self):
-        from python_agent_harness.tools.bash import _kill_process
+    def test_kill_pgid_swallows_process_lookup_error(self):
+        from python_agent_harness.tools.bash import _kill_pgid
 
-        proc = mock.Mock()
-        proc.pid = 1234
-        with (
-            mock.patch("os.getpgid", return_value=42),
-            mock.patch("os.killpg", side_effect=ProcessLookupError),
-        ):
-            _kill_process(proc)
-        proc.kill.assert_called_once()
+        with mock.patch("os.killpg", side_effect=ProcessLookupError):
+            _kill_pgid(1234)  # must not raise
 
-    def test_kill_process_swallows_kill_failure(self):
-        from python_agent_harness.tools.bash import _kill_process
+    def test_kill_pgid_swallows_kill_failure(self):
+        from python_agent_harness.tools.bash import _kill_pgid
 
-        proc = mock.Mock()
-        proc.pid = 1234
-        proc.kill.side_effect = ProcessLookupError
-        with (
-            mock.patch("os.getpgid", return_value=42),
-            mock.patch("os.killpg", side_effect=PermissionError),
-        ):
-            _kill_process(proc)  # must not raise
+        with mock.patch("os.killpg", side_effect=PermissionError):
+            _kill_pgid(1234)  # must not raise
 
-    def test_communicate_failure_delivered_as_error(self):
+    def test_kill_pgid_kills_stored_group_id(self):
+        from python_agent_harness.tools.bash import _kill_pgid
+
+        with mock.patch("os.killpg") as killpg:
+            _kill_pgid(42)
+        killpg.assert_called_once_with(42, 9)  # SIGKILL, no getpgid
+
+    def test_read_failure_delivered_as_error(self):
         from python_agent_harness.tools.bash import Bash
 
         fake = mock.Mock()
-        fake.communicate.side_effect = RuntimeError("pipe broke")
+        fake.stdout = mock.Mock()
+        fake.stdout.fileno.side_effect = RuntimeError("pipe broke")
         with mock.patch("python_agent_harness.tools.bash.subprocess.Popen", return_value=fake):
             result = Bash().run({"command": "echo hi"}, ToolContext())
         self.assertIsInstance(result, PendingToolResult)
@@ -314,15 +313,196 @@ class TestBashInternals(unittest.TestCase):
 
         from python_agent_harness.tools.bash import Bash
 
+        r_fd, w_fd = os.pipe()
         fake = mock.Mock()
-        fake.communicate.return_value = ("", None)
+        fake.pid = 4242
+        fake.stdout = os.fdopen(r_fd, "rb", buffering=0)
+        fake.poll.return_value = None
+        fake.wait.return_value = 0
         with mock.patch(
             "python_agent_harness.tools.bash.subprocess.Popen", return_value=fake
         ) as popen:
             result = Bash().run({"command": "echo hi"}, ToolContext())
+        os.close(w_fd)  # EOF: the collector breaks out promptly
         result.wait()
         kwargs = popen.call_args.kwargs
         self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertIs(kwargs["stdout"], subprocess.PIPE)
+        self.assertIs(kwargs["stderr"], subprocess.STDOUT)
+
+    def test_large_output_truncated_and_bounded(self):
+        """A >20 KB output is truncated to head + tail and the delivered
+        string stays within the cap (the old code could deliver more
+        than the input when a single line exceeded the cap)."""
+        from python_agent_harness.tools.bash import _MAX_OUTPUT, Bash
+
+        result = Bash().run({"command": "seq 1 10000"}, ToolContext())
+        out = result.wait()
+        self.assertIn("[truncated", out)
+        self.assertLess(len(out), _MAX_OUTPUT + 300)
+        self.assertTrue(out.startswith("1\n2\n"))  # head kept
+        self.assertTrue(out.endswith("9999\n10000\nExit code: 0"))  # tail kept + exit code
+
+    def test_single_giant_line_truncated(self):
+        """A single line far beyond the cap must not blow the delivered
+        size (the old code kept the whole line in the tail)."""
+        from python_agent_harness.tools.bash import _MAX_OUTPUT, Bash
+
+        result = Bash().run(
+            {"command": f"{sys.executable} -c \"print('a' * 100000)\""}, ToolContext()
+        )
+        out = result.wait()
+        self.assertIn("[truncated", out)
+        self.assertLess(len(out), _MAX_OUTPUT + 300)
+        self.assertTrue(out.startswith("a" * 100))
+
+    def test_detached_child_holding_pipe_does_not_wedge(self):
+        """A daemonized child that keeps the stdout pipe open after the
+        shell exits must not block delivery: the collector stops reading
+        shortly after the process exits instead of waiting for EOF."""
+        from python_agent_harness.tools.bash import Bash
+
+        result = Bash().run({"command": "sleep 2 & echo done"}, ToolContext())
+        start = time.monotonic()
+        out = result.wait()
+        elapsed = time.monotonic() - start
+        self.assertEqual(out, "done\nExit code: 0")
+        self.assertLess(elapsed, 5)
+
+    def test_cancel_preset_skips_spawn(self):
+        """If Ctrl-C is already pending, Bash must not spawn a process
+        that would be killed moments later — it returns the cancelled
+        error synchronously instead."""
+        from python_agent_harness.tools.bash import Bash
+
+        sess = FakeSession()
+        sess._cancel.set()
+        result = Bash().run({"command": "sleep 30"}, ToolContext(sess))
+        self.assertIsInstance(result, str)
+        self.assertEqual(result, "Error: Bash command cancelled.")
+
+    def test_cancel_actually_kills_process_group(self):
+        """Cancel must leave no orphan behind: the deliverer kills the
+        process group itself (no watcher race), so the shell and its
+        children die and are reaped."""
+        from python_agent_harness.tools.bash import Bash
+
+        with tempfile.TemporaryDirectory(prefix="pah-kill-") as d:
+            pidfile = os.path.join(d, "pid")
+            sess = FakeSession()
+            result = Bash().run({"command": f"echo $$ > {pidfile}; sleep 30"}, ToolContext(sess))
+            deadline = time.monotonic() + 3
+            while not os.path.exists(pidfile) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            with open(pidfile) as f:
+                pgid = int(f.read().strip())
+            sess._cancel.set()
+            self.assertIn("cancelled", result.wait())
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pgid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("process group survived cancel")
+
+    def test_silence_timeout_kills_and_reports(self):
+        """A command silent for the silence budget is killed (SIGTERM ->
+        SIGKILL), reported as timed out, and leaves no orphan behind."""
+        from python_agent_harness.tools import bash as bash_mod
+        from python_agent_harness.tools.bash import Bash
+
+        with tempfile.TemporaryDirectory(prefix="pah-timeout-") as d:
+            pidfile = os.path.join(d, "pid")
+            sess = FakeSession()
+            with mock.patch.object(bash_mod, "BASH_TIMEOUT_SILENCE", 0.5):
+                result = Bash().run(
+                    {"command": f"echo $$ > {pidfile}; sleep 30"}, ToolContext(sess)
+                )
+                deadline = time.monotonic() + 3
+                while not os.path.exists(pidfile) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                with open(pidfile) as f:
+                    pgid = int(f.read().strip())
+                start = time.monotonic()
+                out = result.wait()
+            self.assertIn("timed out", out)
+            self.assertIn("no output for", out)
+            self.assertLess(time.monotonic() - start, 8)
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pgid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("process group survived silence timeout")
+
+    def test_silence_timeout_activity_resets_timer(self):
+        """A command that keeps printing must NOT be killed: the silence
+        timer resets on every chunk (the long-build scenario)."""
+        from python_agent_harness.tools import bash as bash_mod
+        from python_agent_harness.tools.bash import Bash
+
+        sess = FakeSession()
+        with mock.patch.object(bash_mod, "BASH_TIMEOUT_SILENCE", 0.5):
+            result = Bash().run(
+                {
+                    "command": (
+                        f'{sys.executable} -c "import sys,time; '
+                        '[print(i, flush=True) or time.sleep(0.05) for i in range(40)]"'
+                    )
+                },
+                ToolContext(sess),
+            )
+            out = result.wait()
+        self.assertNotIn("timed out", out)
+        self.assertIn("Exit code: 0", out)
+        self.assertIn("39", out)  # full output delivered
+
+    def test_max_timeout_cap_fires_despite_output(self):
+        """BASH_TIMEOUT_MAX is an absolute ceiling: it fires even while
+        output is flowing."""
+        from python_agent_harness.tools import bash as bash_mod
+        from python_agent_harness.tools.bash import Bash
+
+        sess = FakeSession()
+        with (
+            mock.patch.object(bash_mod, "BASH_TIMEOUT_SILENCE", None),
+            mock.patch.object(bash_mod, "BASH_TIMEOUT_MAX", 1.0),
+        ):
+            result = Bash().run(
+                {
+                    "command": (
+                        f'{sys.executable} -c "import sys,time; '
+                        '[print(i, flush=True) or time.sleep(0.1) for i in range(300)]"'
+                    )
+                },
+                ToolContext(sess),
+            )
+            start = time.monotonic()
+            out = result.wait()
+        self.assertIn("timed out", out)
+        self.assertIn("maximum", out)
+        self.assertLess(time.monotonic() - start, 8)
+
+    def test_exit_code_reported(self):
+        """Normal completion appends the exit code; it survives
+        truncation (always the last line of the kept tail)."""
+        from python_agent_harness.tools.bash import Bash
+
+        self.assertTrue(
+            Bash().run({"command": "true"}, ToolContext()).wait().endswith("Exit code: 0")
+        )
+        self.assertTrue(
+            Bash().run({"command": "exit 3"}, ToolContext()).wait().endswith("Exit code: 3")
+        )
+        out = Bash().run({"command": "seq 1 100000; exit 7"}, ToolContext()).wait()
+        self.assertIn("[truncated", out)
+        self.assertTrue(out.endswith("Exit code: 7"))
 
 
 if __name__ == "__main__":
