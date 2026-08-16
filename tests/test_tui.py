@@ -58,6 +58,40 @@ class TestTui(unittest.TestCase):
         self.assertIn("file contents", out)
         self.assertIn("Todos", out)
 
+    def test_tool_result_boxed_with_marker_title(self):
+        """Tool results render as a box whose title carries the
+        ✓/✗ marker (and the elapsed time when recorded)."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="run it"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[ToolCall(id="1", name="Bash", arguments="{}", elapsed=1.26)],
+            ),
+            Message(role="tool", content="ok\n", tool_call_id="1", name="Bash"),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("✓ bash result (1.3s):", out)  # title with marker + elapsed
+        self.assertIn("ok", out)
+        # failure results get a red ✗ marker
+        buf2 = io.StringIO()
+        tui2, _ = make_tui()
+        tui2.console = Console(file=buf2, width=100, force_terminal=False)
+        tui2.session.last_messages = [
+            Message(role="user", content="run it"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[ToolCall(id="1", name="Bash", arguments="{}")],
+            ),
+            Message(role="tool", content="Error: boom", tool_call_id="1", name="Bash"),
+        ]
+        tui2.console.print(tui2._render_conversation())
+        out2 = buf2.getvalue()
+        self.assertIn("✗ bash result:", out2)
+
     def test_frame_includes_status_bar(self):
         """The full frame (used by Live and idle loop) must show the status bar."""
         tui, buf = make_tui()
@@ -525,6 +559,68 @@ class TestTui(unittest.TestCase):
         self.assertIn("Answer body.", out)
         self.assertNotIn(config.NUDGE_MESSAGE, out)
         self.assertNotIn("[FINAL CHECK]", out)
+
+    def test_dump_separates_rounds_with_rule(self):
+        """Each round after the first gets a rule separator in the
+        scrollback dump, so rounds are visually distinct."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="first round question"),
+            Message(role="assistant", content="first round answer"),
+            Message(role="user", content="second round question"),
+            Message(role="assistant", content="second round answer"),
+            Message(role="user", content="third round question"),
+            Message(role="assistant", content="third round answer"),
+        ]
+        tui._dump_conversation()
+        out = buf.getvalue()
+        self.assertIn("round 2", out)
+        self.assertIn("round 3", out)
+        self.assertIn("────", out)  # rule line
+        # rounds still render in order, content untouched
+        self.assertLess(out.index("first round question"), out.index("second round question"))
+        self.assertLess(out.index("second round question"), out.index("third round question"))
+
+    def test_dump_round_timestamp_when_recorded(self):
+        """Live rounds carry their recorded start time on the separator."""
+        import time as _time
+
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="first round"),
+            Message(role="assistant", content="a1"),
+            Message(role="user", content="second round"),
+            Message(role="assistant", content="a2"),
+        ]
+        tui._round_times = [1_700_000_000.0, 1_700_000_100.0]
+        tui._dump_conversation()
+        out = buf.getvalue()
+        expected = _time.strftime("%H:%M:%S", _time.localtime(1_700_000_100.0))
+        self.assertIn(expected, out)
+        # restored sessions have no times: separator without timestamp
+        tui2, buf2 = make_tui()
+        tui2.session.last_messages = [
+            Message(role="user", content="first round"),
+            Message(role="assistant", content="a1"),
+            Message(role="user", content="second round"),
+            Message(role="assistant", content="a2"),
+        ]
+        tui2._dump_conversation()
+        out2 = buf2.getvalue()
+        self.assertIn("round 2", out2)
+        self.assertNotIn("·", out2)
+
+    def test_dump_single_round_no_separator(self):
+        """One round dumps without any round separator."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="only round"),
+            Message(role="assistant", content="answer"),
+        ]
+        tui._dump_conversation()
+        out = buf.getvalue()
+        self.assertIn("only round", out)
+        self.assertNotIn("round 2", out)
 
     def test_live_panel_shows_only_current_round(self):
         """The live panel renders only the LATEST round (messages from
@@ -1811,6 +1907,22 @@ class TestTui(unittest.TestCase):
         with mock.patch.object(tui.prompt_session, "prompt", side_effect=KeyboardInterrupt):
             self.assertEqual(tui._read_multiline(), "")
         self.assertIn("input cancelled", buf.getvalue())
+
+    def test_read_multiline_uses_styled_prompt(self):
+        """The input prompt is a styled FormattedText carrying the short
+        model name (no org prefix), not a bare '> '."""
+        from prompt_toolkit.formatted_text import FormattedText
+
+        tui, _ = make_tui()
+        tui.session.model = "deepseek-ai/deepseek-flash-v4"
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="hello") as m:
+            self.assertEqual(tui._read_multiline(), "hello")
+        prompt = m.call_args.args[0]
+        self.assertIsInstance(prompt, FormattedText)
+        plain = "".join(text for _, text in prompt)
+        self.assertIn("deepseek-flash-v4", plain)  # short model name
+        self.assertNotIn("deepseek-ai/", plain)  # org prefix stripped
+        self.assertTrue(plain.endswith("> "))
 
     # ------------------------------------------------------------------
     # _start_agent / run loops

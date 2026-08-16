@@ -20,6 +20,7 @@ from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -409,6 +410,9 @@ class Tui:
         self._data_event = threading.Event()
         self._history_cache: list[Any] | None = None
         self._history_dirty = True
+        # wall-clock start of each agent run (one per user round), used
+        # by the end-of-run dump to timestamp the round separators
+        self._round_times: list[float] = []
         self.prompt_session: PromptSession = _make_prompt_session(
             FileHistory(_history_path()),
             SlashCompleter(lambda: str(self.session.project_dir)),
@@ -646,10 +650,17 @@ class Tui:
                 elapsed = ""
                 if call is not None and call.elapsed is not None:
                     elapsed = f" ({call.elapsed:.1f}s)"
-                row = Text(style="dim")
-                row.append(f"{marker} {name} result{elapsed}:", style=marker_style)
-                row.append(f"\n{preview}")
-                rows.append(row)
+                title = Text(f"{marker} {name} result{elapsed}:", style=marker_style)
+                rows.append(
+                    Panel(
+                        preview,
+                        title=title,
+                        box=box.ROUNDED,
+                        expand=False,
+                        padding=(0, 1),
+                        style="dim",
+                    )
+                )
                 if call is not None and call.diff:
                     rows.append(render_diff(call.diff))
         return rows
@@ -722,6 +733,17 @@ class Tui:
             budget -= est
         return kept[::-1]
 
+    def _round_time(self, round_no: int) -> str | None:
+        """Formatted HH:MM:SS start time of round N, if recorded.
+
+        Times are only known for runs that happened in THIS TUI
+        instance; restored sessions have no timestamps (None).
+        """
+        idx = round_no - 1
+        if 0 <= idx < len(self._round_times):
+            return time.strftime("%H:%M:%S", time.localtime(self._round_times[idx]))
+        return None
+
     def _dump_conversation(self) -> None:
         """Print the full conversation into the terminal scrollback.
 
@@ -730,6 +752,10 @@ class Tui:
         conversation never reaches the terminal's scrollback during a
         run.  When the run finishes, print it again as plain lines so
         the user can scroll back through everything that happened.
+
+        Each user message starts a new round; rounds after the first
+        are separated by a rule line (with the round's start time when
+        it was recorded live).
 
         Unlike the live panel, message bodies are printed UNCAPPED
         (``full=True``): the live panel tail-caps long replies to the
@@ -742,7 +768,18 @@ class Tui:
             return
         self.console.print()
         self.console.print("[dim]— full conversation —[/dim]")
+        round_no = 0
         for row in rows:
+            # a displayed user row starts a new round (injected prompts
+            # are already filtered out of the rows)
+            if isinstance(row, Markdown) and getattr(row, "markup", "").startswith("**user:**"):
+                round_no += 1
+                if round_no > 1:
+                    title = f"round {round_no}"
+                    ts = self._round_time(round_no)
+                    if ts is not None:
+                        title += f" · {ts}"
+                    self.console.rule(title, style="dim")
             self.console.print(row)
 
     def _visible_row_cap(self) -> int:
@@ -750,7 +787,7 @@ class Tui:
 
         Uses the live terminal height when known (rich reports None for
         non-terminals, e.g. tests), reserving lines for the status bar,
-        the panel borders and the input prompt.
+        the input prompt and the pinned Todos section when visible.
         """
         height = getattr(self.console, "height", None)
         if not height or height <= 0:
@@ -918,10 +955,26 @@ class Tui:
         self.question = None
         self._data_event.set()  # re-render promptly after the answer
 
+    def _input_prompt(self) -> FormattedText:
+        """Styled input prompt: short model name + caret.
+
+        Shows the model actually in use (the part after the last '/',
+        e.g. ``deepseek-ai/deepseek-flash-v4`` → ``deepseek-flash-v4``)
+        so the active model stays visible while typing.
+        """
+        model = self.session.model or ""
+        short = model.rsplit("/", 1)[-1] if "/" in model else model
+        return FormattedText(
+            [
+                ("bold cyan", f"{short} " if short else ""),
+                ("ansibrightblack", "> "),
+            ]
+        )
+
     def _read_multiline(self) -> str | None:
         try:
             with patch_stdout():
-                text = self.prompt_session.prompt("> ")
+                text = self.prompt_session.prompt(self._input_prompt())
         except EOFError:
             # Ctrl-D: quit
             return None
@@ -953,6 +1006,7 @@ class Tui:
         # the new user message will be the first mirrored row.
         self.round_start = len(self.session.last_messages or [])
         self.round_user_text = text
+        self._round_times.append(time.time())
         # A new top-level run starts here: invalidate any worker still
         # unwinding from a previous run — from this point on it is stale
         # and must never touch shared state.  Bump before clearing the
