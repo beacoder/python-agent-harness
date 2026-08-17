@@ -1009,6 +1009,10 @@ class Tui:
         self.round_user_text = text
         self._round_times.append(time.time())
         self._run_start = time.time()
+        # A new top-level run starts here: drop any todo list left over
+        # from a previous run so a finished task's todos don't stay
+        # pinned into the next task.
+        self.session.clear_todos()
         # A new top-level run starts here: invalidate any worker still
         # unwinding from a previous run — from this point on it is stale
         # and must never touch shared state.  Bump before clearing the
