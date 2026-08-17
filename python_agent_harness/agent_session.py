@@ -354,15 +354,21 @@ class AgentSession:
         if not self._skill_dir:
             return None
         skill_root = os.path.realpath(self._skill_dir)
+
+        # Guard against path traversal using the *unresolved* joined path,
+        # so legitimate symlinks that resolve outside the skill root still work.
+        def _within_root(joined: str) -> bool:
+            return os.path.abspath(joined).startswith(skill_root + os.sep)
+
         # Check subdirectory with SKILL.md (e.g. skills/cba-rules/SKILL.md)
-        p = os.path.realpath(os.path.join(skill_root, name, "SKILL.md"))
-        if p.startswith(skill_root + os.sep) and os.path.isfile(p):
-            return p
+        joined = os.path.join(skill_root, name, "SKILL.md")
+        if _within_root(joined) and os.path.isfile(os.path.realpath(joined)):
+            return os.path.realpath(joined)
         # Fallback: flat file (e.g. skills/cba-rules.md or .txt)
         for ext in (".md", ".txt"):
-            p = os.path.realpath(os.path.join(skill_root, name + ext))
-            if p.startswith(skill_root + os.sep) and os.path.isfile(p):
-                return p
+            joined = os.path.join(skill_root, name + ext)
+            if _within_root(joined) and os.path.isfile(os.path.realpath(joined)):
+                return os.path.realpath(joined)
         return None
 
     def _find_skill_dir(self) -> str | None:
