@@ -2315,6 +2315,19 @@ class TestTui(unittest.TestCase):
                 self.assertEqual(Tui._find_session_by_title("fix bugs"), dash)
                 self.assertIsNone(Tui._find_session_by_title("nothing here"))
 
+    def test_start_agent_clears_todos(self):
+        """A new top-level run drops any todo list left over from a
+        previous run so a finished task's todos don't stay pinned into
+        the next task."""
+        tui, _ = make_tui()
+        self.assertTrue(tui.session.todos)  # make_tui seeds a todo list
+        with (
+            mock.patch.object(tui, "_run_agent"),
+            mock.patch.object(tui, "_run_live", return_value=False),
+        ):
+            tui._start_agent("next task")
+        self.assertEqual(tui.session.todos, [])
+
 
 if __name__ == "__main__":
     unittest.main()
