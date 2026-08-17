@@ -25,6 +25,54 @@ def session_dir() -> Path:
     return config.SESSION_DIR / config.SESSION_SUBDIR
 
 
+# The roles the save format delimits blocks with (`**<role>**: `).
+SAVED_ROLES = ("user", "assistant", "system", "tool")
+
+
+def split_role_header(line: str) -> tuple[str, str] | None:
+    """``(role, rest)`` when LINE is a ``**role**: `` block header, else None.
+
+    The single source of truth for the save format's block delimiter:
+    the renderer escapes what this would match and the parser splits on
+    exactly what this accepts, so the two can never drift apart.
+    """
+    if not line.startswith("**") or "**: " not in line:
+        return None
+    prefix, _, rest = line.partition("**: ")
+    role = prefix.strip("*").strip()
+    return (role, rest) if role in SAVED_ROLES else None
+
+
+def _is_escapable(line: str) -> bool:
+    """Whether LINE is a block header, or an already-escaped one."""
+    return split_role_header(line.lstrip("\\")) is not None
+
+
+def escape_role_headers(body: str) -> str:
+    r"""Backslash-escape message-body lines that look like block headers.
+
+    Blocks are delimited by ``**<role>**: `` at the start of a line, so a
+    message whose own text contains such a line — the agent explaining
+    this very format, or a pasted transcript — would otherwise be split
+    into extra (and misattributed) messages on restore.  ``\**user**: ``
+    still reads as the literal text in markdown and is reversed by
+    `unescape_role_header`; already-escaped lines gain another backslash
+    so the round trip is exact at any nesting depth.
+    """
+    if "**" not in body:
+        return body
+    return "\n".join("\\" + ln if _is_escapable(ln) else ln for ln in body.split("\n"))
+
+
+def unescape_role_header(line: str) -> str:
+    r"""Reverse one level of `escape_role_headers` for a single line.
+
+    Only lines that would otherwise be read as block headers are
+    touched, so a literal ``\**note**: `` in a message survives intact.
+    """
+    return line[1:] if line.startswith("\\") and _is_escapable(line) else line
+
+
 def sanitize_title(title: str) -> str:
     """Sanitize a generated title (mirrors the elisp semantics)."""
     t = title.strip()
