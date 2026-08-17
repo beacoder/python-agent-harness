@@ -185,6 +185,30 @@ class TestFindSkill(unittest.TestCase):
             session._skill_dir = d
             self.assertIsNone(session.find_skill("nope"))
 
+    def test_symlinked_skill_dir_resolves(self):
+        """A skill dir that is a symlink pointing outside the skill root
+        must still resolve (regression for the realpath guard bug)."""
+        session = RecordingSession()
+        with (
+            tempfile.TemporaryDirectory(prefix="pah-skills-") as d,
+            tempfile.TemporaryDirectory(prefix="pah-skills-out-") as outside,
+        ):
+            sub = os.path.join(outside, "linked")
+            os.makedirs(sub)
+            with open(os.path.join(sub, "SKILL.md"), "w") as f:
+                f.write("# Linked")
+            os.symlink(sub, os.path.join(d, "linked"))
+            session._skill_dir = d
+            self.assertEqual(session.find_skill("linked"), os.path.join(sub, "SKILL.md"))
+
+    def test_traversal_skill_returns_none(self):
+        """Path traversal attempts must be rejected by the guard."""
+        session = RecordingSession()
+        with tempfile.TemporaryDirectory(prefix="pah-skills-") as d:
+            session._skill_dir = d
+            self.assertIsNone(session.find_skill("../etc"))
+            self.assertIsNone(session.find_skill("a/../../etc"))
+
 
 class TestAutoSaveDisabled(unittest.TestCase):
     def test_auto_save_skipped_when_disabled(self):
