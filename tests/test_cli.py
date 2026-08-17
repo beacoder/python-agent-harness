@@ -234,6 +234,30 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         finally:
             session.close()
 
+    def test_subagent_llm_profile_from_models_section(self):
+        """subagent_llm.profile reuses a models profile: the dedicated
+        sub-agent client is built from the profile's settings, and the
+        main client keeps the main llm settings."""
+        cfg_path = Path(self._cfg_dir.name) / "config.toml"
+        cfg_path.write_text(
+            '{"llm": {"base_url": "https://main.example/v1",'
+            ' "api_key": "sk-main", "model": "main-model"},'
+            ' "models": {"cheap": {"base_url": "https://cheap.example/v1",'
+            ' "api_key": "sk-cheap", "model": "cheap-model"}},'
+            ' "subagent_llm": {"profile": "cheap"}}',
+            encoding="utf-8",
+        )
+        session = cli.make_session(self._tmp.name, config_path=str(cfg_path))
+        try:
+            self.assertEqual(session.client.model, "main-model")
+            self.assertEqual(session.client.base_url, "https://main.example/v1")
+            self.assertIsNotNone(session.subagent_client)
+            self.assertEqual(session.subagent_client.model, "cheap-model")
+            self.assertEqual(session.subagent_client.base_url, "https://cheap.example/v1")
+            self.assertEqual(session.subagent_client.api_key, "sk-cheap")
+        finally:
+            session.close()
+
     def test_custom_commands_not_cli_subcommands(self):
         """Custom commands (e.g. explain) are TUI slash commands only —
         no CLI subcommand is registered for any of them.

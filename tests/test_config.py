@@ -287,6 +287,73 @@ class TestSubagentLlmConfig(unittest.TestCase):
         self.assertEqual(sub["model"], self.MAIN["model"])
         self.assertEqual(sub["api_key"], self.MAIN["api_key"])
 
+    def test_profile_applies_settings_from_models(self):
+        """subagent_llm.profile reuses a named models profile: its
+        settings override the main ones (and explicit subagent_llm
+        keys); keys it leaves unset still inherit main."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"llm": {"model": "big-model", "base_url": "https://main/v1",'
+                ' "reasoning_effort": "high", "temperature": 0.0},'
+                ' "models": {"cheap": {"model": "cheap-model",'
+                ' "base_url": "https://cheap/v1", "temperature": 0.7}},'
+                ' "subagent_llm": {"profile": "cheap"}}',
+                encoding="utf-8",
+            )
+            main = config.load_llm_config(p)
+            sub = config.load_subagent_llm_config(p, main=main)
+        self.assertEqual(sub["model"], "cheap-model")
+        self.assertEqual(sub["base_url"], "https://cheap/v1")
+        self.assertEqual(sub["temperature"], 0.7)
+        # keys the profile does not set inherit main
+        self.assertEqual(sub["reasoning_effort"], "high")
+
+    def test_profile_wins_over_explicit_subagent_keys(self):
+        """A referenced profile's settings take precedence over explicit
+        subagent_llm keys (same precedence as llm vs models)."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"llm": {"model": "big-model", "base_url": "https://main/v1"},'
+                ' "models": {"cheap": {"model": "cheap-model",'
+                ' "base_url": "https://cheap/v1", "temperature": 0.7}},'
+                ' "subagent_llm": {"profile": "cheap", "model": "explicit-model",'
+                ' "temperature": 0.2}}',
+                encoding="utf-8",
+            )
+            main = config.load_llm_config(p)
+            sub = config.load_subagent_llm_config(p, main=main)
+        self.assertEqual(sub["model"], "cheap-model")
+        self.assertEqual(sub["base_url"], "https://cheap/v1")
+        self.assertEqual(sub["temperature"], 0.7)
+
+    def test_profile_unknown_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"models": {"a": {"model": "m"}}, "subagent_llm": {"profile": "nope"}}',
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                config.load_subagent_llm_config(p, main=dict(self.MAIN))
+
+    def test_profile_env_still_wins(self):
+        """OPENAI_SUBAGENT_* env vars beat a referenced profile."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"models": {"cheap": {"model": "cheap-model",'
+                ' "base_url": "https://cheap/v1"}},'
+                ' "subagent_llm": {"profile": "cheap"}}',
+                encoding="utf-8",
+            )
+            main = config.load_llm_config(p)
+            os.environ["OPENAI_SUBAGENT_MODEL"] = "env-sub-model"
+            sub = config.load_subagent_llm_config(p, main=main)
+        self.assertEqual(sub["model"], "env-sub-model")
+        self.assertEqual(sub["base_url"], "https://cheap/v1")
+
 
 class TestConfigCli(unittest.TestCase):
     def setUp(self):

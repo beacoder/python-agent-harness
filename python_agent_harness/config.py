@@ -189,8 +189,12 @@ DEFAULT_MODELS: dict = {}
 # Sub-agent LLM overrides: every key defaults to None, meaning "inherit
 # the main LLM setting" (mirrors gptel-agent-harness-subagent-model /
 # -backend).  Only the keys the user actually sets differ from the main
-# agent's LLM.
+# agent's LLM.  ``profile`` references a named profile from the
+# ``models`` section: its settings are applied on top of any explicit
+# subagent_llm keys (profile wins), and unset keys still inherit the
+# main LLM settings.
 DEFAULT_SUBAGENT_LLM: dict = {
+    "profile": None,
     "base_url": None,
     "api_key": None,
     "model": None,
@@ -223,7 +227,8 @@ CONFIG_TEMPLATE = """\
     }}
   }},
   "subagent_llm": {{
-    "_comment": "Optional overrides for sub-agent (Agent tool) requests, e.g. a cheaper model. Every key is optional; unset keys inherit the main llm settings above.",
+    "_comment": "Optional overrides for sub-agent (Agent tool) requests, e.g. a cheaper model. Every key is optional; unset keys inherit the main llm settings above. Set 'profile' to a name from the 'models' section to reuse a model profile (profile settings win over explicit keys below).",
+    "profile": null,
     "base_url": null,
     "api_key": null,
     "model": null,
@@ -329,7 +334,11 @@ def load_subagent_llm_config(
     Mirrors gptel-agent-harness-subagent-model/-backend: sub-agents
     (the Agent tool) use their own LLM when configured, otherwise the
     main agent's.  Precedence: ``main`` settings < config file
-    ``subagent_llm`` object < OPENAI_SUBAGENT_* environment variables.
+    ``subagent_llm`` object < referenced ``models`` profile (when
+    ``subagent_llm.profile`` is set) < OPENAI_SUBAGENT_* environment
+    variables.  A referenced profile's keys win over explicit
+    ``subagent_llm`` keys; keys the profile leaves unset still inherit
+    the main settings.
 
     Returns a fully resolved settings dict (same keys as
     `load_llm_config`) that callers can use to build a sub-agent
@@ -352,10 +361,35 @@ def load_subagent_llm_config(
         for key in DEFAULT_SUBAGENT_LLM:
             if key in sub and sub[key] is not None:
                 overrides[key] = sub[key]
+        profile_name = overrides.get("profile")
+        if profile_name:
+            models = data.get("models") or {}
+            if not isinstance(models, dict):
+                raise ValueError(f"config file {cfg_path}: models must be an object")
+            profile = models.get(profile_name)
+            if not isinstance(profile, dict):
+                raise ValueError(
+                    f"config file {cfg_path}: subagent_llm.profile references "
+                    f"unknown models profile {profile_name!r}"
+                )
+            for key in (
+                "base_url",
+                "api_key",
+                "model",
+                "backend",
+                "temperature",
+                "max_tokens",
+                "timeout",
+                "reasoning_effort",
+                "stream",
+            ):
+                if key in profile and profile[key] is not None:
+                    overrides[key] = profile[key]
     for key, env in _SUBAGENT_ENV_OVERRIDES.items():
         val = os.environ.get(env)
         if val:
             overrides[key] = val
+    overrides.pop("profile", None)
     for key, val in overrides.items():
         if val is not None:
             main[key] = val

@@ -1381,20 +1381,16 @@ class Tui:
         self.console.print(msg)
 
     def _model_list_names(self) -> list[str]:
-        """Names shown by /model: profile names plus the current model
-        (as ``__current__``) when it is not itself a configured profile.
+        """Names shown by /model: the current model (as ``__current__``)
+        followed by every configured profile.
 
-        Used by both the listing and the numbered-selection paths so
-        the numbers always match what was displayed.
+        ``__current__`` is always present so the listing count stays
+        stable across switches, even when the active model is also a
+        configured profile.  Used by both the listing and the
+        numbered-selection paths so the numbers always match what was
+        displayed.
         """
-        names = sorted(self.session.model_profiles.keys())
-        current_model = self.session.model or ""
-        current_in_profiles = any(
-            self.session.model_profiles.get(n, {}).get("model") == current_model for n in names
-        )
-        if not current_in_profiles:
-            names.insert(0, "__current__")
-        return names
+        return ["__current__", *sorted(self.session.model_profiles.keys())]
 
     def _model_switch_by_name(self, name: str) -> None:
         """Switch to a named profile and report the outcome."""

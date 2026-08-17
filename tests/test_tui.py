@@ -2401,9 +2401,10 @@ class TestTui(unittest.TestCase):
     # ------------------------------------------------------------------
     # /model paths
     # ------------------------------------------------------------------
-    def test_model_list_includes_current_once(self):
-        """The numbered list shows the current model once: as its profile
-        entry when it is configured, else as ``__current__``."""
+    def test_model_list_always_includes_current(self):
+        """The numbered list always shows ``__current__`` first followed
+        by every profile, so the count stays stable across switches
+        even when the active model is also a configured profile."""
         tui, buf = make_tui()
         tui.session.model_profiles = {
             "deepseek": {"model": "deepseek-chat"},
@@ -2411,28 +2412,32 @@ class TestTui(unittest.TestCase):
         }
         tui.session.model = "glm-5.2"  # current model IS a profile
         names = tui._model_list_names()
-        self.assertEqual(names, ["deepseek", "glm"])
-        # current model NOT in profiles -> __current__ prepended
+        self.assertEqual(names, ["__current__", "deepseek", "glm"])
+        # current model NOT in profiles -> same stable list
         tui.session.model = "elsewhere-model"
         names = tui._model_list_names()
         self.assertEqual(names, ["__current__", "deepseek", "glm"])
 
     def test_model_numbered_selection_matches_list(self):
         """``/model N`` picks the same entry the numbered list showed:
-        when the current model is itself a profile, ``1`` selects that
-        profile, not a phantom ``__current__``."""
+        ``1`` is always ``__current__``, then profiles in order."""
         tui, buf = make_tui()
         tui.session.model_profiles = {
             "deepseek": {"model": "deepseek-chat"},
             "glm": {"model": "glm-5.2"},
         }
-        tui.session.model = "glm-5.2"  # current IS a profile (index 2)
+        tui.session.model = "glm-5.2"  # current IS a profile (index 3)
         with mock.patch.object(tui, "_model_switch_by_name") as switch:
             tui._run_model_command("1")
-        switch.assert_called_once_with("deepseek")
+        switch.assert_not_called()
+        self.assertIn("Already using this model", buf.getvalue())
         buf.truncate(0)
         with mock.patch.object(tui, "_model_switch_by_name") as switch:
             tui._run_model_command("2")
+        switch.assert_called_once_with("deepseek")
+        buf.truncate(0)
+        with mock.patch.object(tui, "_model_switch_by_name") as switch:
+            tui._run_model_command("3")
         switch.assert_called_once_with("glm")
         buf.truncate(0)
         # current NOT in profiles: 1 == __current__ (no switch), 2 == deepseek
