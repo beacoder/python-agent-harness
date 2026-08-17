@@ -6,6 +6,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Overridable non-streaming response body; None -> default "sync reply".
 NON_STREAM_RESPONSE: dict | None = None
+# Overridable SSE chunk list for streaming responses; None -> the default
+# reasoning+content+tool-call script below.
+STREAM_CHUNKS: list[dict] | None = None
 # Queue of non-streaming response bodies consumed in order; when
 # exhausted, NON_STREAM_RESPONSE / the default reply is used.
 NON_STREAM_SEQUENCE: list[dict] = []
@@ -22,6 +25,8 @@ REQUEST_BODIES: list[dict] = []
 def reset_state() -> None:
     global NON_STREAM_RESPONSE
     NON_STREAM_RESPONSE = None
+    global STREAM_CHUNKS
+    STREAM_CHUNKS = None
     NON_STREAM_SEQUENCE.clear()
     STATUS_QUEUE.clear()
     REQUEST_BODIES.clear()
@@ -45,7 +50,10 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(err)
             return
         stream = body.get("stream", False)
-        if stream:
+        if stream and STREAM_CHUNKS is not None:
+            chunks = STREAM_CHUNKS
+            data = "".join("data: " + json.dumps(c) + "\n\n" for c in chunks) + "data: [DONE]\n\n"
+        elif stream:
             chunks = [
                 {"choices": [{"delta": {"role": "assistant", "reasoning_content": "thinking"}}]},
                 {"choices": [{"delta": {"reasoning_content": " hard"}}]},
