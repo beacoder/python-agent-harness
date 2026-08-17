@@ -413,6 +413,9 @@ class Tui:
         # wall-clock start of each agent run (one per user round), used
         # by the end-of-run dump to timestamp the round separators
         self._round_times: list[float] = []
+        # wall-clock start of the current run, used to report the total
+        # time spent once the run finishes
+        self._run_start: float | None = None
         self.prompt_session: PromptSession = _make_prompt_session(
             FileHistory(_history_path()),
             SlashCompleter(lambda: str(self.session.project_dir)),
@@ -774,6 +777,11 @@ class Tui:
                         title += f" · {ts}"
                     self.console.rule(title, style="dim")
             self.console.print(row)
+        # report the total time spent on this run, mirroring the per-tool
+        # elapsed shown on tool results
+        if self._run_start is not None:
+            elapsed = time.time() - self._run_start
+            self.console.print(f"[green]✓ time spent ({elapsed:.1f}s):[/green]")
 
     def _visible_row_cap(self) -> int:
         """Max conversation rows that fit the visible terminal area.
@@ -1000,6 +1008,7 @@ class Tui:
         self.round_start = len(self.session.last_messages or [])
         self.round_user_text = text
         self._round_times.append(time.time())
+        self._run_start = time.time()
         # A new top-level run starts here: invalidate any worker still
         # unwinding from a previous run — from this point on it is stale
         # and must never touch shared state.  Bump before clearing the
