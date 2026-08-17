@@ -2,8 +2,11 @@ import unittest
 
 from python_agent_harness.session_store import (
     SessionStore,
+    escape_role_headers,
     sanitize_title,
+    split_role_header,
     title_from_filename,
+    unescape_role_header,
 )
 
 
@@ -299,6 +302,26 @@ class TestSession(unittest.TestCase):
                 self.assertEqual(SessionStore.list_sessions(), [])
             finally:
                 config.SESSION_DIR = old_dir
+
+
+class TestRoleHeaderEscaping(unittest.TestCase):
+    def test_split_role_header_only_accepts_known_roles(self):
+        self.assertEqual(split_role_header("**user**: hi"), ("user", "hi"))
+        # bold labels that are not roles are ordinary text
+        self.assertIsNone(split_role_header("**Note**: hi"))
+        self.assertIsNone(split_role_header("plain line"))
+        # an escaped header is text, not a header
+        self.assertIsNone(split_role_header("\\**user**: hi"))
+
+    def test_escape_only_touches_header_shaped_lines(self):
+        body = "**Note**: keep\n**user**: escape\nplain"
+        self.assertEqual(escape_role_headers(body), "**Note**: keep\n\\**user**: escape\nplain")
+
+    def test_escape_unescape_round_trips_at_any_depth(self):
+        for body in ("**user**: hi", "\\**user**: hi", "\\\\**tool**: hi"):
+            escaped = escape_role_headers(body)
+            self.assertIsNone(split_role_header(escaped))  # no longer a header
+            self.assertEqual(unescape_role_header(escaped), body)
 
 
 if __name__ == "__main__":
