@@ -782,11 +782,12 @@ def _fix_patch_headers(diff_text: str) -> str:
         body: list[str] = []
         while j < n and not lines[j].startswith("@@"):
             line = lines[j]
-            if line.startswith("---") or line.startswith("+++"):
-                # File header lines (--- a/file, +++ b/file) are not
-                # hunk body lines; pass them through without counting.
-                pass
-            elif line.startswith("-"):
+            if (line.startswith("---") or line.startswith("+++")) and _starts_file_section(
+                lines, j
+            ):
+                # A ---/+++ pair introducing the next file; not hunk body.
+                break
+            if line.startswith("-"):
                 orig_count += 1
             elif line.startswith("+"):
                 new_count += 1
@@ -799,6 +800,21 @@ def _fix_patch_headers(diff_text: str) -> str:
         out.extend(body)
         i = j
     return "".join(out)
+
+
+def _starts_file_section(lines: list[str], idx: int) -> bool:
+    """Whether lines[idx] begins the next file's ---/+++ header pair.
+
+    A new file section in a multi-file diff is ``--- path`` / ``+++ path``
+    immediately followed by a hunk header.  Removed/added content lines
+    whose text merely starts with ``--``/``++`` (rendered ``---``/``+++``)
+    are hunk body and must be counted; peeking for the trailing ``@@``
+    tells the two apart.
+    """
+    k = idx
+    while k < len(lines) and (lines[k].startswith("---") or lines[k].startswith("+++")):
+        k += 1
+    return k < len(lines) and lines[k].startswith("@@")
 
 
 class Insert(Tool):

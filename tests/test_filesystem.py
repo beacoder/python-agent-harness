@@ -75,6 +75,25 @@ class TestPatchHelpers(unittest.TestCase):
         self.assertIn("+++ b/x\n", fixed)
         self.assertIn("@@ -1,1 +1,2 @@", fixed)
 
+    def test_fix_patch_headers_counts_dashed_content_lines(self):
+        # Removed/added lines whose content starts with --/++ (rendered
+        # ---/+++) are hunk body, not file headers: they must be counted.
+        diff = "@@ -1,9 +1,9 @@\n a\n---removed--line\n+++added++line\n c\n"
+        fixed = _fix_patch_headers(diff)
+        self.assertIn("@@ -1,3 +1,3 @@", fixed)
+        self.assertIn("---removed--line\n", fixed)
+        self.assertIn("+++added++line\n", fixed)
+
+    def test_fix_patch_headers_multifile_headers_not_counted(self):
+        # A new file's ---/+++ header pair (followed by a hunk header) ends
+        # the previous hunk's body instead of being miscounted as content.
+        diff = "@@ -1,9 +1,9 @@\n a\n-b\n+B\n c\n--- a/f2\n+++ b/f2\n@@ -1,2 +1,2 @@\n x\n y\n"
+        fixed = _fix_patch_headers(diff)
+        self.assertIn("@@ -1,3 +1,3 @@", fixed)
+        self.assertIn("--- a/f2\n", fixed)
+        self.assertIn("+++ b/f2\n", fixed)
+        self.assertIn("@@ -1,2 +1,2 @@", fixed)
+
     def test_fix_patch_headers_passes_through_headerless_counts(self):
         # A header without explicit counts is left untouched.
         diff = "@@ -1 +1 @@\n a\n"
@@ -1111,6 +1130,21 @@ class TestEditDiffModePatch(unittest.TestCase):
             self.assertIn("Diff successfully applied", result)
             with open(path) as f:
                 self.assertEqual(f.read(), "a\nB\nc\n")
+
+    def test_dashed_content_lines_apply(self):
+        # Removed/added lines whose content starts with --/++ must be
+        # counted as hunk body (not skipped as file headers) or `patch`
+        # rejects the diff.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("a\n--removed\nzzz\nc\n")
+            ctx, _ = make_ctx()
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,9 +1,9 @@\n a\n---removed\n+++added\n c\n"
+            result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "a\n++added\nzzz\nc\n")
 
     def test_directory_multifile_diff_applies(self):
         """A directory path (with trailing slash) + a multi-file unified
