@@ -1823,7 +1823,7 @@ class TestTui(unittest.TestCase):
         with mock.patch.object(tui, "_read_multiline", return_value=None):
             tui.run()
         out = buf.getvalue()
-        self.assertIn("python-agent-harness — agent execution harness", out)
+        self.assertIn("python-agent-harness — interactive AI coding agent", out)
         self.assertIn("Commands:", out)
 
     def test_run_handles_empty_and_slash_input(self):
