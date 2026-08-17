@@ -84,6 +84,28 @@ class TestPatchHelpers(unittest.TestCase):
         self.assertIn("---removed--line\n", fixed)
         self.assertIn("+++added++line\n", fixed)
 
+    def test_fix_patch_headers_counts_dashed_line_ending_a_hunk(self):
+        # A dashed content line as the hunk's LAST body line is followed
+        # directly by the next hunk header, which looks exactly like a
+        # file header pair to a plain "peek for @@" check: it must still
+        # be counted, or the (correct) input header is rewritten wrong
+        # and `patch` rejects the whole diff.
+        diff = (
+            "@@ -2,3 +2,2 @@\n   id INT\n );\n--- old comment\n@@ -8,1 +8,1 @@\n--- tail\n+-- new\n"
+        )
+        fixed = _fix_patch_headers(diff)
+        self.assertIn("@@ -2,3 +2,2 @@", fixed)
+        self.assertIn("--- old comment\n", fixed)
+
+    def test_fix_patch_headers_counts_dashed_pair_ending_a_hunk(self):
+        # Same, for a ---/+++ pair whose content carries no space after
+        # the marker (real file headers always name a path).
+        diff = "@@ -1,3 +1,3 @@\n a\n---removed\n+++added\n@@ -20,1 +20,1 @@\n z\n"
+        fixed = _fix_patch_headers(diff)
+        self.assertIn("@@ -1,2 +1,2 @@", fixed)
+        self.assertIn("---removed\n", fixed)
+        self.assertIn("+++added\n", fixed)
+
     def test_fix_patch_headers_multifile_headers_not_counted(self):
         # A new file's ---/+++ header pair (followed by a hunk header) ends
         # the previous hunk's body instead of being miscounted as content.
@@ -1145,6 +1167,27 @@ class TestEditDiffModePatch(unittest.TestCase):
             self.assertIn("Diff successfully applied", result)
             with open(path) as f:
                 self.assertEqual(f.read(), "a\n++added\nzzz\nc\n")
+
+    def test_dashed_content_line_ending_a_hunk_applies(self):
+        # A removed line whose content starts with "--" as the LAST body
+        # line of a hunk, with a second hunk following: the header must
+        # keep its counts or `patch` rejects the diff as malformed.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "schema.sql")
+            with open(path, "w") as f:
+                f.write("CREATE TABLE t (\n  id INT\n);\n-- old comment\nSELECT 1;\n-- tail\n")
+            ctx, _ = make_ctx()
+            diff = (
+                "--- a/schema.sql\n+++ b/schema.sql\n"
+                "@@ -2,3 +2,2 @@\n   id INT\n );\n--- old comment\n"
+                "@@ -6,1 +6,1 @@\n--- tail\n+-- new tail\n"
+            )
+            result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(
+                    f.read(), "CREATE TABLE t (\n  id INT\n);\nSELECT 1;\n-- new tail\n"
+                )
 
     def test_directory_multifile_diff_applies(self):
         """A directory path (with trailing slash) + a multi-file unified
