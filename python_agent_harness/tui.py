@@ -38,7 +38,13 @@ from .agent_session import AgentSession
 from .commands import find_command
 from .diffrender import render_diff
 from .models import Message
-from .session_store import SessionStore, title_from_filename
+from .session_store import (
+    SessionStore,
+    escape_role_headers,
+    split_role_header,
+    title_from_filename,
+    unescape_role_header,
+)
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -1345,7 +1351,8 @@ class Tui:
         msgs = self.session.last_messages or []
         parts = []
         for m in msgs:
-            body = m.text()
+            # escaped: see session_store.escape_role_headers
+            body = escape_role_headers(m.text())
             if body:
                 parts.append(f"**{m.role}**: {body}")
         return "\n\n".join(parts)
@@ -1462,6 +1469,12 @@ class Tui:
         ``tool_calls``).  The following assistant reply already
         summarizes the results, so dropping them loses no essential
         context.
+
+        Body lines that merely look like a block header are escaped by
+        the renderer (see `escape_role_headers`) and unescaped here, so
+        a message quoting this format no longer splits into extra
+        messages.  Sessions saved before escaping existed can still
+        split — that ambiguity is in the file, not in this parser.
         """
         messages: list[Message] = []
         current_role: str | None = None
@@ -1469,20 +1482,19 @@ class Tui:
 
         for line in body.splitlines():
             # Check for a role header: **user**: ... or **assistant**: ...
-            if line.startswith("**") and "**: " in line:
-                prefix, _, rest = line.partition("**: ")
-                role = prefix.strip("*").strip()
-                if role in ("user", "assistant", "system", "tool"):
-                    # Save the previous block (tool blocks are dropped:
-                    # their tool_call_id/name were not persisted)
-                    if current_role is not None and current_role != "tool":
-                        content = "\n".join(current_lines).strip()
-                        if content:
-                            messages.append(Message(role=current_role, content=content))
-                    current_role = role
-                    current_lines = [rest]
-                    continue
-            current_lines.append(line)
+            header = split_role_header(line)
+            if header is not None:
+                role, rest = header
+                # Save the previous block (tool blocks are dropped:
+                # their tool_call_id/name were not persisted)
+                if current_role is not None and current_role != "tool":
+                    content = "\n".join(current_lines).strip()
+                    if content:
+                        messages.append(Message(role=current_role, content=content))
+                current_role = role
+                current_lines = [unescape_role_header(rest)]
+                continue
+            current_lines.append(unescape_role_header(line))
 
         # Don't forget the last block (tool blocks are dropped)
         if current_role is not None and current_role != "tool":
