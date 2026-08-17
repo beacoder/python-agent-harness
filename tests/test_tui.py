@@ -994,6 +994,32 @@ class TestTui(unittest.TestCase):
         self.assertEqual(roles, ["user", "assistant", "assistant"])
         self.assertNotIn("tool", roles)
 
+    def test_save_restore_round_trip_keeps_quoted_role_header(self):
+        """A body line that looks like a block header must not split the
+        message on restore: the renderer escapes it and the parser
+        unescapes it, so quoting the save format (or pasting a
+        transcript) round-trips unchanged."""
+        tui, _ = make_tui()
+        reply = "A block looks like:\n\n**user**: hello\n\nthat is the whole format."
+        tui.session.last_messages = [
+            Message(role="user", content="what does a saved session look like?"),
+            Message(role="assistant", content=reply),
+        ]
+        body = tui._conversation_text()
+        msgs = Tui._parse_saved_body(body)
+        self.assertEqual([m.role for m in msgs], ["user", "assistant"])
+        self.assertEqual(msgs[1].text(), reply)
+
+    def test_save_restore_round_trip_keeps_literal_backslash(self):
+        """An already-escaped-looking body line gains a second backslash
+        on save, so the literal text survives the round trip exactly."""
+        tui, _ = make_tui()
+        reply = "escaped in the file as:\n\n\\**user**: hello"
+        tui.session.last_messages = [Message(role="assistant", content=reply)]
+        msgs = Tui._parse_saved_body(tui._conversation_text())
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0].text(), reply)
+
     def test_parse_saved_body_drops_tool_blocks(self):
         """``**tool**:`` blocks are dropped from restored history,
         including a trailing tool block; all remaining messages must
