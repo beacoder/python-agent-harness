@@ -640,7 +640,9 @@ class Client:
                     if on_delta:
                         on_delta(delta["reasoning_content"])
                 for tc in delta.get("tool_calls") or []:
-                    self._absorb_tool_call(tc_index, tc.get("index", 0), tc, on_tool_call)
+                    self._absorb_tool_call(
+                        tc_index, self._slot_for(tc_index, tc, 0), tc, on_tool_call
+                    )
         return content_parts, reasoning_parts, tc_index
 
     def _sync_response(
@@ -703,8 +705,38 @@ class Client:
         for i, tc in enumerate(msg.get("tool_calls") or []):
             # honor an explicit index when present (some backends mirror
             # the streaming shape); position is the fallback
-            self._absorb_tool_call(tc_index, tc.get("index", i), tc, on_tool_call)
+            self._absorb_tool_call(tc_index, self._slot_for(tc_index, tc, i), tc, on_tool_call)
         return content_parts, reasoning_parts, tc_index
+
+    @staticmethod
+    def _slot_for(
+        tc_index: dict[int, dict[str, Any]],
+        tc: dict[str, Any],
+        fallback: int,
+    ) -> int:
+        """The accumulator slot for one tool-call chunk.
+
+        ``index`` is authoritative when it is a usable integer.
+        ``tc.get("index", fallback)`` is not enough: a backend may send
+        ``"index": null`` (key present, value null), and the None would
+        both land as a dict key — blowing up the final ``sorted(tc_index)``
+        with a TypeError — and merge unrelated calls into one slot.
+
+        Without a usable index the newest slot continues (a streaming
+        call's fragments arrive in order), unless the chunk carries an
+        ``id`` that differs from the one already accumulated there: that
+        marks a NEW call, and merging would splice two calls together.
+        """
+        idx = tc.get("index")
+        if isinstance(idx, int) and not isinstance(idx, bool):
+            return idx
+        if not tc_index:
+            return fallback
+        current = max(tc_index)
+        tid = tc.get("id") or ""
+        if tid and tc_index[current]["id"] and tid != tc_index[current]["id"]:
+            return current + 1
+        return current
 
     @staticmethod
     def _absorb_tool_call(
