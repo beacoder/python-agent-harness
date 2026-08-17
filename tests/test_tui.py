@@ -622,6 +622,32 @@ class TestTui(unittest.TestCase):
         self.assertIn("only round", out)
         self.assertNotIn("round 2", out)
 
+    def test_dump_reports_time_spent(self):
+        """After the last response, the total time spent on the run is
+        reported, mirroring the per-tool elapsed on tool results."""
+        import time as _time
+
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="question"),
+            Message(role="assistant", content="answer"),
+        ]
+        tui._run_start = _time.time() - 6.8
+        tui._dump_conversation()
+        out = buf.getvalue()
+        self.assertIn("✓ time spent (6.8s):", out)
+
+    def test_dump_no_time_spent_when_unrecorded(self):
+        """No run start recorded (e.g. restored session) → no indicator."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="question"),
+            Message(role="assistant", content="answer"),
+        ]
+        tui._dump_conversation()
+        out = buf.getvalue()
+        self.assertNotIn("time spent", out)
+
     def test_live_panel_shows_only_current_round(self):
         """The live panel renders only the LATEST round (messages from
         round_start on), so a second request does not replay the first
