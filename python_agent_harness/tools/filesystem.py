@@ -739,6 +739,11 @@ class Edit(Tool):
 
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+),(\d+) +\+(\d+),(\d+) @@")
+# A file section's header pair: the marker must be followed by whitespace
+# (real headers name a path), which content lines rendered ---/+++ by the
+# diff itself normally are not.
+_FILE_HEADER_OLD_RE = re.compile(r"^---[ \t]")
+_FILE_HEADER_NEW_RE = re.compile(r"^\+\+\+[ \t]")
 
 
 def _strip_diff_fence(text: str) -> str:
@@ -782,9 +787,7 @@ def _fix_patch_headers(diff_text: str) -> str:
         body: list[str] = []
         while j < n and not lines[j].startswith("@@"):
             line = lines[j]
-            if (line.startswith("---") or line.startswith("+++")) and _starts_file_section(
-                lines, j
-            ):
+            if line.startswith("---") and _starts_file_section(lines, j):
                 # A ---/+++ pair introducing the next file; not hunk body.
                 break
             if line.startswith("-"):
@@ -805,16 +808,31 @@ def _fix_patch_headers(diff_text: str) -> str:
 def _starts_file_section(lines: list[str], idx: int) -> bool:
     """Whether lines[idx] begins the next file's ---/+++ header pair.
 
-    A new file section in a multi-file diff is ``--- path`` / ``+++ path``
-    immediately followed by a hunk header.  Removed/added content lines
-    whose text merely starts with ``--``/``++`` (rendered ``---``/``+++``)
-    are hunk body and must be counted; peeking for the trailing ``@@``
-    tells the two apart.
+    A new file section in a multi-file diff is ``--- path`` immediately
+    followed by ``+++ path`` and then a hunk header.  Removed/added
+    content lines whose text merely starts with ``--``/``++`` (rendered
+    ``---``/``+++``) are hunk body and must be counted, so all three
+    parts are required:
+
+    * the ordered pair — a lone ``---``-rendered content line as a
+      hunk's LAST body line is followed directly by the next hunk
+      header, which a peek for a trailing ``@@`` alone cannot tell from
+      a file header (it silently dropped the line from the count and
+      made `patch` reject the whole diff);
+    * the space/tab after the marker — real headers carry a path
+      (``--- a/f``), content lines usually do not (``---removed``);
+    * the trailing hunk header.
+
+    A hunk whose last two body lines happen to be a removed line
+    starting with ``-- `` AND an added line starting with ``++ `` is
+    still indistinguishable from a file header pair by shape alone; it
+    stays a known (and far rarer) miscount.
     """
-    k = idx
-    while k < len(lines) and (lines[k].startswith("---") or lines[k].startswith("+++")):
-        k += 1
-    return k < len(lines) and lines[k].startswith("@@")
+    if not _FILE_HEADER_OLD_RE.match(lines[idx]):
+        return False
+    if idx + 1 >= len(lines) or not _FILE_HEADER_NEW_RE.match(lines[idx + 1]):
+        return False
+    return idx + 2 < len(lines) and lines[idx + 2].startswith("@@")
 
 
 class Insert(Tool):
