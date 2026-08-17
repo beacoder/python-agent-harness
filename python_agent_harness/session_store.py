@@ -111,6 +111,7 @@ class SessionStore:
         temperature: float | None = None,
         max_tokens: int | None = None,
         tool_names: list[str] | None = None,
+        round_times: list[float] | None = None,
     ) -> None:
         self.project_dir = project_dir
         self.model = model
@@ -123,6 +124,10 @@ class SessionStore:
         self.file_path: str | None = None
         self.title_pending = False
         self._first_user_msg: str | None = None
+        # wall-clock start times of each round, persisted in the
+        # metadata block so restored sessions keep their round
+        # timestamps (populated by the TUI on each run)
+        self.round_times: list[float] = list(round_times) if round_times else []
         # serializes save vs. apply_title: the rename must never
         # interleave with a save's write+replace, or the conversation
         # would split across two files (a titled stale file plus a
@@ -179,6 +184,9 @@ class SessionStore:
         if self.tool_names:
             names = " ".join(f'"{n}"' for n in self.tool_names)
             lines.append(f";; gptel--tool-names: ({names})")
+        if self.round_times:
+            stamps = " ".join(repr(float(t)) for t in self.round_times)
+            lines.append(f";; python-agent-harness--round-times: {stamps}")
         lines.append(";; End:")
         return "\n".join(lines)
 

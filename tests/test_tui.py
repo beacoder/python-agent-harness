@@ -968,6 +968,32 @@ class TestTui(unittest.TestCase):
         self.assertEqual([m.text() for m in tui.conversation_history], ["hello", "hi"])
         self.assertEqual([m.text() for m in tui.session.last_messages], ["hello", "hi"])
 
+    def test_restore_persists_round_timestamps(self):
+        """/restore reads the persisted round start times back into
+        ``_round_times``, so dump separators keep their timestamps."""
+        from python_agent_harness import config
+
+        tui, _ = make_tui()
+        tui.session.store.round_times = [1700000000.0, 1700000100.5]
+        with tempfile.TemporaryDirectory() as d:
+            old = config.SESSION_DIR
+            config.SESSION_DIR = __import__("pathlib").Path(d)
+            try:
+                path = tui.session.store.save(
+                    "**user**: q1\n\n**assistant**: a1\n\n**user**: q2\n\n**assistant**: a2"
+                )
+                tui._round_times = []  # simulate a fresh TUI
+                tui._run_restore(path)
+            finally:
+                config.SESSION_DIR = old
+        self.assertEqual(tui._round_times, [1700000000.0, 1700000100.5])
+        import time as _time
+
+        expected = _time.strftime("%H:%M:%S", _time.localtime(1700000100.5))
+        self.assertEqual(tui._round_time(2), expected)
+        # round times keep flowing into the restored store for resaves
+        self.assertEqual(tui.session.store.round_times, [1700000000.0, 1700000100.5])
+
     def test_restore_drops_tool_messages(self):
         """/restore of a session that used tools must not resurrect
         orphan ``tool`` messages: the saved markdown has no
@@ -1269,7 +1295,7 @@ class TestTui(unittest.TestCase):
             "/init [project] [--extra TEXT]       create/update AGENTS.md",
             "/review [project] [commit|branch|PR] review code changes",
             "/explain [project] [target]",
-            "/restore [path | title | --latest]   restore a saved session",
+            "/restore [path | title | --latest | latest]   restore a saved session",
         ):
             self.assertIn(s, out)
 
@@ -2279,6 +2305,24 @@ class TestTui(unittest.TestCase):
         self.assertIn("session.md", out)
         self.assertEqual([m.text() for m in tui.session.last_messages], ["hello", "hi"])
 
+    def test_restore_latest_keyword(self):
+        """/restore latest (no dashes) also loads the most recent session."""
+        tui, buf = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("**user**: hello\n\n**assistant**: hi")
+            with mock.patch(
+                "python_agent_harness.tui.SessionStore.latest_session",
+                return_value=path,
+            ) as latest:
+                tui._run_restore("latest")
+        latest.assert_called_once_with()
+        out = buf.getvalue()
+        self.assertIn("restored:", out)
+        self.assertIn("session.md", out)
+        self.assertEqual([m.text() for m in tui.session.last_messages], ["hello", "hi"])
+
     def test_restore_resolved_path_not_a_file(self):
         """A resolved path that is not a file reports an error."""
         tui, buf = make_tui()
@@ -2353,6 +2397,63 @@ class TestTui(unittest.TestCase):
         ):
             tui._start_agent("next task")
         self.assertEqual(tui.session.todos, [])
+
+    # ------------------------------------------------------------------
+    # /model paths
+    # ------------------------------------------------------------------
+    def test_model_list_includes_current_once(self):
+        """The numbered list shows the current model once: as its profile
+        entry when it is configured, else as ``__current__``."""
+        tui, buf = make_tui()
+        tui.session.model_profiles = {
+            "deepseek": {"model": "deepseek-chat"},
+            "glm": {"model": "glm-5.2"},
+        }
+        tui.session.model = "glm-5.2"  # current model IS a profile
+        names = tui._model_list_names()
+        self.assertEqual(names, ["deepseek", "glm"])
+        # current model NOT in profiles -> __current__ prepended
+        tui.session.model = "elsewhere-model"
+        names = tui._model_list_names()
+        self.assertEqual(names, ["__current__", "deepseek", "glm"])
+
+    def test_model_numbered_selection_matches_list(self):
+        """``/model N`` picks the same entry the numbered list showed:
+        when the current model is itself a profile, ``1`` selects that
+        profile, not a phantom ``__current__``."""
+        tui, buf = make_tui()
+        tui.session.model_profiles = {
+            "deepseek": {"model": "deepseek-chat"},
+            "glm": {"model": "glm-5.2"},
+        }
+        tui.session.model = "glm-5.2"  # current IS a profile (index 2)
+        with mock.patch.object(tui, "_model_switch_by_name") as switch:
+            tui._run_model_command("1")
+        switch.assert_called_once_with("deepseek")
+        buf.truncate(0)
+        with mock.patch.object(tui, "_model_switch_by_name") as switch:
+            tui._run_model_command("2")
+        switch.assert_called_once_with("glm")
+        buf.truncate(0)
+        # current NOT in profiles: 1 == __current__ (no switch), 2 == deepseek
+        tui.session.model = "elsewhere-model"
+        with mock.patch.object(tui, "_model_switch_by_name") as switch:
+            tui._run_model_command("1")
+        switch.assert_not_called()
+        self.assertIn("Already using this model", buf.getvalue())
+        buf.truncate(0)
+        with mock.patch.object(tui, "_model_switch_by_name") as switch:
+            tui._run_model_command("2")
+        switch.assert_called_once_with("deepseek")
+
+    def test_model_switch_by_name(self):
+        """``/model <name>`` switches via the session."""
+        tui, buf = make_tui()
+        tui.session.model_profiles = {"deepseek": {"model": "deepseek-chat"}}
+        with mock.patch.object(tui.session, "switch_model", return_value=(True, "switched")) as sw:
+            tui._run_model_command("deepseek")
+        sw.assert_called_once_with("deepseek")
+        self.assertIn("switched", buf.getvalue())
 
 
 if __name__ == "__main__":

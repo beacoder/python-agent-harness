@@ -184,6 +184,8 @@ DEFAULT_PATHS: dict = {
 # Requires the optional `mcp` extra: pip install -e ".[mcp]".
 DEFAULT_MCP: dict = {"servers": {}}
 
+DEFAULT_MODELS: dict = {}
+
 # Sub-agent LLM overrides: every key defaults to None, meaning "inherit
 # the main LLM setting" (mirrors gptel-agent-harness-subagent-model /
 # -backend).  Only the keys the user actually sets differ from the main
@@ -208,6 +210,17 @@ CONFIG_TEMPLATE = """\
     "model": "deepseek-chat",
     "reasoning_effort": "medium",
     "stream": true
+  }},
+  "models": {{
+    "_comment": "Named LLM profiles for /model switching. Each entry is a full set of LLM settings (base_url, api_key, model, etc.). Use /model in the TUI to switch at runtime.",
+    "deepseek": {{
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat"
+    }},
+    "openai": {{
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5-mini"
+    }}
   }},
   "subagent_llm": {{
     "_comment": "Optional overrides for sub-agent (Agent tool) requests, e.g. a cheaper model. Every key is optional; unset keys inherit the main llm settings above.",
@@ -401,6 +414,38 @@ def load_mcp_config(path: str | os.PathLike | None = None) -> MCPConfig:
     if not isinstance(section, dict):
         raise ValueError(f"config file {cfg_path}: mcp must be an object")
     return MCPConfig.from_dict(section.get("servers"))
+
+
+def load_models_config(path: str | os.PathLike | None = None) -> dict[str, dict]:
+    """Load named LLM profiles from the config file's ``models`` object.
+
+    Returns a dict mapping profile names to their LLM settings dicts.
+    Each profile is a partial set of DEFAULT_LLM keys (base_url, api_key,
+    model, etc.); unset keys inherit the main ``llm`` settings when the
+    profile is applied.  An empty dict when the file has no ``models``
+    section or it is empty.
+    """
+    import json
+
+    cfg_path = _config_path(path)
+    if not cfg_path.exists():
+        return {}
+    try:
+        with open(cfg_path, "rb") as f:
+            data = json.load(f)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"cannot read config file {cfg_path}: {e}") from e
+    section = data.get("models") or {}
+    if not isinstance(section, dict):
+        raise ValueError(f"config file {cfg_path}: models must be an object")
+    profiles: dict[str, dict] = {}
+    for name, val in section.items():
+        if name.startswith("_"):
+            continue
+        if not isinstance(val, dict):
+            raise ValueError(f"config file {cfg_path}: models.{name} must be an object")
+        profiles[name] = val
+    return profiles
 
 
 def mask_secret(value: str | None) -> str:

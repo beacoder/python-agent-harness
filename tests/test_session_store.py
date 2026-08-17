@@ -43,6 +43,25 @@ class TestSession(unittest.TestCase):
         stripped = SessionStore.strip_metadata(text)
         self.assertEqual(stripped.strip(), "conversation...")
 
+    def test_round_times_persisted_in_metadata(self):
+        store = SessionStore(
+            project_dir="/tmp/proj",
+            model="deepseek-v4",
+            backend="DeepSeek",
+            round_times=[1700000000.0, 1700000100.5],
+        )
+        meta = store.metadata_block()
+        self.assertIn("python-agent-harness--round-times: 1700000000.0 1700000100.5", meta)
+        text = "conversation...\n\n" + meta + "\n"
+        parsed = SessionStore.parse_metadata(text)
+        raw = parsed["python-agent-harness--round-times"]
+        times = [float(x) for x in raw.split()]
+        self.assertEqual(times, [1700000000.0, 1700000100.5])
+
+    def test_round_times_absent_when_empty(self):
+        store = SessionStore(project_dir="/tmp/proj", model="m", backend="b")
+        self.assertNotIn("round-times", store.metadata_block())
+
     def test_save_and_restore_flow(self):
         import os
         import tempfile

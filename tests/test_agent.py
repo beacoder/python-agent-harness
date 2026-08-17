@@ -29,6 +29,13 @@ class FakeClient:
         self.script = list(script)
         self.calls = []
         self.kwargs = []
+        self.base_url = "https://fake.example/v1"
+        self.api_key = None
+        self.model = "gpt-5-mini"
+        self.timeout = 600.0
+
+    def set_timeout(self, timeout):
+        self.timeout = timeout
 
     def chat(
         self,
@@ -81,7 +88,7 @@ class FakeClient:
 class RecordingSession(AgentSession):
     _test_session_dir: str | None = None
 
-    def __init__(self, project_dir="/tmp/fakeproj"):
+    def __init__(self, project_dir="/tmp/fakeproj", model_profiles=None, llm_settings=None):
         if RecordingSession._test_session_dir is None:
             import tempfile as _tf
 
@@ -94,6 +101,8 @@ class RecordingSession(AgentSession):
             client=FakeClient([]),
             model="gpt-5-mini",
             registry=default_registry(),
+            model_profiles=model_profiles or {},
+            llm_settings=llm_settings,
         )
         self.executed = []
         self.store = SessionStore(

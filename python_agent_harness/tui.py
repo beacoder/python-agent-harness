@@ -238,6 +238,7 @@ SLASH_COMMANDS = [
     "/sessions",
     "/restore",
     "/clear",
+    "/model",
     "/exit",
 ]
 
@@ -738,12 +739,14 @@ class Tui:
     def _round_time(self, round_no: int) -> str | None:
         """Formatted HH:MM:SS start time of round N, if recorded.
 
-        Times are only known for runs that happened in THIS TUI
-        instance; restored sessions have no timestamps (None).
+        Live runs record their start times here; for restored sessions
+        the times come back from the persisted session metadata
+        (``store.round_times``).
         """
         idx = round_no - 1
-        if 0 <= idx < len(self._round_times):
-            return time.strftime("%H:%M:%S", time.localtime(self._round_times[idx]))
+        times = self._round_times or self.session.store.round_times
+        if 0 <= idx < len(times):
+            return time.strftime("%H:%M:%S", time.localtime(times[idx]))
         return None
 
     def _dump_conversation(self) -> None:
@@ -1015,6 +1018,9 @@ class Tui:
         self.round_user_text = text
         self._round_times.append(time.time())
         self._run_start = time.time()
+        # keep the persisted metadata in sync so auto-save /save
+        # capture the round timestamps (restore reads them back)
+        self.session.store.round_times = list(self._round_times)
         # A new top-level run starts here: drop any todo list left over
         # from a previous run so a finished task's todos don't stay
         # pinned into the next task.
@@ -1221,15 +1227,18 @@ class Tui:
             self.session.last_messages = []
             self.session.clear_todos()
             self.console.print("[yellow]Conversation history cleared.[/yellow]")
+        elif cmd == "/model":
+            self._run_model_command(arg)
         elif cmd == "/help":
             self.console.print(
                 "/plan /build /init /review /explain /compact "
-                "/save /summary /sessions /restore /clear /exit\n"
+                "/save /summary /sessions /restore /clear /model /exit\n"
                 "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
                 "/review [project] [commit|branch|PR] review code changes\n"
                 "/explain [project] [target]          explain code\n"
                 "/sessions                            list saved sessions\n"
-                "/restore [path | title | --latest]   restore a saved session\n"
+                "/restore [path | title | --latest | latest]   restore a saved session\n"
+                "/model [name]                        switch LLM model profile\n"
                 "Ctrl-C cancels the current execution (app stays open); "
                 "Ctrl-D or /exit quits.",
                 markup=False,
@@ -1371,6 +1380,109 @@ class Tui:
             self._history_dirty = True
         self.console.print(msg)
 
+    def _model_list_names(self) -> list[str]:
+        """Names shown by /model: profile names plus the current model
+        (as ``__current__``) when it is not itself a configured profile.
+
+        Used by both the listing and the numbered-selection paths so
+        the numbers always match what was displayed.
+        """
+        names = sorted(self.session.model_profiles.keys())
+        current_model = self.session.model or ""
+        current_in_profiles = any(
+            self.session.model_profiles.get(n, {}).get("model") == current_model for n in names
+        )
+        if not current_in_profiles:
+            names.insert(0, "__current__")
+        return names
+
+    def _model_switch_by_name(self, name: str) -> None:
+        """Switch to a named profile and report the outcome."""
+        success, msg = self.session.switch_model(name)
+        if success:
+            self.console.print(f"[green]{msg}[/green]")
+            self._data_event.set()
+        else:
+            self.console.print(f"[red]{msg}[/red]")
+
+    def _run_model_command(self, arg: str) -> None:
+        """Handle /model command for switching LLM profiles."""
+        if not arg:
+            # List all models including current one
+            if not self.session.model_profiles:
+                self.console.print("[yellow]No model profiles configured.[/yellow]")
+                return
+
+            all_names = self._model_list_names()
+            current_model = self.session.model or "(unknown)"
+
+            self.console.print("\n[bold cyan]Available model profiles:[/bold cyan]")
+            for idx, name in enumerate(all_names, 1):
+                if name == "__current__":
+                    model_name = current_model
+                    base_url = self.session.client.base_url
+                    marker = " *"
+                    self.console.print(
+                        f"  [cyan]{idx})[/cyan] current{marker} — {model_name} @ {base_url}"
+                    )
+                else:
+                    profile = self.session.model_profiles[name]
+                    model_name = profile.get("model", "(inherited)")
+                    base_url = profile.get("base_url", "(inherited)")
+                    self.console.print(f"  [cyan]{idx})[/cyan] {name} — {model_name} @ {base_url}")
+
+            total_count = len(all_names)
+            self.console.print(f"\n[dim]Current: {current_model}[/dim]")
+            self.console.print(
+                f"[dim]Type a number (1-{total_count}) to switch, or enter a model name directly[/dim]\n"
+            )
+
+            # Prompt user for selection
+            try:
+                selection = input("Select model: ").strip()
+                if not selection:
+                    return
+
+                # Check if selection is a number
+                if selection.isdigit():
+                    idx = int(selection) - 1
+                    if 0 <= idx < len(all_names):
+                        selected = all_names[idx]
+                        if selected == "__current__":
+                            self.console.print("[yellow]Already using this model.[/yellow]")
+                        else:
+                            self._model_switch_by_name(selected)
+                    else:
+                        self.console.print(
+                            f"[red]Invalid selection: {selection}. Choose 1-{len(all_names)}[/red]"
+                        )
+                else:
+                    # Treat as model name
+                    self._model_switch_by_name(selection)
+            except EOFError:
+                pass
+            except KeyboardInterrupt:
+                self.console.print("\n[dim]cancelled[/dim]")
+            return
+
+        # Check if arg is a number
+        if arg.strip().isdigit():
+            all_names = self._model_list_names()
+            idx = int(arg.strip()) - 1
+            if 0 <= idx < len(all_names):
+                selected = all_names[idx]
+                if selected == "__current__":
+                    self.console.print("[yellow]Already using this model.[/yellow]")
+                else:
+                    self._model_switch_by_name(selected)
+            else:
+                self.console.print(
+                    f"[red]Invalid selection: {arg}. Choose 1-{len(all_names)}[/red]"
+                )
+            return
+        # Switch to named model
+        self._model_switch_by_name(arg)
+
     def _run_summary(self) -> None:
         """Append a summary of the conversation (tools disabled)."""
         msg = self.session.summarize_conversation()
@@ -1401,14 +1513,15 @@ class Tui:
     def _run_restore(self, arg: str) -> None:
         """Restore a saved session into the current TUI.
 
-        Usage: /restore <path>  or  /restore --latest  or  /restore <title>
+        Usage: /restore <path>  or  /restore --latest  or  /restore latest
+               or  /restore <title>
         Loads the conversation history so the user can continue from
         where they left off.  When the argument is not a file path,
         it is matched as a substring against session filenames/titles
         (case-insensitive).
         """
         path: str | None = None
-        if not arg or arg == "--latest":
+        if not arg or arg in ("--latest", "latest"):
             path = SessionStore.latest_session()
         elif os.path.isfile(arg):
             path = arg
@@ -1419,7 +1532,8 @@ class Tui:
         if not path:
             self.console.print(
                 "[yellow]no session found "
-                "(use /restore <path>, /restore <title>, or /restore --latest)[/yellow]"
+                "(use /restore <path>, /restore <title>, "
+                "/restore --latest, or /restore latest)[/yellow]"
             )
             return
         if not os.path.isfile(path):
@@ -1435,6 +1549,17 @@ class Tui:
         body = SessionStore.strip_metadata(text)
         # Rebuild conversation history from the saved markdown format
         messages = self._parse_saved_body(body)
+        # Round timestamps are persisted in the metadata block; restore
+        # them so the dump separators keep their HH:MM:SS times.
+        round_times = meta.get("python-agent-harness--round-times")
+        if round_times:
+            try:
+                self._round_times = [float(x) for x in round_times.split()]
+            except ValueError:
+                self._round_times = []
+        else:
+            self._round_times = []
+        self.session.store.round_times = list(self._round_times)
         # Update the session store to point at the restored file
         self.session.store.file_path = path
         title = title_from_filename(path)

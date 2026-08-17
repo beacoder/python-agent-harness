@@ -90,6 +90,13 @@ def make_session(
     # over the config file for the whole session, sub-agents included
     # (same precedence as the main agent's stream).
     effective_stream = settings["stream"] if stream is None else stream
+    model_profiles = config.load_models_config(config_path)
+    # Base settings for /model switching: the main llm settings as
+    # resolved at session start (incl. the CLI --model/--no-stream
+    # overrides above), so a profile's unset keys inherit these
+    # instead of values drifted by earlier switches.
+    llm_settings = dict(settings)
+    llm_settings["stream"] = effective_stream
     return AgentSession(
         project_dir=abs_project,
         client=client,
@@ -110,6 +117,9 @@ def make_session(
         context_path=paths.get("context_path"),
         skill_path=paths.get("skill_path"),
         mcp=mcp_config,
+        model_profiles=model_profiles,
+        llm_settings=llm_settings,
+        config_path=config_path,
     )
 
 
@@ -201,6 +211,16 @@ def cmd_config(args: argparse.Namespace) -> int:
         f"reasoning_effort={subagent_settings['reasoning_effort']} "
         f"stream={subagent_settings['stream']} timeout={subagent_settings['timeout']}"
     )
+    # Show model profiles for /model command
+    model_profiles = config.load_models_config(args.path)
+    if model_profiles:
+        print("models:")
+        for name, profile in sorted(model_profiles.items()):
+            model_name = profile.get("model", "(inherited)")
+            base_url = profile.get("base_url", "(inherited)")
+            print(f"  {name}: model={model_name}, base_url={base_url}")
+    else:
+        print("models: (none configured — add a 'models' section to use /model)")
     return 0
 
 

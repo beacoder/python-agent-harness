@@ -81,16 +81,32 @@ LLM settings live in a JSON config file — no environment variables required:
 ```json
 {
   "llm": {
-    "base_url": "https://api.deepseek.com/v1",
+    "base_url": "https://api.openai.com/v1",
     "api_key": "sk-...",
-    "model": "deepseek-chat",
-    "reasoning_effort": "medium",
+    "model": "gpt-5-mini",
+    "reasoning_effort": null,
     "stream": true
+  },
+  "models": {
+    "_comment": "Named LLM profiles for /model switching. Each entry is a partial set of LLM settings; unset keys inherit the main llm.",
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat",
+      "reasoning_effort": "medium"
+    },
+    "qwen": {
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen3.5-coder"
+    },
+    "kimi": {
+      "base_url": "https://api.moonshot.cn/v1",
+      "model": "kimi-k2.7"
+    }
   },
   "subagent_llm": {
     "base_url": null,
     "api_key": null,
-    "model": "deepseek-chat",
+    "model": null,
     "temperature": null,
     "max_tokens": null,
     "timeout": null,
@@ -120,6 +136,7 @@ LLM settings live in a JSON config file — no environment variables required:
 - `reasoning_effort` is passed to the API as-is (omitted when unset) — whatever your provider accepts ("low"/"medium"/"high").
 - Other optional keys: `backend`, `temperature`, `max_tokens`, `timeout`, `stream` (`true` by default; `run --no-stream` overrides on the command line).
 - `subagent_llm` configures the LLM for Agent-tool requests: every key is optional and unset keys inherit the main `llm`, so a cheaper/smaller model (or a different provider) can serve delegated work.
+- **Named model profiles** (`models` section) enable runtime switching via `/model`: each profile is a partial LLM settings dict; unset keys inherit the main `llm`. Use `/model` in the TUI to switch between providers/models without restarting.
 - `paths.context_path` / `paths.skill_path` override context/skill discovery — defaults are `<project>/contexts` or `~/.emacs.d/contexts` (skills: `<project>/skills` or `~/.emacs.d/skills`).
 - `mcp.servers` configures MCP servers (requires the `[mcp]` extra). Each server is `{transport, command, args, env, url, headers, parallel, timeout, enabled}` — `stdio` needs `command`/`args` (optionally `env` naming environment variables to pass through, e.g. `["GITHUB_TOKEN"]`); `streamable-http`/`sse` need `url` (optionally `headers`). Its tools appear as `mcp__<server>__<tool>`.
 - Precedence: code defaults < config file < `OPENAI_*` env vars (env still wins if set, but nothing is required). Sub-agent settings honor `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`, `_BACKEND`).
@@ -145,6 +162,7 @@ python-agent-harness run [project-dir]   # interactive TUI agent
 | `/sessions` | list saved sessions |
 | `/restore [path\|title\|--latest]` | restore a session (title substring match) |
 | `/clear` | start a fresh conversation |
+| `/model [name]` | switch LLM model profile (no arg: list available; with arg: switch to that profile) |
 | `/exit` | quit |
 
 Custom commands from `prompts/commands/*.md` are registered as slash commands too (TUI-only — no CLI subcommand is registered for them). Tool availability differs per command: `/init` and `/review` may use all tools except `PlanExit` (hidden for the run, including for spawned sub-agents); custom commands may use everything; `compact`/`summary` run with no tools (a one-shot `chat_sync` call, like session-title generation).

@@ -286,6 +286,18 @@ class Client:
         with contextlib.suppress(Exception):  # best effort
             old.close()
 
+    def set_timeout(self, timeout: float) -> None:
+        """Update the request timeout and recreate the HTTP pool.
+
+        The pool is created once in ``__init__`` with the initial
+        timeout, so changing the attribute alone would not affect
+        in-flight/future requests.  Recreating the pool makes the new
+        timeout apply to subsequent requests immediately (used by
+        /model switching).
+        """
+        self.timeout = timeout
+        self._reset_http()
+
     def _refresh_api_key(
         self,
         cancel_check: Callable[[], bool] | None = None,

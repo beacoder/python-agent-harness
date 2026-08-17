@@ -90,6 +90,9 @@ class AgentSession:
         skill_path: str | None = None,
         mcp: MCPConfig | None = None,
         mcp_manager: MCPManager | None = None,
+        model_profiles: dict[str, dict] | None = None,
+        llm_settings: dict | None = None,
+        config_path: str | None = None,
     ) -> None:
         self.project_dir = project_dir
         self.client = client
@@ -170,6 +173,12 @@ class AgentSession:
         self._save_error: str | None = None
         self.last_messages: list = []
         self.cancel_event = threading.Event()
+        # Named LLM profiles for runtime switching via /model command
+        self.model_profiles: dict[str, dict] = model_profiles or {}
+        # Resolved main llm settings (base for /model switching): a
+        # model profile's unset keys inherit these values, so switching
+        # between profiles never drifts settings from earlier switches.
+        self.llm_settings: dict = dict(llm_settings) if llm_settings else {}
         # Monotonic cancel identity: cancel() bumps this counter, so a
         # worker from a cancelled run can tell it was cancelled even
         # after the next run clears the shared event.
@@ -607,6 +616,76 @@ class AgentSession:
             if hasattr(c, "abort"):
                 with contextlib.suppress(Exception):  # best effort
                     c.abort()
+
+    # ------------------------------------------------------------------
+    # model switching
+    # ------------------------------------------------------------------
+    def switch_model(self, name: str) -> tuple[bool, str]:
+        """Switch to a named LLM profile.
+
+        Model-specific settings take precedence over the main ``llm``
+        config; keys the profile leaves unset inherit the main ``llm``
+        settings as resolved at session start (so switching between
+        profiles never drifts values from earlier switches).  The
+        client and session are updated in place.  Returns
+        (success, message).
+        """
+        if not self.model_profiles or name not in self.model_profiles:
+            available = (
+                ", ".join(sorted(self.model_profiles.keys()))
+                if self.model_profiles
+                else "(none configured)"
+            )
+            return False, f"unknown model: {name} (available: {available})"
+        profile = self.model_profiles[name]
+        # Effective settings: main llm config (resolved at session
+        # start) overlaid with the profile's own settings.  Profile
+        # keys that are set (not None) win; unset keys inherit the llm
+        # config, which itself falls back to the current session values
+        # for callers that don't pass llm_settings.
+        merged = dict(self.llm_settings)
+        current = {
+            "base_url": self.client.base_url,
+            "api_key": self.client.api_key,
+            "model": self.model,
+            "backend": self.backend,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "timeout": self.client.timeout,
+            "reasoning_effort": self.reasoning_effort,
+            "stream": self.stream,
+        }
+        for key, val in current.items():
+            merged.setdefault(key, val)
+        for key in (
+            "base_url",
+            "api_key",
+            "model",
+            "backend",
+            "temperature",
+            "max_tokens",
+            "timeout",
+            "reasoning_effort",
+            "stream",
+        ):
+            if key in profile and profile[key] is not None:
+                merged[key] = profile[key]
+        self.client.base_url = str(merged["base_url"]).rstrip("/")
+        self.client.api_key = merged["api_key"]
+        self.client.model = merged["model"]
+        self.model = merged["model"]
+        self.store.model = merged["model"]
+        self.backend = merged["backend"]
+        self.store.backend = merged["backend"]
+        self.temperature = merged["temperature"]
+        self.max_tokens = merged["max_tokens"]
+        if hasattr(self.client, "set_timeout"):
+            self.client.set_timeout(merged["timeout"])
+        else:
+            self.client.timeout = merged["timeout"]
+        self.reasoning_effort = merged["reasoning_effort"]
+        self.stream = merged["stream"]
+        return True, f"switched to {name} ({self.model})"
 
     # ------------------------------------------------------------------
     # direct commands: compact / summary (no agent loop)

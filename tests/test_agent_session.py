@@ -723,5 +723,242 @@ class TestClose(unittest.TestCase):
         self.assertTrue(sub.closed)
 
 
+class TestModelSwitching(unittest.TestCase):
+    """Test /model command functionality for switching between LLM profiles."""
+
+    def test_switch_model_success(self):
+        """Switching to a configured model profile updates client and session."""
+        session = RecordingSession(
+            model_profiles={
+                "deepseek": {
+                    "base_url": "https://api.deepseek.com/v1",
+                    "api_key": "sk-deepseek",
+                    "model": "deepseek-v4-flash",
+                    "temperature": 0.0,
+                },
+                "glm": {
+                    "base_url": "https://api-inference.modelscope.cn/v1",
+                    "api_key": "ms-key",
+                    "model": "ZhipuAI/GLM-5.2",
+                    "temperature": 0.0,
+                },
+            }
+        )
+        success, msg = session.switch_model("deepseek")
+        self.assertTrue(success)
+        self.assertIn("switched to deepseek", msg)
+        self.assertEqual(session.model, "deepseek-v4-flash")
+        self.assertEqual(session.client.model, "deepseek-v4-flash")
+        self.assertEqual(session.client.base_url, "https://api.deepseek.com/v1")
+        self.assertEqual(session.client.api_key, "sk-deepseek")
+
+    def test_switch_model_unknown_name_fails(self):
+        """Switching to an unknown model name returns error message."""
+        session = RecordingSession(
+            model_profiles={
+                "deepseek": {"model": "deepseek-chat"},
+                "glm": {"model": "glm-model"},
+            }
+        )
+        success, msg = session.switch_model("unknown")
+        self.assertFalse(success)
+        self.assertIn("unknown model", msg)
+        self.assertIn("deepseek", msg)
+        self.assertIn("glm", msg)
+
+    def test_switch_model_preserves_conversation_history(self):
+        """Switching models does not clear conversation history."""
+        from python_agent_harness.models import Message
+
+        session = RecordingSession(
+            model_profiles={
+                "deepseek": {"model": "deepseek-chat"},
+                "glm": {"model": "glm-model"},
+            }
+        )
+        # Add some conversation history
+        session.last_messages = [
+            Message(role="user", content="Hello"),
+            Message(role="assistant", content="Hi there!"),
+        ]
+
+        # Switch model
+        success, _ = session.switch_model("deepseek")
+        self.assertTrue(success)
+
+        # Conversation history should be preserved
+        self.assertEqual(len(session.last_messages), 2)
+        self.assertEqual(session.last_messages[0].role, "user")
+        self.assertEqual(session.last_messages[1].role, "assistant")
+
+    def test_switch_model_updates_temperature(self):
+        """Switching model updates temperature setting."""
+        session = RecordingSession(
+            model_profiles={
+                "high_temp": {"model": "test", "temperature": 0.8},
+            }
+        )
+        self.assertEqual(session.temperature, 0.0)  # default
+
+        success, _ = session.switch_model("high_temp")
+        self.assertTrue(success)
+        self.assertEqual(session.temperature, 0.8)
+
+    def test_no_model_profiles_returns_error(self):
+        """When no model profiles are configured, switch_model fails."""
+        session = RecordingSession(model_profiles={})
+        success, msg = session.switch_model("any")
+        self.assertFalse(success)
+        self.assertIn("(none configured)", msg)
+
+    def test_profile_settings_override_llm_settings(self):
+        """Profile settings take precedence over the main llm settings."""
+        session = RecordingSession(
+            model_profiles={
+                "fast": {
+                    "model": "fast-model",
+                    "temperature": 0.5,
+                    "base_url": "https://fast.example/v1",
+                },
+            },
+            llm_settings={
+                "base_url": "https://llm.example.com/v1",
+                "api_key": "llm-key",
+                "model": "base-model",
+                "backend": "OpenAI-compatible",
+                "temperature": 0.0,
+                "max_tokens": None,
+                "timeout": 600.0,
+                "reasoning_effort": None,
+                "stream": True,
+            },
+        )
+        success, _ = session.switch_model("fast")
+        self.assertTrue(success)
+        self.assertEqual(session.model, "fast-model")
+        self.assertEqual(session.client.model, "fast-model")
+        self.assertEqual(session.temperature, 0.5)
+        self.assertEqual(session.client.base_url, "https://fast.example/v1")
+        # Unset keys inherit the main llm settings, not the defaults
+        self.assertEqual(session.client.api_key, "llm-key")
+
+    def test_switch_model_unset_keys_fall_back_to_llm_settings(self):
+        """After switching, unset profile keys revert to llm settings (no drift)."""
+        session = RecordingSession(
+            model_profiles={
+                "deepseek": {"base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"},
+                "glm": {"model": "glm-5.2"},
+            },
+            llm_settings={
+                "base_url": "https://llm.example.com/v1",
+                "api_key": "llm-key",
+                "model": "base-model",
+                "backend": "OpenAI-compatible",
+                "temperature": 0.0,
+                "max_tokens": None,
+                "timeout": 600.0,
+                "reasoning_effort": None,
+                "stream": True,
+            },
+        )
+        session.switch_model("deepseek")
+        self.assertEqual(session.client.base_url, "https://api.deepseek.com/v1")
+        # glm sets no base_url -> falls back to llm settings, not deepseek's
+        success, _ = session.switch_model("glm")
+        self.assertTrue(success)
+        self.assertEqual(session.client.base_url, "https://llm.example.com/v1")
+        self.assertEqual(session.model, "glm-5.2")
+        self.assertEqual(session.client.api_key, "llm-key")
+
+    def test_switch_model_none_values_do_not_override(self):
+        """Profile keys explicitly set to None inherit llm settings."""
+        session = RecordingSession(
+            model_profiles={
+                "partial": {
+                    "model": "partial-model",
+                    "temperature": None,
+                    "stream": None,
+                    "reasoning_effort": None,
+                },
+            },
+            llm_settings={
+                "base_url": "https://llm.example.com/v1",
+                "api_key": "llm-key",
+                "model": "base-model",
+                "backend": "OpenAI-compatible",
+                "temperature": 0.7,
+                "max_tokens": 4096,
+                "timeout": 600.0,
+                "reasoning_effort": "high",
+                "stream": False,
+            },
+        )
+        success, _ = session.switch_model("partial")
+        self.assertTrue(success)
+        self.assertEqual(session.model, "partial-model")
+        # None values in the profile must inherit from llm settings
+        self.assertEqual(session.temperature, 0.7)
+        self.assertEqual(session.stream, False)
+        self.assertEqual(session.reasoning_effort, "high")
+        self.assertEqual(session.max_tokens, 4096)
+        self.assertEqual(session.client.api_key, "llm-key")
+
+    def test_switch_model_round_trip_restores_llm_settings(self):
+        """Switching profile A -> profile B restores llm settings for keys B omits."""
+        session = RecordingSession(
+            model_profiles={
+                "a": {"model": "a-model", "temperature": 0.9, "stream": False},
+                "b": {"model": "b-model"},
+            },
+            llm_settings={
+                "base_url": "https://llm.example.com/v1",
+                "api_key": "llm-key",
+                "model": "base-model",
+                "backend": "OpenAI-compatible",
+                "temperature": 0.7,
+                "max_tokens": None,
+                "timeout": 600.0,
+                "reasoning_effort": None,
+                "stream": True,
+            },
+        )
+        session.switch_model("a")
+        self.assertEqual(session.temperature, 0.9)
+        self.assertEqual(session.stream, False)
+        # b omits temperature/stream -> reverts to llm settings, not a's
+        session.switch_model("b")
+        self.assertEqual(session.model, "b-model")
+        self.assertEqual(session.temperature, 0.7)
+        self.assertEqual(session.stream, True)
+        # switch back to a: a's values apply again
+        session.switch_model("a")
+        self.assertEqual(session.temperature, 0.9)
+        self.assertEqual(session.stream, False)
+
+    def test_switch_model_updates_timeout(self):
+        """Switching to a profile with a different timeout applies it to
+        the client's HTTP pool, not just the attribute."""
+        session = RecordingSession(
+            model_profiles={
+                "slow": {"model": "slow-model", "timeout": 120.0},
+            },
+            llm_settings={
+                "base_url": "https://llm.example.com/v1",
+                "api_key": "llm-key",
+                "model": "base-model",
+                "backend": "OpenAI-compatible",
+                "temperature": 0.0,
+                "max_tokens": None,
+                "timeout": 600.0,
+                "reasoning_effort": None,
+                "stream": True,
+            },
+        )
+        self.assertEqual(session.client.timeout, 600.0)
+        success, _ = session.switch_model("slow")
+        self.assertTrue(success)
+        self.assertEqual(session.client.timeout, 120.0)
+
+
 if __name__ == "__main__":
     unittest.main()
