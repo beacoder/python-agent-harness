@@ -21,7 +21,7 @@ from .mcp.config import MCPConfig
 from .mcp.manager import MCPManager
 from .models import AgentMode
 from .planmode import PlanMode
-from .session_store import SessionStore
+from .session_store import SessionStore, escape_role_headers
 from .subagent import run_subagent
 from .token_estimator import TokenCalibrator
 from .tools import Registry, ToolContext
@@ -540,7 +540,9 @@ class AgentSession:
     def _conversation_text(self, messages: list) -> str:
         parts: list[str] = []
         for m in messages:
-            body = m.text()
+            # escaped: a body line that looks like a `**role**: ` block
+            # header would otherwise split the message on restore
+            body = escape_role_headers(m.text())
             if m.role == "assistant" and m.tool_calls:
                 calls = ", ".join(tc.name for tc in m.tool_calls)
                 body = (body + f"\n[tool calls: {calls}]").strip()
