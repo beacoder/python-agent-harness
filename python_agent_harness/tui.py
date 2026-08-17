@@ -879,7 +879,7 @@ class Tui:
                     "(or Alt+Enter) to submit. Up/Down recall history.\n\n"
                     "[dim]Type [bold]/help[/bold] for the full command reference.[/dim]"
                 ),
-                title="[bold cyan]python-agent-harness — agent execution harness[/bold cyan]",
+                title="[bold cyan]python-agent-harness — interactive AI coding agent[/bold cyan]",
                 border_style="cyan",
                 box=box.ROUNDED,
             )
