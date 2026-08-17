@@ -71,6 +71,87 @@ class TestClientStreaming(unittest.TestCase):
         )
         c.close()
 
+    def test_tool_call_null_index_does_not_merge_or_crash(self):
+        """A chunk with ``"index": null`` must neither crash nor merge.
+
+        ``dict.get("index", 0)`` only defaults when the key is ABSENT, so
+        an explicit null used to land None in the accumulator: the final
+        ``sorted(tc_index)`` then raised TypeError on the mixed int/None
+        keys.  The differing id marks a new call, so the two stay apart.
+        """
+        fake_openai_server.reset_state()
+        fake_openai_server.STREAM_CHUNKS = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "Read", "arguments": "{}"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": None,
+                                    "id": "call_2",
+                                    "function": {"name": "Grep", "arguments": "{}"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+        c = make_client()
+        try:
+            msg, _ = c.chat([Message(role="user", content="hi")])
+        finally:
+            c.close()
+            fake_openai_server.reset_state()
+        self.assertEqual(
+            [(t.id, t.name) for t in msg.tool_calls],
+            [("call_1", "Read"), ("call_2", "Grep")],
+        )
+
+    def test_tool_call_fragments_without_index_still_merge(self):
+        """Fragments of ONE call from a backend that omits ``index``
+        keep accumulating into the same slot: only a differing id (not a
+        missing index) starts a new call."""
+        fake_openai_server.reset_state()
+        fake_openai_server.STREAM_CHUNKS = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"id": "call_1", "function": {"name": "Read", "arguments": '{"a"'}}
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {"tool_calls": [{"function": {"arguments": ": 1}"}}]}}]},
+        ]
+        c = make_client()
+        try:
+            msg, _ = c.chat([Message(role="user", content="hi")])
+        finally:
+            c.close()
+            fake_openai_server.reset_state()
+        self.assertEqual(len(msg.tool_calls), 1)
+        self.assertEqual(msg.tool_calls[0].id, "call_1")
+        self.assertEqual(msg.tool_calls[0].arguments, '{"a": 1}')
+
     def test_streaming_default_sends_stream_true(self):
         """The default mode is streaming: the request body must carry
         stream=True plus stream_options requesting usage chunks."""
@@ -190,6 +271,43 @@ class TestClientNonStreaming(unittest.TestCase):
         )
         self.assertEqual(usage.input_tokens, 7)
         self.assertEqual(usage.output_tokens, 9)
+
+    def test_sync_chat_null_indices_stay_separate_calls(self):
+        """Non-streaming calls carrying ``"index": null`` must not collapse
+        into one slot: ``tc.get("index", i)`` returned None for every call,
+        splicing their ids, names and arguments into a single garbage
+        call.  The positional fallback keeps them apart."""
+        fake_openai_server.NON_STREAM_RESPONSE = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "index": None,
+                                "id": "call_1",
+                                "function": {"name": "Read", "arguments": '{"a": 1}'},
+                            },
+                            {
+                                "index": None,
+                                "id": "call_2",
+                                "function": {"name": "Grep", "arguments": '{"b": 2}'},
+                            },
+                        ],
+                    }
+                }
+            ],
+        }
+        c = make_client()
+        try:
+            msg, _ = c.chat([Message(role="user", content="hi")], stream=False)
+        finally:
+            c.close()
+        self.assertEqual(
+            [(t.id, t.name, t.arguments) for t in msg.tool_calls],
+            [("call_1", "Read", '{"a": 1}'), ("call_2", "Grep", '{"b": 2}')],
+        )
 
     def test_sync_chat_dict_arguments_normalized(self):
         """Some backends return tool-call arguments as an object rather
