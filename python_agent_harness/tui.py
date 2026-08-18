@@ -1521,9 +1521,7 @@ class Tui:
                         live.update(self._status_bar())
                         self._flush()
         except KeyboardInterrupt:
-            self.console.print(
-                "\n[dim]summary cancelled — the result may still be appended[/dim]"
-            )
+            self.console.print("\n[dim]summary cancelled — the result may still be appended[/dim]")
             self._flush()
         finally:
             self.agent_running = False
