@@ -4,6 +4,7 @@ import io
 import os
 import sys
 import tempfile
+import threading
 import unittest
 import unittest.mock as mock
 
@@ -1683,6 +1684,95 @@ class TestTui(unittest.TestCase):
             [m.text() for m in tui.conversation_history],
             [m.text() for m in summarized],
         )
+
+    def test_summary_prints_actual_summary_content(self):
+        tui, buf = make_tui()
+        summarized = [
+            Message(role="user", content="hello"),
+            Message(role="assistant", content="DONE SUMMARY TEXT"),
+        ]
+        with (
+            mock.patch.object(
+                tui.session,
+                "summarize_conversation",
+                return_value="Summary appended.",
+            ),
+            mock.patch.object(
+                tui.session,
+                "last_messages",
+                summarized,
+                create=True,
+            ),
+        ):
+            tui._run_summary()
+        self.assertIn("DONE SUMMARY TEXT", buf.getvalue())
+
+    def test_summary_resets_running_state(self):
+        tui, buf = make_tui()
+        with (
+            mock.patch.object(
+                tui.session,
+                "summarize_conversation",
+                return_value="Summary appended.",
+            ),
+            mock.patch.object(
+                tui.session,
+                "last_messages",
+                [
+                    Message(role="user", content="hello"),
+                    Message(role="assistant", content="S"),
+                ],
+                create=True,
+            ),
+        ):
+            tui._run_summary()
+        self.assertFalse(tui.agent_running)
+        self.assertEqual(tui.status, "")
+
+    def test_summary_failure_prints_error_and_resets_state(self):
+        tui, buf = make_tui()
+        with mock.patch.object(
+            tui.session,
+            "summarize_conversation",
+            side_effect=RuntimeError("boom"),
+        ):
+            tui._run_summary()
+        self.assertIn("Summary failed: boom", buf.getvalue())
+        self.assertFalse(tui.agent_running)
+        self.assertEqual(tui.status, "")
+
+    def test_summary_renders_status_bar_while_running(self):
+        tui, buf = make_tui()
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_summarize():
+            started.set()
+            release.wait(2)
+            return "Summary appended."
+
+        with (
+            mock.patch.object(
+                tui.session,
+                "summarize_conversation",
+                side_effect=slow_summarize,
+            ),
+            mock.patch.object(
+                tui.session,
+                "last_messages",
+                [
+                    Message(role="user", content="hello"),
+                    Message(role="assistant", content="S"),
+                ],
+                create=True,
+            ),
+        ):
+            run_thread = threading.Thread(target=tui._run_summary, daemon=True)
+            run_thread.start()
+            self.assertTrue(started.wait(2))
+            release.set()
+            run_thread.join(2)
+        self.assertIn("summarizing", buf.getvalue())
 
     # ------------------------------------------------------------------
     # key-binding handlers (Tab / Shift+Tab with an open completion menu)

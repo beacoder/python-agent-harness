@@ -1480,13 +1480,66 @@ class Tui:
         self._model_switch_by_name(arg)
 
     def _run_summary(self) -> None:
-        """Append a summary of the conversation (tools disabled)."""
-        msg = self.session.summarize_conversation()
-        # A successful summary appended to the shared conversation: keep
-        # the TUI's own history in sync (no-op when nothing changed).
+        """Append a summary of the conversation (tools disabled).
+
+        The summary request is synchronous (non-streaming), so it runs
+        in a worker thread like the agent loop: the main thread keeps
+        rendering the status bar / spinner while the request is in
+        flight, and the result is printed when it lands.
+        """
+        self.status = " ⏳ summarizing"
+        self._current_tool = ""
+        self.agent_running = True
+        self._data_event.clear()
+        result: dict[str, str] = {}
+
+        def worker() -> None:
+            try:
+                result["msg"] = self.session.summarize_conversation()
+            except Exception as e:  # noqa: BLE001 - surfaced to the user
+                result["msg"] = f"Summary failed: {e}"
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        try:
+            if self.console.is_dumb_terminal:
+                while thread.is_alive():
+                    self._data_event.wait(timeout=0.1)
+                    self._data_event.clear()
+                    self.console.print(self._status_bar())
+                    self._flush()
+            else:
+                with Live(
+                    self._status_bar(),
+                    console=self.console,
+                    refresh_per_second=30,
+                    screen=False,
+                ) as live:
+                    while thread.is_alive():
+                        self._data_event.wait(timeout=0.1)
+                        self._data_event.clear()
+                        live.update(self._status_bar())
+                        self._flush()
+        except KeyboardInterrupt:
+            self.console.print(
+                "\n[dim]summary cancelled — the result may still be appended[/dim]"
+            )
+            self._flush()
+        finally:
+            self.agent_running = False
+            self.status = ""
+            self._data_event.set()
+        msg = result.get("msg", "Summary failed: unknown error.")
         self.conversation_history = list(self.session.last_messages)
         self._history_dirty = True
-        self.console.print(msg)
+        if msg == "Summary appended.":
+            last_msg = self.session.last_messages[-1]
+            if last_msg.role == "assistant" and last_msg.content:
+                self.console.print(last_msg.content)
+            else:
+                self.console.print(msg)
+        else:
+            self.console.print(msg)
 
     def _run_sessions(self) -> None:
         """List saved sessions with metadata."""
