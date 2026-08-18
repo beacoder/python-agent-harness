@@ -21,6 +21,7 @@ from .mcp.config import MCPConfig
 from .mcp.manager import MCPManager
 from .models import AgentMode
 from .planmode import PlanMode
+from .prompts import index_skills
 from .session_store import SessionStore, escape_role_headers
 from .subagent import run_subagent
 from .token_estimator import TokenCalibrator
@@ -194,6 +195,9 @@ class AgentSession:
         # owns the session and may salvage its partial history.
         self.run_generation = 0
         self._skill_dir = self._find_skill_dir()
+        # (skill_dir, index) cache: rebuilt whenever the resolved skill
+        # directory changes (tests swap _skill_dir after construction)
+        self._skill_index_cache: tuple[str | None, dict[str, tuple[str, str]]] | None = None
 
         # TUI hooks (overridden by the UI)
         self.on_delta: Callable[[str], None] | None = None
@@ -363,25 +367,26 @@ class AgentSession:
         self.notify("todos")
 
     def find_skill(self, name: str) -> str | None:
+        """Resolve a skill by its frontmatter ``name`` (opencode-style).
+
+        The skill index is built from every ``SKILL.md`` under the skill
+        directory, keyed by the ``name`` in each file's frontmatter —
+        the same names advertised in the system prompt — so directory
+        names never matter and path-traversal inputs are inert (lookup
+        is a plain dict hit against scanned paths only).
+        """
         if not self._skill_dir:
             return None
-        skill_root = os.path.realpath(self._skill_dir)
+        index = self._skill_index()
+        hit = index.get(name)
+        return hit[0] if hit else None
 
-        # Guard against path traversal using the *unresolved* joined path,
-        # so legitimate symlinks that resolve outside the skill root still work.
-        def _within_root(joined: str) -> bool:
-            return os.path.abspath(joined).startswith(skill_root + os.sep)
-
-        # Check subdirectory with SKILL.md (e.g. skills/cba-rules/SKILL.md)
-        joined = os.path.join(skill_root, name, "SKILL.md")
-        if _within_root(joined) and os.path.isfile(os.path.realpath(joined)):
-            return os.path.realpath(joined)
-        # Fallback: flat file (e.g. skills/cba-rules.md or .txt)
-        for ext in (".md", ".txt"):
-            joined = os.path.join(skill_root, name + ext)
-            if _within_root(joined) and os.path.isfile(os.path.realpath(joined)):
-                return os.path.realpath(joined)
-        return None
+    def _skill_index(self) -> dict[str, tuple[str, str]]:
+        """Return the cached name -> (path, description) skill index."""
+        key = self._skill_dir
+        if self._skill_index_cache is None or self._skill_index_cache[0] != key:
+            self._skill_index_cache = (key, index_skills(key))
+        return self._skill_index_cache[1]
 
     def _find_skill_dir(self) -> str | None:
         return find_skill_dir(self.project_dir, self._configured_skill_path)

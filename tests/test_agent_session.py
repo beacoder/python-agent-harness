@@ -150,25 +150,53 @@ class TestPlanModeGuard(unittest.TestCase):
 
 
 class TestFindSkill(unittest.TestCase):
-    """find_skill resolves SKILL.md subdirectories, flat files, and
-    None when the skill is absent or no skill dir is configured."""
+    """find_skill resolves SKILL.md files by their frontmatter name
+    (opencode-style): the directory name is irrelevant, and flat files
+    without frontmatter are not skills."""
 
     def test_no_skill_dir_returns_none(self):
         session = RecordingSession()
         session._skill_dir = None
         self.assertIsNone(session.find_skill("anything"))
 
-    def test_subdirectory_skill_md(self):
+    def test_skill_found_by_frontmatter_name(self):
         session = RecordingSession()
         with tempfile.TemporaryDirectory(prefix="pah-skills-") as d:
             sub = os.path.join(d, "rules")
             os.makedirs(sub)
             with open(os.path.join(sub, "SKILL.md"), "w") as f:
-                f.write("# Rules")
+                f.write("---\nname: my-rules\ndescription: rules\n---\n# Rules")
             session._skill_dir = d
-            self.assertEqual(session.find_skill("rules"), os.path.join(sub, "SKILL.md"))
+            self.assertEqual(session.find_skill("my-rules"), os.path.join(sub, "SKILL.md"))
 
-    def test_flat_skill_file(self):
+    def test_frontmatter_name_differs_from_directory_name(self):
+        """Regression test: the advertised name (frontmatter) must
+        resolve even when the directory name differs (e.g.
+        skills/weather-forecaster/SKILL.md with name 天气预报助手)."""
+        session = RecordingSession()
+        with tempfile.TemporaryDirectory(prefix="pah-skills-") as d:
+            sub = os.path.join(d, "weather-forecaster")
+            os.makedirs(sub)
+            with open(os.path.join(sub, "SKILL.md"), "w") as f:
+                f.write("---\nname: 天气预报助手\n---\n# body")
+            session._skill_dir = d
+            self.assertEqual(
+                session.find_skill("天气预报助手"), os.path.join(sub, "SKILL.md")
+            )
+
+    def test_nested_skill_dir_discovered(self):
+        session = RecordingSession()
+        with tempfile.TemporaryDirectory(prefix="pah-skills-") as d:
+            nested = os.path.join(d, "a", "b", "deep")
+            os.makedirs(nested)
+            with open(os.path.join(nested, "SKILL.md"), "w") as f:
+                f.write("---\nname: deep-skill\n---\nbody")
+            session._skill_dir = d
+            self.assertEqual(session.find_skill("deep-skill"), os.path.join(nested, "SKILL.md"))
+
+    def test_flat_file_without_frontmatter_returns_none(self):
+        """Flat files (skills/style.md) are no longer resolvable: only
+        SKILL.md files with a frontmatter name are skills."""
         session = RecordingSession()
         with tempfile.TemporaryDirectory(prefix="pah-skills-") as d:
             with open(os.path.join(d, "style.md"), "w") as f:
@@ -176,8 +204,8 @@ class TestFindSkill(unittest.TestCase):
             with open(os.path.join(d, "extra.txt"), "w") as f:
                 f.write("txt")
             session._skill_dir = d
-            self.assertEqual(session.find_skill("style"), os.path.join(d, "style.md"))
-            self.assertEqual(session.find_skill("extra"), os.path.join(d, "extra.txt"))
+            self.assertIsNone(session.find_skill("style"))
+            self.assertIsNone(session.find_skill("extra"))
 
     def test_missing_skill_returns_none(self):
         session = RecordingSession()
@@ -187,7 +215,7 @@ class TestFindSkill(unittest.TestCase):
 
     def test_symlinked_skill_dir_resolves(self):
         """A skill dir that is a symlink pointing outside the skill root
-        must still resolve (regression for the realpath guard bug)."""
+        must still resolve (the index scans with symlinks enabled)."""
         session = RecordingSession()
         with (
             tempfile.TemporaryDirectory(prefix="pah-skills-") as d,
@@ -196,13 +224,14 @@ class TestFindSkill(unittest.TestCase):
             sub = os.path.join(outside, "linked")
             os.makedirs(sub)
             with open(os.path.join(sub, "SKILL.md"), "w") as f:
-                f.write("# Linked")
+                f.write("---\nname: linked-skill\n---\n# Linked")
             os.symlink(sub, os.path.join(d, "linked"))
             session._skill_dir = d
-            self.assertEqual(session.find_skill("linked"), os.path.join(sub, "SKILL.md"))
+            self.assertEqual(session.find_skill("linked-skill"), os.path.join(sub, "SKILL.md"))
 
     def test_traversal_skill_returns_none(self):
-        """Path traversal attempts must be rejected by the guard."""
+        """Path-traversal inputs are inert: lookup only matches names in
+        the scanned index."""
         session = RecordingSession()
         with tempfile.TemporaryDirectory(prefix="pah-skills-") as d:
             session._skill_dir = d

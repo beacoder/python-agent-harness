@@ -10,6 +10,7 @@ conversation and resume with the last user request).
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -55,31 +56,56 @@ def _parse_skill_frontmatter(skill_file: Path) -> tuple[str, str] | None:
     return None
 
 
+def index_skills(skill_dir: Path | str | None) -> dict[str, tuple[str, str]]:
+    """Index skills by their frontmatter ``name``.
+
+    Mirrors opencode's skill service: recursively scan *skill_dir* for
+    ``SKILL.md`` files (following symlinks), parse each file's YAML
+    frontmatter, and return a mapping of frontmatter ``name`` to
+    ``(path, description)``.  Files without a frontmatter ``name`` are
+    skipped, so the advertised listing and the lookup index always agree
+    on the same names.  Duplicate names keep the last file in
+    sorted-path order (deterministic, like opencode's overwrite).
+    """
+    if not skill_dir:
+        return {}
+    root = Path(skill_dir)
+    if not root.is_dir():
+        return {}
+    skills: dict[str, tuple[str, str]] = {}
+    visited: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        real = os.path.realpath(dirpath)
+        if real in visited:
+            dirnames[:] = []
+            continue
+        visited.add(real)
+        dirnames[:] = [
+            d for d in dirnames if os.path.realpath(os.path.join(dirpath, d)) not in visited
+        ]
+        if "SKILL.md" not in filenames:
+            continue
+        path = os.path.realpath(os.path.join(dirpath, "SKILL.md"))
+        parsed = _parse_skill_frontmatter(Path(path))
+        if parsed:
+            name, desc = parsed
+            skills[name] = (path, desc)
+    return dict(sorted(skills.items()))
+
+
 def discover_skills(skill_dir: Path | str | None) -> str:
     """Build a skill listing from a skill directory.
 
-    Looks for subdirectories containing SKILL.md with frontmatter
-    (name/description).  Returns a formatted listing string, or the
-    static fallback if no skills are found.
+    Recursively indexes ``SKILL.md`` files by their frontmatter
+    name/description (same index the Skill tool resolves against).
+    Returns a formatted listing string, or the static fallback if no
+    skills are found.
     """
-    if not skill_dir:
-        return _SKILLS_FALLBACK
-    d = Path(skill_dir)
-    if not d.is_dir():
-        return _SKILLS_FALLBACK
-    entries: list[tuple[str, str]] = []
-    for child in sorted(d.iterdir()):
-        if not child.is_dir():
-            continue
-        skill_file = child / "SKILL.md"
-        if skill_file.is_file():
-            parsed = _parse_skill_frontmatter(skill_file)
-            if parsed:
-                entries.append(parsed)
-    if not entries:
+    skills = index_skills(skill_dir)
+    if not skills:
         return _SKILLS_FALLBACK
     lines = ["<available-skills>"]
-    for name, desc in entries:
+    for name, (_, desc) in skills.items():
         lines.append("  <skill>")
         lines.append(f"    <name>{name}</name>")
         lines.append(f"    <description>{desc}</description>")

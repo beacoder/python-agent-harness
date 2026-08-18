@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,7 @@ from python_agent_harness.prompts import (
     _SKILLS_FALLBACK,
     _parse_skill_frontmatter,
     discover_skills,
+    index_skills,
     last_user_request,
     load_agent_prompt,
     load_context_files,
@@ -148,6 +150,75 @@ class TestDiscoverSkills(unittest.TestCase):
         self.assertIn("<description>does alpha</description>", listing)
         self.assertIn("<name>beta-skill</name>", listing)
         self.assertIn("</available-skills>", listing)
+
+    def test_nested_skill_discovered(self):
+        """SKILL.md files at any depth are discovered (opencode-style)."""
+        with tempfile.TemporaryDirectory() as d:
+            nested = Path(d) / "a" / "b" / "deep"
+            nested.mkdir(parents=True)
+            (nested / "SKILL.md").write_text(
+                "---\nname: deep-skill\ndescription: nested\n---\nbody",
+                encoding="utf-8",
+            )
+            listing = discover_skills(d)
+        self.assertIn("<name>deep-skill</name>", listing)
+        self.assertIn("<description>nested</description>", listing)
+
+    def test_duplicate_names_last_in_sorted_path_wins(self):
+        """Duplicate frontmatter names keep the last file in sorted-path
+        order (deterministic, mirroring opencode's overwrite)."""
+        with tempfile.TemporaryDirectory() as d:
+            for sub in ("a-first", "z-last"):
+                p = Path(d) / sub
+                p.mkdir()
+                (p / "SKILL.md").write_text(
+                    f"---\nname: dup-skill\ndescription: {sub}\n---\nbody",
+                    encoding="utf-8",
+                )
+            index = index_skills(d)
+            self.assertEqual(len(index), 1)
+            self.assertEqual(index["dup-skill"][1], "z-last")
+
+
+class TestIndexSkills(unittest.TestCase):
+    def test_none_dir_returns_empty(self):
+        self.assertEqual(index_skills(None), {})
+
+    def test_missing_dir_returns_empty(self):
+        self.assertEqual(index_skills("/nonexistent/skills"), {})
+
+    def test_index_keyed_by_frontmatter_name(self):
+        """Directory names are irrelevant: the key is the frontmatter
+        name (the mismatched-dir-name bug)."""
+        with tempfile.TemporaryDirectory() as d:
+            sub = Path(d) / "weather-forecaster"
+            sub.mkdir()
+            skill = sub / "SKILL.md"
+            skill.write_text(
+                "---\nname: 天气预报助手\ndescription: does things\n---\nbody",
+                encoding="utf-8",
+            )
+            index = index_skills(d)
+            self.assertEqual(index, {"天气预报助手": (str(skill), "does things")})
+
+    def test_no_frontmatter_name_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            sub = Path(d) / "sub"
+            sub.mkdir()
+            (sub / "SKILL.md").write_text("# no frontmatter", encoding="utf-8")
+            self.assertEqual(index_skills(d), {})
+
+    def test_symlinked_skill_dir_indexed(self):
+        with (
+            tempfile.TemporaryDirectory() as d,
+            tempfile.TemporaryDirectory(prefix="pah-skills-out-") as outside,
+        ):
+            sub = Path(outside) / "linked"
+            sub.mkdir()
+            skill = sub / "SKILL.md"
+            skill.write_text("---\nname: linked-skill\n---\nbody", encoding="utf-8")
+            os.symlink(sub, Path(d) / "linked")
+            self.assertEqual(index_skills(d)["linked-skill"][0], str(skill))
 
 
 class TestLoadContextFiles(unittest.TestCase):
