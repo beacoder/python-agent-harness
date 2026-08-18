@@ -180,9 +180,7 @@ class TestFindSkill(unittest.TestCase):
             with open(os.path.join(sub, "SKILL.md"), "w") as f:
                 f.write("---\nname: 天气预报助手\n---\n# body")
             session._skill_dir = d
-            self.assertEqual(
-                session.find_skill("天气预报助手"), os.path.join(sub, "SKILL.md")
-            )
+            self.assertEqual(session.find_skill("天气预报助手"), os.path.join(sub, "SKILL.md"))
 
     def test_nested_skill_dir_discovered(self):
         session = RecordingSession()
