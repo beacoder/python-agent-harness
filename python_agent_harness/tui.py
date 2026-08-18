@@ -25,6 +25,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich import box
+from rich.cells import cell_len
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
@@ -498,7 +499,7 @@ class Tui:
         self._data_event.set()
 
     def _on_log(self, msg: str) -> None:
-        self.status = f" {msg[:60]}"
+        self.status = f" {msg}"
 
     def _ui_confirm(self, prompt: str) -> bool:
         """PlanExit confirmation: same look as the Question tool, but a
@@ -861,8 +862,27 @@ class Tui:
                 t.append(f" {self._current_tool}", style="bold cyan")
         elif self.question is not None:
             t.append(" ❓", style="yellow")
-        t.append(f"{self.status}", style=self._status_style())
+        t.append(self._fit_status(cell_len(str(t)), self.status), style=self._status_style())
         return t
+
+    def _fit_status(self, used: int, msg: str) -> str:
+        """Fit the status message on the status-bar line: newlines are
+        flattened and the message is truncated with an ellipsis only
+        when it would overflow the terminal width."""
+        msg = " ".join(msg.splitlines())
+        width = self.console.width or 80
+        avail = max(1, width - used - 1)
+        if cell_len(msg) <= avail:
+            return msg
+        out = ""
+        used_cells = 0
+        for ch in msg:
+            w = cell_len(ch)
+            if used_cells + w > avail - 1:
+                break
+            out += ch
+            used_cells += w
+        return out + "…"
 
     def _status_style(self) -> str:
         """Status-bar color by state: errors red, activity cyan, idle dim."""
@@ -1396,20 +1416,30 @@ class Tui:
             self._history_dirty = True
         self.console.print(msg)
 
-    def _model_list_names(self) -> list[str]:
-        """Names shown by /model: the current model (as ``__current__``)
-        followed by every configured profile.
+    def _refresh_model_profiles(self) -> None:
+        """Re-read the config file's ``models`` section so profiles
+        added/removed while the TUI is running show up on the next
+        /model call.  A malformed config keeps the last loaded set."""
+        try:
+            self.session.model_profiles = config.load_models_config(self.session.config_path)
+        except ValueError as e:
+            self.console.print(f"[red]{e}[/red]")
 
-        ``__current__`` is always present so the listing count stays
-        stable across switches, even when the active model is also a
-        configured profile.  Used by both the listing and the
+    def _model_list_names(self) -> list[str]:
+        """Names shown by /model: the original default model (as
+        ``default``) followed by every configured profile.
+
+        ``default`` always restores the main ``llm`` settings the
+        session started with, so the original model stays reachable
+        after switching to profiles — and the listing count stays
+        stable across switches.  Used by both the listing and the
         numbered-selection paths so the numbers always match what was
         displayed.
         """
-        return ["__current__", *sorted(self.session.model_profiles.keys())]
+        return ["default", *sorted(self.session.model_profiles.keys())]
 
     def _model_switch_by_name(self, name: str) -> None:
-        """Switch to a named profile and report the outcome."""
+        """Switch to a named profile (or ``default``) and report the outcome."""
         success, msg = self.session.switch_model(name)
         if success:
             self.console.print(f"[green]{msg}[/green]")
@@ -1419,29 +1449,37 @@ class Tui:
 
     def _run_model_command(self, arg: str) -> None:
         """Handle /model command for switching LLM profiles."""
+        self._refresh_model_profiles()
         if not arg:
-            # List all models including current one
-            if not self.session.model_profiles:
-                self.console.print("[yellow]No model profiles configured.[/yellow]")
-                return
-
+            # List all models: the original default plus every profile
+            # currently in the config file
             all_names = self._model_list_names()
             current_model = self.session.model or "(unknown)"
+            default_model = (self.session.llm_settings or {}).get("model") or current_model
+            default_base_url = (self.session.llm_settings or {}).get(
+                "base_url"
+            ) or self.session.client.base_url
 
             self.console.print("\n[bold cyan]Available model profiles:[/bold cyan]")
+            if not self.session.model_profiles:
+                self.console.print(
+                    "[yellow]  (none configured — add a 'models' section to use /model)[/yellow]"
+                )
             for idx, name in enumerate(all_names, 1):
-                if name == "__current__":
-                    model_name = current_model
-                    base_url = self.session.client.base_url
-                    marker = " *"
+                if name == "default":
+                    marker = " *" if current_model == default_model else ""
                     self.console.print(
-                        f"  [cyan]{idx})[/cyan] current{marker} — {model_name} @ {base_url}"
+                        f"  [cyan]{idx})[/cyan] default{marker} — "
+                        f"{default_model} @ {default_base_url}"
                     )
                 else:
                     profile = self.session.model_profiles[name]
                     model_name = profile.get("model", "(inherited)")
                     base_url = profile.get("base_url", "(inherited)")
-                    self.console.print(f"  [cyan]{idx})[/cyan] {name} — {model_name} @ {base_url}")
+                    marker = " *" if model_name == current_model else ""
+                    self.console.print(
+                        f"  [cyan]{idx})[/cyan] {name}{marker} — {model_name} @ {base_url}"
+                    )
 
             total_count = len(all_names)
             self.console.print(f"\n[dim]Current: {current_model}[/dim]")
@@ -1460,7 +1498,7 @@ class Tui:
                     idx = int(selection) - 1
                     if 0 <= idx < len(all_names):
                         selected = all_names[idx]
-                        if selected == "__current__":
+                        if selected == "default" and current_model == default_model:
                             self.console.print("[yellow]Already using this model.[/yellow]")
                         else:
                             self._model_switch_by_name(selected)
@@ -1483,7 +1521,10 @@ class Tui:
             idx = int(arg.strip()) - 1
             if 0 <= idx < len(all_names):
                 selected = all_names[idx]
-                if selected == "__current__":
+                default_model = (self.session.llm_settings or {}).get("model") or (
+                    self.session.model or ""
+                )
+                if selected == "default" and (self.session.model or "") == default_model:
                     self.console.print("[yellow]Already using this model.[/yellow]")
                 else:
                     self._model_switch_by_name(selected)

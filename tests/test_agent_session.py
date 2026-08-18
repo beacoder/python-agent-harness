@@ -805,11 +805,53 @@ class TestModelSwitching(unittest.TestCase):
         self.assertEqual(session.temperature, 0.8)
 
     def test_no_model_profiles_returns_error(self):
-        """When no model profiles are configured, switch_model fails."""
+        """When no model profiles are configured, switch_model fails
+        (``default`` is still advertised)."""
         session = RecordingSession(model_profiles={})
         success, msg = session.switch_model("any")
         self.assertFalse(success)
-        self.assertIn("(none configured)", msg)
+        self.assertIn("default", msg)
+
+    def test_switch_model_default_restores_original_settings(self):
+        """``switch_model("default")`` restores the session-start main
+        llm settings after switching to profiles, so the original model
+        stays reachable."""
+        session = RecordingSession(
+            model_profiles={
+                "deepseek": {
+                    "base_url": "https://api.deepseek.com/v1",
+                    "api_key": "sk-deepseek",
+                    "model": "deepseek-v4-flash",
+                    "temperature": 0.0,
+                },
+            },
+            llm_settings={
+                "base_url": "https://llm.example.com/v1",
+                "api_key": "llm-key",
+                "model": "base-model",
+                "backend": "OpenAI-compatible",
+                "temperature": 0.2,
+                "max_tokens": None,
+                "timeout": 600.0,
+                "reasoning_effort": None,
+                "stream": True,
+            },
+        )
+        self.assertEqual(session.model, "gpt-5-mini")  # RecordingSession's hardcoded model
+        success, msg = session.switch_model("deepseek")
+        self.assertTrue(success)
+        self.assertEqual(session.model, "deepseek-v4-flash")
+        self.assertEqual(session.temperature, 0.0)
+        success, msg = session.switch_model("default")
+        self.assertTrue(success)
+        self.assertIn("switched to default", msg)
+        # default restores the main llm settings (base-model), not the
+        # hardcoded construction default
+        self.assertEqual(session.model, "base-model")
+        self.assertEqual(session.client.model, "base-model")
+        self.assertEqual(session.client.base_url, "https://llm.example.com/v1")
+        self.assertEqual(session.client.api_key, "llm-key")
+        self.assertEqual(session.temperature, 0.2)
 
     def test_profile_settings_override_llm_settings(self):
         """Profile settings take precedence over the main llm settings."""

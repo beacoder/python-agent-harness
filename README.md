@@ -74,7 +74,7 @@ All LLM settings live in one JSON config file (no env vars required):
 ```
 
 - Optional `llm` keys: `backend`, `temperature`, `max_tokens`, `timeout`, `reasoning_effort` (passed to the API as-is when set), `stream` (`run --no-stream` overrides).
-- **`models`** — named LLM profiles for runtime switching via `/model` (in the TUI: no arg lists, name or number switches). Each profile is a partial settings dict; unset keys inherit the main `llm`.
+- **`models`** — named LLM profiles for runtime switching via `/model` (in the TUI: no arg lists, name or number switches; `default` always restores the main `llm` settings). Each profile is a partial settings dict; unset keys inherit the main `llm`.
 - **`subagent_llm`** — LLM for Agent-tool requests; every key optional, unset keys inherit main `llm`. Set `profile` to a name from `models` to reuse a profile; precedence: profile settings > explicit `subagent_llm` keys > main `llm` > env.
 - **`paths.context_path` / `paths.skill_path`** — override context/skill discovery (defaults: `<project>/contexts` or `~/.emacs.d/contexts`; skills analog).
 - **`mcp.servers`** — requires the `[mcp]` extra; each server is `{transport, command, args, env, url, headers, parallel, timeout, enabled}`.
@@ -100,7 +100,7 @@ python-agent-harness run [project-dir]   # interactive TUI agent
 | `/sessions` | list saved sessions |
 | `/restore [path\|title\|--latest\|latest]` | restore a session (title substring match) |
 | `/clear` | start a fresh conversation |
-| `/model [name]` | switch LLM model profile (no arg: list available; with arg: switch) |
+| `/model [name]` | switch LLM model profile (`default` restores the session's original model; no arg: list available) |
 | `/exit` | quit |
 
 Custom commands from `prompts/commands/*.md` are registered as slash commands too (TUI-only).

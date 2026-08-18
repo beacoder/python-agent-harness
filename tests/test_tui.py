@@ -113,6 +113,26 @@ class TestTui(unittest.TestCase):
         out = buf.getvalue()
         self.assertLess(out.index("[BUILD]"), out.index("hello agent"))
 
+    def test_status_bar_fits_terminal_width(self):
+        """The status bar stays on one line: the status text is
+        truncated with an ellipsis only when the terminal is too
+        narrow to show it, and never wraps."""
+        tui, buf = make_tui()
+        long_msg = "agent error: " + "y" * 120  # 131 cells: fits a wide terminal
+        tui._on_log(long_msg)
+        # wide terminal: message shown in full (no fixed 60-char cap)
+        tui.console.width = 200
+        tui.console.file = io.StringIO()
+        tui.console.print(tui._status_bar())
+        self.assertIn(long_msg, tui.console.file.getvalue())
+        # narrow terminal: one line, ellipsized
+        tui.console.width = 40
+        tui.console.file = io.StringIO()
+        tui.console.print(tui._status_bar())
+        lines = tui.console.file.getvalue().rstrip("\n").split("\n")
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].endswith("…"))
+
     def test_role_labels(self):
         """Roles render as user / assistant / tool, not You / Agent."""
         tui, buf = make_tui()
@@ -1909,10 +1929,12 @@ class TestTui(unittest.TestCase):
         tui._on_log("checking files")
         self.assertEqual(tui.status, " checking files")
 
-    def test_on_log_truncates_long_messages(self):
+    def test_on_log_keeps_long_messages(self):
+        """Log messages are kept in full in the status slot; width
+        truncation (with ellipsis) happens only at render time."""
         tui, _ = make_tui()
         tui._on_log("x" * 100)
-        self.assertEqual(tui.status, " " + "x" * 60)
+        self.assertEqual(tui.status, " " + "x" * 100)
 
     # ------------------------------------------------------------------
     # _ui_ask (Question tool)
@@ -2534,10 +2556,10 @@ class TestTui(unittest.TestCase):
     # ------------------------------------------------------------------
     # /model paths
     # ------------------------------------------------------------------
-    def test_model_list_always_includes_current(self):
-        """The numbered list always shows ``__current__`` first followed
-        by every profile, so the count stays stable across switches
-        even when the active model is also a configured profile."""
+    def test_model_list_always_includes_default(self):
+        """The numbered list always shows ``default`` first followed by
+        every profile, so the count stays stable across switches and
+        the original model stays selectable."""
         tui, buf = make_tui()
         tui.session.model_profiles = {
             "deepseek": {"model": "deepseek-chat"},
@@ -2545,53 +2567,111 @@ class TestTui(unittest.TestCase):
         }
         tui.session.model = "glm-5.2"  # current model IS a profile
         names = tui._model_list_names()
-        self.assertEqual(names, ["__current__", "deepseek", "glm"])
+        self.assertEqual(names, ["default", "deepseek", "glm"])
         # current model NOT in profiles -> same stable list
         tui.session.model = "elsewhere-model"
         names = tui._model_list_names()
-        self.assertEqual(names, ["__current__", "deepseek", "glm"])
+        self.assertEqual(names, ["default", "deepseek", "glm"])
 
     def test_model_numbered_selection_matches_list(self):
         """``/model N`` picks the same entry the numbered list showed:
-        ``1`` is always ``__current__``, then profiles in order."""
+        ``1`` is always ``default``, then profiles in order."""
         tui, buf = make_tui()
-        tui.session.model_profiles = {
+        profiles = {
             "deepseek": {"model": "deepseek-chat"},
             "glm": {"model": "glm-5.2"},
         }
+        tui.session.model_profiles = dict(profiles)
+        tui.session.llm_settings = {"model": "gpt-5-mini", "base_url": "https://default"}
         tui.session.model = "glm-5.2"  # current IS a profile (index 3)
-        with mock.patch.object(tui, "_model_switch_by_name") as switch:
-            tui._run_model_command("1")
-        switch.assert_not_called()
-        self.assertIn("Already using this model", buf.getvalue())
-        buf.truncate(0)
-        with mock.patch.object(tui, "_model_switch_by_name") as switch:
-            tui._run_model_command("2")
-        switch.assert_called_once_with("deepseek")
-        buf.truncate(0)
-        with mock.patch.object(tui, "_model_switch_by_name") as switch:
-            tui._run_model_command("3")
-        switch.assert_called_once_with("glm")
-        buf.truncate(0)
-        # current NOT in profiles: 1 == __current__ (no switch), 2 == deepseek
-        tui.session.model = "elsewhere-model"
-        with mock.patch.object(tui, "_model_switch_by_name") as switch:
-            tui._run_model_command("1")
-        switch.assert_not_called()
-        self.assertIn("Already using this model", buf.getvalue())
-        buf.truncate(0)
-        with mock.patch.object(tui, "_model_switch_by_name") as switch:
-            tui._run_model_command("2")
-        switch.assert_called_once_with("deepseek")
+        with mock.patch(
+            "python_agent_harness.tui.config.load_models_config", return_value=profiles
+        ):
+            # 1 == default: switches back to the original model
+            with mock.patch.object(tui, "_model_switch_by_name") as switch:
+                tui._run_model_command("1")
+            switch.assert_called_once_with("default")
+            buf.truncate(0)
+            with mock.patch.object(tui, "_model_switch_by_name") as switch:
+                tui._run_model_command("2")
+            switch.assert_called_once_with("deepseek")
+            buf.truncate(0)
+            with mock.patch.object(tui, "_model_switch_by_name") as switch:
+                tui._run_model_command("3")
+            switch.assert_called_once_with("glm")
+            buf.truncate(0)
+            # back on the default model: 1 == default -> already using
+            tui.session.model = "gpt-5-mini"
+            with mock.patch.object(tui, "_model_switch_by_name") as switch:
+                tui._run_model_command("1")
+            switch.assert_not_called()
+            self.assertIn("Already using this model", buf.getvalue())
+            buf.truncate(0)
+            with mock.patch.object(tui, "_model_switch_by_name") as switch:
+                tui._run_model_command("2")
+            switch.assert_called_once_with("deepseek")
+
+    def test_model_interactive_selection_can_switch_back_to_default(self):
+        """The interactive selection can switch back to the original
+        default model after switching to a profile."""
+        tui, buf = make_tui()
+        profiles = {"deepseek": {"model": "deepseek-chat"}}
+        tui.session.model_profiles = dict(profiles)
+        tui.session.llm_settings = {"model": "gpt-5-mini", "base_url": "https://default"}
+        tui.session.model = "deepseek-chat"
+        with (
+            mock.patch("builtins.input", return_value="1"),
+            mock.patch("python_agent_harness.tui.config.load_models_config", return_value=profiles),
+            mock.patch.object(tui, "_model_switch_by_name") as switch,
+        ):
+            tui._run_model_command("")
+        switch.assert_called_once_with("default")
 
     def test_model_switch_by_name(self):
         """``/model <name>`` switches via the session."""
         tui, buf = make_tui()
-        tui.session.model_profiles = {"deepseek": {"model": "deepseek-chat"}}
-        with mock.patch.object(tui.session, "switch_model", return_value=(True, "switched")) as sw:
+        profiles = {"deepseek": {"model": "deepseek-chat"}}
+        tui.session.model_profiles = dict(profiles)
+        with (
+            mock.patch("python_agent_harness.tui.config.load_models_config", return_value=profiles),
+            mock.patch.object(tui.session, "switch_model", return_value=(True, "switched")) as sw,
+        ):
             tui._run_model_command("deepseek")
         sw.assert_called_once_with("deepseek")
         self.assertIn("switched", buf.getvalue())
+
+    def test_model_reloads_profiles_from_config_each_call(self):
+        """``/model`` re-reads the config file on every call, so a
+        profile added mid-session shows up and is switchable without
+        restarting, and ``default`` stays available with none set."""
+        tui, buf = make_tui()
+        # no profiles configured: default is still listed
+        with (
+            mock.patch("python_agent_harness.tui.config.load_models_config", return_value={}),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_model_command("")
+        self.assertIn("default", buf.getvalue())
+        self.assertIn("none configured", buf.getvalue())
+        buf.truncate(0)
+        # profile added to the config file mid-session -> visible next call
+        new_profiles = {"new": {"model": "new-model", "base_url": "https://new/v1"}}
+        with (
+            mock.patch(
+                "python_agent_harness.tui.config.load_models_config", return_value=new_profiles
+            ),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_model_command("")
+        self.assertIn("new", buf.getvalue())
+        buf.truncate(0)
+        # and switchable by name immediately
+        with mock.patch(
+            "python_agent_harness.tui.config.load_models_config", return_value=new_profiles
+        ):
+            tui._run_model_command("new")
+        self.assertEqual(tui.session.model, "new-model")
+        self.assertEqual(tui.session.client.base_url, "https://new/v1")
 
 
 if __name__ == "__main__":

@@ -108,6 +108,9 @@ class AgentSession:
         self.alive = True
         self._configured_context_path = context_path
         self._configured_skill_path = skill_path
+        # Config file path (None = default resolution) — /model re-reads
+        # the ``models`` section from it on every invocation
+        self.config_path = config_path
         # Sub-agent LLM: a dedicated client (base_url/api_key/model/
         # timeout) and per-request options when a different LLM is
         # configured for sub-agents (mirrors gptel-agent-harness-
@@ -627,17 +630,22 @@ class AgentSession:
         config; keys the profile leaves unset inherit the main ``llm``
         settings as resolved at session start (so switching between
         profiles never drifts values from earlier switches).  The
-        client and session are updated in place.  Returns
-        (success, message).
+        pseudo-profile ``default`` restores those original main ``llm``
+        settings, so the model active at session start stays reachable
+        after any number of switches.  The client and session are
+        updated in place.  Returns (success, message).
         """
-        if not self.model_profiles or name not in self.model_profiles:
+        if name == "default":
+            profile = None
+        elif not self.model_profiles or name not in self.model_profiles:
             available = (
-                ", ".join(sorted(self.model_profiles.keys()))
+                ", ".join(sorted(["default", *self.model_profiles.keys()]))
                 if self.model_profiles
-                else "(none configured)"
+                else "default"
             )
             return False, f"unknown model: {name} (available: {available})"
-        profile = self.model_profiles[name]
+        else:
+            profile = self.model_profiles[name]
         # Effective settings: main llm config (resolved at session
         # start) overlaid with the profile's own settings.  Profile
         # keys that are set (not None) win; unset keys inherit the llm
@@ -657,19 +665,20 @@ class AgentSession:
         }
         for key, val in current.items():
             merged.setdefault(key, val)
-        for key in (
-            "base_url",
-            "api_key",
-            "model",
-            "backend",
-            "temperature",
-            "max_tokens",
-            "timeout",
-            "reasoning_effort",
-            "stream",
-        ):
-            if key in profile and profile[key] is not None:
-                merged[key] = profile[key]
+        if profile is not None:
+            for key in (
+                "base_url",
+                "api_key",
+                "model",
+                "backend",
+                "temperature",
+                "max_tokens",
+                "timeout",
+                "reasoning_effort",
+                "stream",
+            ):
+                if key in profile and profile[key] is not None:
+                    merged[key] = profile[key]
         self.client.base_url = str(merged["base_url"]).rstrip("/")
         self.client.api_key = merged["api_key"]
         self.client.model = merged["model"]
