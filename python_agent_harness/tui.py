@@ -1313,6 +1313,22 @@ class Tui:
         cwd, prompt, kickoff = cmd.prepare(
             project_dir=project or self.session.project_dir, extra=extra
         )
+        if self.conversation_history or self.session.last_messages:
+            # The commands' kickoffs ("Proceed with the task described
+            # in your instructions.") assume a fresh conversation: the
+            # task lives only in the system prompt.  Mid-conversation
+            # that reads as a continuation of the previous — already
+            # finished — task, so the model keeps working on the old
+            # one instead of the command's.  Anchor the new task by
+            # naming the command (and target) and marking the earlier
+            # conversation as background context only.
+            target = f": {extra}" if extra else ""
+            kickoff = (
+                f"{kickoff.strip()}\n\n"
+                f"This is a NEW /{name} request{target} — the messages "
+                "above are background context from an earlier task; "
+                "follow the NEW instructions in your system prompt."
+            )
         # keep the project context + task-completion rules in front of
         # the command's prompt (the "actual agent prompt" for this run)
         from .prompts import assemble_agent_prompt

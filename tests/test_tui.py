@@ -1210,6 +1210,49 @@ class TestTui(unittest.TestCase):
             self.assertIn("client.py", captured["system"])
             self.assertIn("explain", captured["system"])
 
+    def test_slash_command_kickoff_anchored_when_history_exists(self):
+        """Mid-conversation the generic kickoff would read as a
+        continuation of the previous (already finished) task, so the
+        command names itself and marks the earlier messages as
+        background context.  An empty conversation keeps the original
+        kickoff (fresh-session semantics)."""
+        tui, _ = make_tui()  # make_tui starts with a non-empty conversation
+        captured = {}
+
+        def fake_start(text, system=None, restore=None):
+            captured["text"] = text
+
+        with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+            tui._handle_slash("/explain client.py")
+        self.assertIn("NEW /explain request: client.py", captured["text"])
+        self.assertIn("background context", captured["text"])
+        self.assertIn("Proceed with the task described in your instructions.", captured["text"])
+
+        # empty conversation: kickoff stays the plain generic message
+        tui.conversation_history = []
+        tui.session.last_messages = []
+        with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+            tui._handle_slash("/explain client.py")
+        self.assertEqual(
+            captured["text"].strip(),
+            "Proceed with the task described in your instructions.",
+        )
+
+    def test_slash_command_kickoff_anchored_without_target(self):
+        """The anchor names the command even when the command has no
+        arguments (the target is described in the prompt instead)."""
+        tui, _ = make_tui()
+        tui.conversation_history = [Message(role="user", content="old task")]
+        captured = {}
+
+        def fake_start(text, system=None, restore=None):
+            captured["text"] = text
+
+        with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+            tui._handle_slash("/review")
+        self.assertIn("NEW /review request", captured["text"])
+        self.assertNotIn("NEW /review request:", captured["text"])
+
     def test_slash_command_project_borrowed_and_restored(self):
         """A project given to a slash command borrows the session's
         project dir for the run (tool cwd) and restores it afterwards."""
