@@ -76,7 +76,7 @@ All LLM settings live in one JSON config file (no env vars required):
 - Optional `llm` keys: `backend`, `temperature`, `max_tokens`, `timeout`, `reasoning_effort` (passed to the API as-is when set), `stream` (`run --no-stream` overrides).
 - **`models`** — named LLM profiles for runtime switching via `/model` (in the TUI: no arg lists, name or number switches; `default` always restores the main `llm` settings). Each profile is a partial settings dict; unset keys inherit the main `llm`.
 - **`subagent_llm`** — LLM for Agent-tool requests; every key optional, unset keys inherit main `llm`. Set `profile` to a name from `models` to reuse a profile; precedence: profile settings > explicit `subagent_llm` keys > main `llm` > env.
-- **`paths.context_path` / `paths.skill_path`** — override context/skill discovery (defaults: `<project>/contexts` or `~/.emacs.d/contexts`; skills analog).
+- **`paths.context_path` / `paths.skill_path`** — where to load context files / skills from. Unset means the project's own `<project>/contexts` and `<project>/skills`.
 - **`mcp.servers`** — requires the `[mcp]` extra; each server is `{transport, command, args, env, url, headers, parallel, timeout, enabled}`.
 - **Precedence**: code defaults < config file < `OPENAI_*` env vars. Sub-agent settings honor `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`, `_BACKEND`).
 - Custom config: `--config PATH` or `PYTHON_AGENT_HARNESS_CONFIG`.
@@ -138,6 +138,8 @@ venv/bin/pyright                    # type check, basic mode (CI blocks on this)
 venv/bin/python -m build            # sdist + wheel
 venv/bin/pip-audit                  # dependency audit
 ```
+
+## Guideline: keep project intact, not bloated
 
 ## License
 
