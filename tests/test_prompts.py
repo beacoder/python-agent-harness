@@ -279,6 +279,48 @@ class TestLoadContextFiles(unittest.TestCase):
         self.assertIn("In file `", block)
         self.assertIn("# Notes", block)
 
+    def test_content_not_fenced(self):
+        """Context file contents are injected verbatim, without a fence."""
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "a.md").write_text("Run:\n\n```sh\nmake\n```\n\nDone.\n", encoding="utf-8")
+            block = load_context_files(d)
+        self.assertTrue(block.endswith("Done."))
+        self.assertIn("```sh", block)
+        self.assertEqual(block.count("```"), 2)
+
+    def test_extra_files_come_first(self):
+        """*extra_files* are rendered ahead of the context directory's own."""
+        with tempfile.TemporaryDirectory() as d:
+            ctx = Path(d) / "contexts"
+            ctx.mkdir()
+            (ctx / "a.md").write_text("DIR FILE", encoding="utf-8")
+            extra = Path(d) / "AGENTS.md"
+            extra.write_text("EXTRA FILE", encoding="utf-8")
+            block = load_context_files(ctx, extra_files=[str(extra)])
+        self.assertEqual(block.count("Request context:"), 1)
+        self.assertLess(block.index("EXTRA FILE"), block.index("DIR FILE"))
+
+    def test_extra_files_without_context_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            extra = Path(d) / "AGENTS.md"
+            extra.write_text("EXTRA FILE", encoding="utf-8")
+            block = load_context_files(None, extra_files=[str(extra)])
+        self.assertIn("EXTRA FILE", block)
+
+    def test_missing_extra_file_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            block = load_context_files(None, extra_files=[str(Path(d) / "nope.md")])
+        self.assertIsNone(block)
+
+    def test_file_reachable_both_ways_rendered_once(self):
+        """A context dir that also holds an extra file must not duplicate it."""
+        with tempfile.TemporaryDirectory() as d:
+            agents = Path(d) / "AGENTS.md"
+            agents.write_text("ROOT RULES", encoding="utf-8")
+            block = load_context_files(d, extra_files=[str(agents)])
+        self.assertEqual(block.count("ROOT RULES"), 1)
+        self.assertEqual(block.count("In file `"), 1)
+
 
 class TestLoadTaskCompletionRules(unittest.TestCase):
     def test_missing_rules_file_returns_none(self):
