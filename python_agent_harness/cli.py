@@ -184,8 +184,8 @@ def cmd_config(args: argparse.Namespace) -> int:
     print(f"reasoning_effort: {settings['reasoning_effort']}")
     print(f"stream: {settings['stream']}")
     print(f"timeout: {settings['timeout']}")
-    print(f"context_path: {paths['context_path'] or '(auto-discover)'}")
-    print(f"skill_path: {paths['skill_path'] or '(auto-discover)'}")
+    print(f"context_path: {paths['context_path'] or '(default: <project>/contexts)'}")
+    print(f"skill_path: {paths['skill_path'] or '(default: <project>/skills)'}")
     if mcp_config.servers:
         for name, server in mcp_config.servers.items():
             status = "enabled" if server.enabled else "disabled"
