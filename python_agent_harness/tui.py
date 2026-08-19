@@ -103,6 +103,7 @@ def _tool_result_preview(content: str) -> str:
 # Goal:/Status:/Evidence: labels (anywhere in the block, any lines)
 _FINAL_CHECK_RE = re.compile(r"\[FINAL CHECK\].*Goal:.*Status:.*Evidence:", re.DOTALL)
 
+
 def _is_injected_user_text(text: str) -> bool:
     """True for harness-injected user messages (not user input).
 

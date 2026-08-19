@@ -389,8 +389,7 @@ class TestUserPromptTexts(unittest.TestCase):
         the plan->build handoff and supersedes the earlier plan-mode
         batch (which is no longer the current mode state)."""
         notice = (
-            "The plan at /tmp/x/PLAN.md has been approved, "
-            "you can now edit files. Execute the plan"
+            "The plan at /tmp/x/PLAN.md has been approved, you can now edit files. Execute the plan"
         )
         msgs = [
             {"role": "user", "content": "<system-reminder>\nPlan mode ACTIVE."},

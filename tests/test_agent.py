@@ -1587,8 +1587,7 @@ class TestAgentLoop(unittest.TestCase):
         /build switch must not contradict the build notice."""
         session = RecordingSession()
         plan_notice = (
-            "The plan at /tmp/x/PLAN.md has been approved, "
-            "you can now edit files. Execute the plan"
+            "The plan at /tmp/x/PLAN.md has been approved, you can now edit files. Execute the plan"
         )
         loop = AgentLoop(
             session,

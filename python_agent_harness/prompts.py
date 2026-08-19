@@ -348,7 +348,9 @@ def _message_text(msg: object) -> str:
     """Plain text of a Message object or an OpenAI-style dict."""
     text = getattr(msg, "text", None)
     if callable(text):
-        return text()
+        result = text()
+        if isinstance(result, str):
+            return result
     if not isinstance(msg, dict):
         return ""
     content = msg.get("content")
