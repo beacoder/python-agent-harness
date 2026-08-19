@@ -37,7 +37,7 @@ from typing import Any, Protocol
 
 from . import config
 from .models import Message, ToolCall
-from .prompts import last_user_request, read_prompt_file
+from .prompts import read_prompt_file, user_prompt_texts
 from .token_estimator import context_window_for, estimate_payload_tokens
 from .tools.base import PendingToolResult
 
@@ -268,9 +268,15 @@ class AgentLoop:
     # compaction
     # ------------------------------------------------------------------
     def compact(self) -> bool:
-        """Compact the conversation; return True on success."""
-        request = last_user_request([m.to_api() for m in self.messages])
-        if not request:
+        """Compact the conversation; return True on success.
+
+        On success the history is replaced by the summary frame followed
+        by every real user prompt (nudges and other harness-injected
+        messages excluded), so the model keeps the actual requests; the
+        last prompt is the resume request for the next round.
+        """
+        prompts = user_prompt_texts(self.messages)
+        if not prompts:
             return False
         self.session.compacting = True
         try:
@@ -288,10 +294,12 @@ class AgentLoop:
             # The summary replaces the whole conversation history EXCEPT
             # the system prompt (self.system is passed separately and
             # stays untouched): it is part of the user turn, never a
-            # system message.
+            # system message.  Every real user prompt (nudges and other
+            # harness-injected messages excluded) is preserved verbatim
+            # after the frame, so the model keeps the actual requests.
             self.messages = [
                 Message(role="user", content=frame.strip()),
-                Message(role="user", content=request),
+                *[Message(role="user", content=p) for p in prompts],
             ]
             # The shared conversation now is the compacted one: mirror it
             # onto session.last_messages so the TUI (renders from it) and

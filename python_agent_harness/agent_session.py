@@ -708,13 +708,15 @@ class AgentSession:
         Mirrors gptel-agent-harness-commands-compact-buffer: the whole
         conversation is sent as the user message with the compact prompt
         as system (tools/stream disabled); on success the conversation is
-        replaced by the summary frame only.  Re-appending the last user
-        request is the automatic path's job (``AgentLoop.compact``),
-        which resumes the run with it; the manual command just replaces
-        the history and waits for the next user message.
+        replaced by the summary frame followed by every real user prompt
+        (nudges and other harness-injected messages excluded), so the
+        actual requests survive the compaction.  The automatic path
+        (``AgentLoop.compact``) does the same and resumes the run; the
+        manual command just replaces the history and waits for the next
+        user message.
         """
         from .models import Message as Msg
-        from .prompts import read_prompt_file
+        from .prompts import read_prompt_file, user_prompt_texts
 
         # Replacing the conversation is a new generation: invalidate any
         # worker still winding down from a cancelled run, or its
@@ -738,9 +740,13 @@ class AgentSession:
             # prompt is passed separately and stays untouched), so it
             # replaces the history as a user message — matching the
             # elisp flow where the compacted summary is plain buffer
-            # text sent as the user prompt.
+            # text sent as the user prompt.  Every real user prompt
+            # (nudges and other harness-injected messages excluded) is
+            # preserved verbatim after the frame, so the model keeps
+            # the actual requests.
             self.last_messages = [
                 Msg(role="user", content=frame.strip()),
+                *[Msg(role="user", content=p) for p in user_prompt_texts(messages)],
             ]
             self.auto_save(self.last_messages, self.system_prompt)
             self.notify("compact")

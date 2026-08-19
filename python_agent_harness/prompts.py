@@ -4,8 +4,9 @@ Ported from gptel-agent-harness.el: loads bundled prompt files
 (agent/subagent/commands), strips YAML frontmatter, discovers skills
 for the {{SKILLS}} placeholder, assembles the effective system prompt
 from project context files + task-completion rules + agent prompt, and
-provides last_user_request() for the compaction flow (summarize the
-conversation and resume with the last user request).
+provides user_prompt_texts() for the compaction flow (summarize the
+conversation and rebuild the history with every user prompt preserved
+verbatim).
 """
 
 from __future__ import annotations
@@ -343,23 +344,107 @@ def assemble_agent_prompt(
     return "\n\n".join(parts) if parts else None
 
 
-def last_user_request(messages: list[dict]) -> str | None:
-    """Return the last user message text, excluding nudge messages."""
+def _message_text(msg: object) -> str:
+    """Plain text of a Message object or an OpenAI-style dict."""
+    text = getattr(msg, "text", None)
+    if callable(text):
+        return text()
+    if not isinstance(msg, dict):
+        return ""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            p.get("text", "")
+            for p in content
+            if isinstance(p, dict) and isinstance(p.get("text"), str)
+        )
+    return ""
+
+
+def _message_role(msg: object) -> str | None:
+    """Role of a Message object or an OpenAI-style dict."""
+    if isinstance(msg, dict):
+        return msg.get("role")
+    return getattr(msg, "role", None)
+
+
+def _is_plan_exit_notice(text: str) -> bool:
+    """True for the plan-exit approval notice (PLAN_EXIT_APPROVED_MESSAGE
+    with the plan file path substituted in)."""
+    template = config.PLAN_EXIT_APPROVED_MESSAGE
+    if "%s" not in template:
+        return text == template
+    prefix, suffix = template.split("%s", 1)
+    return text.startswith(prefix) and text.endswith(suffix)
+
+
+def _is_mode_reminder_text(text: str) -> bool:
+    """True for harness-injected plan/build mode reminders.
+
+    Content-based: the plan.md / plan-mode.md / build-switch.md prompts
+    all start with the <system-reminder> tag, and the plan-exit approval
+    notice has a fixed format — the same checks the TUI uses, which also
+    cover restored sessions where the ``injected`` flag is lost.
+    """
+    if text.startswith("<system-reminder>"):
+        return True
+    return _is_plan_exit_notice(text)
+
+
+def user_prompt_texts(messages: list) -> list[str]:
+    """Every user prompt in *messages*, oldest first.
+
+    Used by the compaction flows to rebuild the conversation after a
+    summary: the compacted frame is followed by every prompt, so the
+    actual requests survive compaction.
+
+    Accepts Message objects or OpenAI-style dicts.  Excludes:
+    - nudges (the completion-supervision message — never user input)
+    - previously compacted summary frames: harness artifacts that the
+      new summary supersedes (the content check also covers restored
+      sessions, where the ``injected`` flag is lost)
+
+    Plan/build-mode reminders are KEPT, but only the most recent batch:
+    they carry the current mode context (read-only plan phase, the plan
+    file path, "execute the approved plan"), so dropping them at
+    compaction would leave the model unsure whether it is planning or
+    building — yet replaying every historical reminder would feed it
+    stale, possibly contradictory mode instructions after a /plan ->
+    /build switch.  Each mode switch injects its reminders as one
+    contiguous batch, so the last batch IS the current mode state.
+    (``remember_user_text`` excludes reminders for title generation —
+    a different purpose, so the filters differ.)
+    """
     nudge = config.NUDGE_MESSAGE
-    for msg in reversed(messages):
-        if msg.get("role") != "user":
+    is_reminder: list[bool] = []
+    last_reminder = -1
+    for msg in messages:
+        if _message_role(msg) != "user":
+            is_reminder.append(False)
             continue
-        content = msg.get("content")
-        if isinstance(content, list):
-            text = "".join(
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and isinstance(p.get("text"), str)
-            )
-        elif isinstance(content, str):
-            text = content
-        else:
-            text = ""
-        if text and text != nudge:
-            return text
-    return None
+        text = _message_text(msg)
+        rem = bool(text) and _is_mode_reminder_text(text)
+        is_reminder.append(rem)
+        if rem:
+            last_reminder = len(is_reminder) - 1
+    if last_reminder >= 0:
+        batch_start = last_reminder
+        while batch_start > 0 and is_reminder[batch_start - 1]:
+            batch_start -= 1
+    else:
+        batch_start = -1
+    prompts: list[str] = []
+    for i, msg in enumerate(messages):
+        if _message_role(msg) != "user":
+            continue
+        text = _message_text(msg)
+        if not text or text == nudge:
+            continue
+        if text.startswith(config.COMPACT_HEADER):
+            continue
+        if is_reminder[i] and not (batch_start <= i <= last_reminder):
+            continue
+        prompts.append(text)
+    return prompts

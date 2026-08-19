@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))  # sibling fake server import
 
 import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
 
+from python_agent_harness import config
 from python_agent_harness.agent import AgentLoop, Supervisor, sanitize_tool_result
 from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall, Usage
@@ -882,24 +883,27 @@ class TestAgentLoop(unittest.TestCase):
         self.assertIn("Compacted Summary", loop.messages[0].text())
         self.assertGreater(loop.supervisor.nudge_count, 0)
 
-    def test_manual_compact_replaces_history_with_summary_only(self):
+    def test_manual_compact_keeps_every_user_prompt(self):
         """Manual /compact replaces the history with the summary frame
-        only — re-appending the last user request is the automatic
-        path's resume step, not the manual command's (elisp parity with
-        gptel-agent-harness-commands-compact-buffer, which erases the
-        buffer and inserts just the summary frame)."""
+        followed by every real user prompt: the compacted info and the
+        actual requests both survive, so the model can still see the
+        tasks (nudges and other harness-injected messages excluded)."""
         session = RecordingSession()
         session.tools_enabled = False
         session.last_messages = [
             Message(role="user", content="hello"),
             Message(role="assistant", content="hi"),
             Message(role="user", content="please continue"),
+            Message(role="user", content=config.NUDGE_MESSAGE, injected=True),
         ]
         ok, msg = session.compact_conversation()
         self.assertTrue(ok)
-        self.assertEqual(len(session.last_messages), 1)
-        self.assertEqual(session.last_messages[0].role, "user")
-        self.assertIn("Compacted Summary", session.last_messages[0].text())
+        self.assertEqual([m.role for m in session.last_messages], ["user", "user", "user"])
+        self.assertTrue(session.last_messages[0].text().startswith("**[Compacted Summary]**"))
+        self.assertIn("SYNC-OK", session.last_messages[0].text())
+        self.assertEqual(
+            [m.text() for m in session.last_messages[1:]], ["hello", "please continue"]
+        )
 
     def test_manual_compact_does_not_require_user_request(self):
         """Compacting a summary-only history (e.g. a second /compact)
@@ -938,6 +942,47 @@ class TestAgentLoop(unittest.TestCase):
         # the compacted frame reached the shared history as a user message
         self.assertEqual(session.last_messages[0].role, "user")
         self.assertIn("Compacted Summary", session.last_messages[0].text())
+
+    def test_auto_compact_keeps_every_user_prompt(self):
+        """In-loop compaction preserves EVERY real user prompt after
+        the summary frame (nudges and other harness-injected messages
+        excluded), not just the last one — and repeated compaction
+        never stacks old summary frames or duplicates prompts."""
+        session = RecordingSession()
+        session.client.script = ["answer after compaction"]
+        with mock.patch("python_agent_harness.config.MAX_NUDGES", 0):
+            calls = {"n": 0}
+
+            def fake_estimate(*a, **k):
+                calls["n"] += 1
+                return 1_000_000 if calls["n"] <= 2 else 100
+
+            with mock.patch(
+                "python_agent_harness.agent.estimate_payload_tokens",
+                side_effect=fake_estimate,
+            ):
+                loop = AgentLoop(
+                    session,
+                    messages=[
+                        Message(role="user", content="task one"),
+                        Message(role="assistant", content="done one"),
+                        Message(role="user", content="task two"),
+                    ],
+                )
+                result = loop.run()
+        self.assertEqual(result, "answer after compaction")
+        # the history is [summary frame, task one, task two, final
+        # answer]: the old assistant turn is gone, every real prompt
+        # survives, and the second compaction (the fake ratio stays
+        # high for two rounds) did not stack another frame
+        self.assertEqual(len(loop.messages), 4)
+        self.assertTrue(loop.messages[0].text().startswith("**[Compacted Summary]**"))
+        self.assertEqual([m.text() for m in loop.messages[1:3]], ["task one", "task two"])
+        self.assertEqual(loop.messages[3].text(), "answer after compaction")
+        # the shared history mirrors the compacted conversation
+        self.assertEqual(
+            [m.text() for m in session.last_messages], [m.text() for m in loop.messages]
+        )
 
     def test_auto_save_and_last_messages(self):
         session = RecordingSession()
@@ -1497,8 +1542,9 @@ class TestAgentLoop(unittest.TestCase):
         gen = session.run_generation
         session.compact_conversation()
         self.assertEqual(session.run_generation, gen + 1)
-        self.assertEqual([m.role for m in session.last_messages], ["user"])
+        self.assertEqual([m.role for m in session.last_messages], ["user", "user"])
         self.assertIn("Compacted Summary", session.last_messages[0].text())
+        self.assertEqual(session.last_messages[1].text(), "hello")
         session.summarize_conversation()
         self.assertEqual(session.run_generation, gen + 2)
 
@@ -1532,6 +1578,45 @@ class TestAgentLoop(unittest.TestCase):
         session = RecordingSession()
         loop = AgentLoop(session, messages=[Message(role="assistant", content="hi")])
         self.assertFalse(loop.compact())
+
+    def test_compact_keeps_prompts_excluding_nudges_and_frames(self):
+        """Compaction preserves every prompt after the summary frame;
+        nudges and previous summary frames are dropped (the new summary
+        supersedes them), and only the LATEST plan/build reminder batch
+        survives — stale read-only plan reminders from before a /plan ->
+        /build switch must not contradict the build notice."""
+        session = RecordingSession()
+        plan_notice = (
+            "The plan at /tmp/x/PLAN.md has been approved, "
+            "you can now edit files. Execute the plan"
+        )
+        loop = AgentLoop(
+            session,
+            messages=[
+                Message(role="user", content="first"),
+                Message(role="assistant", content="ok"),
+                Message(
+                    role="user",
+                    content="<system-reminder>\nPlan mode ACTIVE — READ-ONLY.",
+                    injected=True,
+                ),
+                Message(role="user", content=config.NUDGE_MESSAGE, injected=True),
+                Message(role="user", content="second"),
+                Message(role="user", content=plan_notice, injected=True),
+                Message(
+                    role="user",
+                    content="**[Compacted Summary]**\n\nold frame\n\n---\n\n"
+                    "**[Context compacted]**\n\n---\n\n",
+                ),
+            ],
+        )
+        self.assertTrue(loop.compact())
+        self.assertEqual([m.role for m in loop.messages], ["user", "user", "user", "user"])
+        self.assertTrue(loop.messages[0].text().startswith("**[Compacted Summary]**"))
+        self.assertEqual(
+            [m.text() for m in loop.messages[1:]],
+            ["first", "second", plan_notice],
+        )
 
     def test_compact_empty_summary_returns_false(self):
         """A compaction response with no text must not replace the

@@ -601,6 +601,40 @@ class TestCompactConversation(unittest.TestCase):
         self.assertEqual(msg, "Compaction failed: boom")
         self.assertFalse(session.compacting)
 
+    def test_success_keeps_every_user_prompt(self):
+        """A successful manual /compact replaces the history with the
+        summary frame followed by every prompt; nudges are excluded but
+        harness-injected plan/build reminders are kept (mode context
+        must survive compaction)."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.last_messages = [
+            Message(role="user", content="first"),
+            Message(role="assistant", content="ok"),
+            Message(role="user", content="second"),
+            Message(role="user", content=config.NUDGE_MESSAGE, injected=True),
+            Message(
+                role="user",
+                content="The plan at /tmp/x/PLAN.md has been approved, "
+                "you can now edit files. Execute the plan",
+                injected=True,
+            ),
+        ]
+        ok, msg = session.compact_conversation()
+        self.assertTrue(ok)
+        self.assertEqual(msg, "Buffer compacted successfully.")
+        self.assertEqual([m.role for m in session.last_messages], ["user", "user", "user", "user"])
+        self.assertTrue(session.last_messages[0].text().startswith("**[Compacted Summary]**"))
+        self.assertEqual(
+            [m.text() for m in session.last_messages[1:]],
+            [
+                "first",
+                "second",
+                "The plan at /tmp/x/PLAN.md has been approved, "
+                "you can now edit files. Execute the plan",
+            ],
+        )
+
 
 class TestSummarizeConversation(unittest.TestCase):
     """Manual /summary failure paths: empty history, client exceptions,

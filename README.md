@@ -32,7 +32,7 @@ Edit `~/.config/python-agent-harness/config.json`, set `base_url`/`api_key`/`mod
 ## Features
 
 - **FSM-driven execution** (`WAIT`/`TOOL`/`TRET`/`SUPERVISE`/`DONE`/`ERRS`/`ABRT`) with completion supervision: the model is nudged (max 2) if it stops early; failed tool calls are sanitized and never strand the machine. Transient failures (429/5xx) retry with exponential backoff + jitter.
-- **Context management** — CJK-aware token estimation, per-model context windows, automatic compaction at 70% usage (summarizes and resumes with the last user request).
+- **Context management** — CJK-aware token estimation, per-model context windows, automatic compaction at 70% usage.
 - **Real coding tools** — Agent (sub-agents), TodoWrite, Glob, Grep, Read, Insert, Edit (incl. unified diffs), Write, Mkdir, Bash, Skill, Question, PlanExit. Synchronous tools run one at a time; asynchronous ones (Bash, Agent) run concurrently in emitted order.
 - **Plan / Build modes** — plan mode is read-only except the per-session plan file.
 - **Sessions that survive** — auto-saved to `~/.local/share/python-agent-harness/sessions/` after every response, LLM-generated titles, `/restore --latest`, `/sessions`.

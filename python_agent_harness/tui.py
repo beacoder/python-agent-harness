@@ -39,6 +39,7 @@ from .agent_session import AgentSession
 from .commands import find_command
 from .diffrender import render_diff
 from .models import Message
+from .prompts import _is_mode_reminder_text
 from .session_store import (
     SessionStore,
     escape_role_headers,
@@ -102,16 +103,6 @@ def _tool_result_preview(content: str) -> str:
 # Goal:/Status:/Evidence: labels (anywhere in the block, any lines)
 _FINAL_CHECK_RE = re.compile(r"\[FINAL CHECK\].*Goal:.*Status:.*Evidence:", re.DOTALL)
 
-_PLAN_EXIT_PREFIX = "The plan at "
-_PLAN_EXIT_SUFFIX = " has been approved, you can now edit files. Execute the plan"
-
-
-def _is_plan_exit_notice(text: str) -> bool:
-    """True for the plan-exit approval notice (PLAN_EXIT_APPROVED_MESSAGE
-    with the plan file path substituted in)."""
-    return text.startswith(_PLAN_EXIT_PREFIX) and text.endswith(_PLAN_EXIT_SUFFIX)
-
-
 def _is_injected_user_text(text: str) -> bool:
     """True for harness-injected user messages (not user input).
 
@@ -123,9 +114,7 @@ def _is_injected_user_text(text: str) -> bool:
     """
     if text == config.NUDGE_MESSAGE:
         return True
-    if text.startswith("<system-reminder>"):
-        return True
-    return _is_plan_exit_notice(text)
+    return _is_mode_reminder_text(text)
 
 
 def _strip_final_check(text: str) -> str:

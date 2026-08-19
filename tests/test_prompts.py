@@ -9,16 +9,17 @@ from pathlib import Path
 from unittest import mock
 
 from python_agent_harness import config
+from python_agent_harness.models import Message
 from python_agent_harness.prompts import (
     _SKILLS_FALLBACK,
     _parse_skill_frontmatter,
     discover_skills,
     index_skills,
-    last_user_request,
     load_agent_prompt,
     load_context_files,
     load_task_completion_rules,
     strip_frontmatter,
+    user_prompt_texts,
 )
 
 
@@ -328,14 +329,104 @@ class TestLoadTaskCompletionRules(unittest.TestCase):
             self.assertIsNone(load_task_completion_rules())
 
 
-class TestLastUserRequest(unittest.TestCase):
-    def test_str_content(self):
+class TestUserPromptTexts(unittest.TestCase):
+    def test_returns_every_user_prompt_oldest_first(self):
         msgs = [
             {"role": "user", "content": "first"},
             {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": "last"},
+            {"role": "user", "content": "second"},
         ]
-        self.assertEqual(last_user_request(msgs), "last")
+        self.assertEqual(user_prompt_texts(msgs), ["first", "second"])
+
+    def test_excludes_nudge(self):
+        msgs = [
+            {"role": "user", "content": "real question"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": config.NUDGE_MESSAGE},
+        ]
+        self.assertEqual(user_prompt_texts(msgs), ["real question"])
+
+    def test_keeps_latest_plan_build_reminder_batch(self):
+        """Harness-injected plan/build reminders are KEPT, but only the
+        most recent batch: after /plan -> /build the old read-only plan
+        reminders would contradict the build switch, so earlier batches
+        must not survive compaction."""
+        msgs = [
+            {
+                "role": "user",
+                "content": "<system-reminder>\nPlan mode ACTIVE — READ-ONLY.",
+                "injected": True,
+            },
+            {"role": "user", "content": "plan the feature", "injected": False},
+            {
+                "role": "user",
+                "content": "<system-reminder>\nMode changed to build.",
+                "injected": True,
+            },
+            {"role": "user", "content": "then implement it", "injected": False},
+        ]
+        self.assertEqual(
+            user_prompt_texts(msgs),
+            [
+                "plan the feature",
+                "<system-reminder>\nMode changed to build.",
+                "then implement it",
+            ],
+        )
+
+    def test_keeps_whole_latest_batch(self):
+        """A single /plan injects plan + plan-mode reminders as one
+        contiguous batch; the whole batch survives."""
+        msgs = [
+            {"role": "user", "content": "<system-reminder>\nPlan mode ACTIVE."},
+            {"role": "user", "content": "<system-reminder>\nPlan file: /tmp/x/PLAN.md"},
+            {"role": "user", "content": "plan the feature"},
+        ]
+        self.assertEqual(user_prompt_texts(msgs), [m["content"] for m in msgs])
+
+    def test_plan_exit_notice_is_latest_reminder(self):
+        """The plan-exit approval notice is a mode reminder: it carries
+        the plan->build handoff and supersedes the earlier plan-mode
+        batch (which is no longer the current mode state)."""
+        notice = (
+            "The plan at /tmp/x/PLAN.md has been approved, "
+            "you can now edit files. Execute the plan"
+        )
+        msgs = [
+            {"role": "user", "content": "<system-reminder>\nPlan mode ACTIVE."},
+            {"role": "user", "content": "<system-reminder>\nPlan file: /tmp/x/PLAN.md"},
+            {"role": "user", "content": "approve the plan"},
+            {"role": "user", "content": notice, "injected": True},
+        ]
+        self.assertEqual(user_prompt_texts(msgs), ["approve the plan", notice])
+
+    def test_excludes_previous_summary_frames(self):
+        frame = config.COMPACT_HEADER + "old summary" + config.COMPACT_SEPARATOR
+        msgs = [
+            {"role": "user", "content": frame},
+            {"role": "user", "content": "still here"},
+        ]
+        self.assertEqual(user_prompt_texts(msgs), ["still here"])
+
+    def test_empty_and_non_text_content_skipped(self):
+        msgs = [
+            {"role": "user", "content": None},
+            {"role": "user", "content": 42},
+            {"role": "assistant", "content": "hi"},
+        ]
+        self.assertEqual(user_prompt_texts(msgs), [])
+
+    def test_no_user_messages_returns_empty(self):
+        self.assertEqual(user_prompt_texts([]), [])
+        self.assertEqual(user_prompt_texts([{"role": "assistant", "content": "hi"}]), [])
+
+    def test_accepts_message_objects(self):
+        msgs = [
+            Message(role="user", content="first"),
+            Message(role="user", content=config.NUDGE_MESSAGE, injected=True),
+            Message(role="user", content="second"),
+        ]
+        self.assertEqual(user_prompt_texts(msgs), ["first", "second"])
 
     def test_list_content_joined(self):
         msgs = [
@@ -347,43 +438,7 @@ class TestLastUserRequest(unittest.TestCase):
                 ],
             }
         ]
-        self.assertEqual(last_user_request(msgs), "hello world")
-
-    def test_list_content_ignores_non_text_parts(self):
-        msgs = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "only text"},
-                    "raw-string-part",
-                    {"type": "image"},
-                ],
-            }
-        ]
-        self.assertEqual(last_user_request(msgs), "only text")
-
-    def test_nudge_messages_skipped(self):
-        msgs = [
-            {"role": "user", "content": "real question"},
-            {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": config.NUDGE_MESSAGE},
-        ]
-        self.assertEqual(last_user_request(msgs), "real question")
-
-    def test_non_string_content_skipped(self):
-        msgs = [
-            {"role": "user", "content": None},
-            {"role": "user", "content": 42},
-        ]
-        self.assertIsNone(last_user_request(msgs))
-
-    def test_no_user_message_returns_none(self):
-        msgs = [{"role": "assistant", "content": "hi"}]
-        self.assertIsNone(last_user_request(msgs))
-
-    def test_only_nudge_returns_none(self):
-        msgs = [{"role": "user", "content": config.NUDGE_MESSAGE}]
-        self.assertIsNone(last_user_request(msgs))
+        self.assertEqual(user_prompt_texts(msgs), ["hello world"])
 
 
 if __name__ == "__main__":

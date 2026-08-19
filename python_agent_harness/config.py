@@ -179,13 +179,6 @@ DEFAULT_PATHS: dict = {
     "skill_path": None,
 }
 
-# MCP servers are configured in the config file's "mcp" object (see
-# CONFIG_TEMPLATE); no servers configured = MCP integration disabled.
-# Requires the optional `mcp` extra: pip install -e ".[mcp]".
-DEFAULT_MCP: dict = {"servers": {}}
-
-DEFAULT_MODELS: dict = {}
-
 # Sub-agent LLM overrides: every key defaults to None, meaning "inherit
 # the main LLM setting" (mirrors gptel-agent-harness-subagent-model /
 # -backend).  Only the keys the user actually sets differ from the main
