@@ -34,34 +34,32 @@ from .tools.mcp import mcp_tools_from_manager
 def find_skill_dir(project_dir: str, configured: str | None = None) -> str | None:
     """Locate the skill directory.
 
-    If *configured* is set (from config file), use it directly.
-    Otherwise search default locations (first match wins).
+    If *configured* is set (``paths.skill_path`` in the config file), use
+    it directly.  Otherwise fall back to the project's own ``skills/``
+    directory.  Any other location must be configured explicitly — no
+    path outside the project is discovered implicitly.
     """
     if configured and os.path.isdir(configured):
         return configured
-    for cand in (
-        os.path.join(os.path.expanduser("~"), ".emacs.d", "skills"),
-        os.path.join(project_dir, "skills"),
-    ):
-        if os.path.isdir(cand):
-            return cand
+    cand = os.path.join(project_dir, "skills")
+    if os.path.isdir(cand):
+        return cand
     return None
 
 
 def find_context_dir(project_dir: str, configured: str | None = None) -> str | None:
-    """Locate the default context directory.
+    """Locate the context directory.
 
-    If *configured* is set (from config file), use it directly.
-    Otherwise search default locations (first match wins).
+    If *configured* is set (``paths.context_path`` in the config file),
+    use it directly.  Otherwise fall back to the project's own
+    ``contexts/`` directory.  Any other location must be configured
+    explicitly — no path outside the project is discovered implicitly.
     """
     if configured and os.path.isdir(configured):
         return configured
-    for cand in (
-        os.path.join(os.path.expanduser("~"), ".emacs.d", "contexts"),
-        os.path.join(project_dir, "contexts"),
-    ):
-        if os.path.isdir(cand):
-            return cand
+    cand = os.path.join(project_dir, "contexts")
+    if os.path.isdir(cand):
+        return cand
     return None
 
 
