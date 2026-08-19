@@ -139,7 +139,7 @@ venv/bin/python -m build            # sdist + wheel
 venv/bin/pip-audit                  # dependency audit
 ```
 
-## Guideline
+## Principle
 
 Keep it intact, not bloated.
 
