@@ -23,7 +23,8 @@ from python_agent_harness.models import Message, Usage
 
 class TestFindDirs(unittest.TestCase):
     """find_skill_dir / find_context_dir resolution: configured path
-    wins, then default locations, then None."""
+    wins, then the project's own directory, then None.  Nothing outside
+    the project is discovered implicitly — it must be configured."""
 
     def test_skill_dir_configured_wins(self):
         with tempfile.TemporaryDirectory(prefix="pah-skills-") as d:
@@ -31,34 +32,21 @@ class TestFindDirs(unittest.TestCase):
 
     def test_skill_dir_default_project_fallback(self):
         """A configured-but-missing path falls through to the project's
-        skills/ directory (first existing default wins)."""
+        skills/ directory."""
         with tempfile.TemporaryDirectory(prefix="pah-proj-") as proj:
             skills = os.path.join(proj, "skills")
             os.makedirs(skills)
-            with mock.patch(
-                "python_agent_harness.agent_session.os.path.expanduser",
-                return_value=os.path.join(proj, "no-home"),
-            ):
-                self.assertEqual(find_skill_dir(proj, "/nonexistent"), skills)
+            self.assertEqual(find_skill_dir(proj, "/nonexistent"), skills)
 
-    def test_skill_dir_default_home_fallback(self):
+    def test_skill_dir_ignores_home_directory(self):
+        """``~/.emacs.d/skills`` is NOT discovered implicitly any more."""
         with tempfile.TemporaryDirectory(prefix="pah-home-") as home:
-            emacs = os.path.join(home, ".emacs.d", "skills")
-            os.makedirs(emacs)
-            with mock.patch(
-                "python_agent_harness.agent_session.os.path.expanduser",
-                return_value=home,
-            ):
-                self.assertEqual(find_skill_dir("/proj", None), emacs)
+            os.makedirs(os.path.join(home, ".emacs.d", "skills"))
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                self.assertIsNone(find_skill_dir("/proj", None))
 
     def test_skill_dir_none_when_missing(self):
-        with (
-            tempfile.TemporaryDirectory(prefix="pah-proj-") as proj,
-            mock.patch(
-                "python_agent_harness.agent_session.os.path.expanduser",
-                return_value=os.path.join(proj, "no-home"),
-            ),
-        ):
+        with tempfile.TemporaryDirectory(prefix="pah-proj-") as proj:
             self.assertIsNone(find_skill_dir(proj, None))
 
     def test_context_dir_configured_wins(self):
@@ -69,20 +57,17 @@ class TestFindDirs(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="pah-proj-") as proj:
             ctx = os.path.join(proj, "contexts")
             os.makedirs(ctx)
-            with mock.patch(
-                "python_agent_harness.agent_session.os.path.expanduser",
-                return_value=os.path.join(proj, "no-home"),
-            ):
-                self.assertEqual(find_context_dir(proj, None), ctx)
+            self.assertEqual(find_context_dir(proj, None), ctx)
+
+    def test_context_dir_ignores_home_directory(self):
+        """``~/.emacs.d/contexts`` is NOT discovered implicitly any more."""
+        with tempfile.TemporaryDirectory(prefix="pah-home-") as home:
+            os.makedirs(os.path.join(home, ".emacs.d", "contexts"))
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                self.assertIsNone(find_context_dir("/proj", None))
 
     def test_context_dir_none_when_missing(self):
-        with (
-            tempfile.TemporaryDirectory(prefix="pah-proj-") as proj,
-            mock.patch(
-                "python_agent_harness.agent_session.os.path.expanduser",
-                return_value=os.path.join(proj, "no-home"),
-            ),
-        ):
+        with tempfile.TemporaryDirectory(prefix="pah-proj-") as proj:
             self.assertIsNone(find_context_dir(proj, None))
 
 
