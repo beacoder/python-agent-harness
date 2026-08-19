@@ -139,7 +139,9 @@ venv/bin/python -m build            # sdist + wheel
 venv/bin/pip-audit                  # dependency audit
 ```
 
-## Guideline: keep project intact, not bloated
+## Guideline
+
+Keep it intact, not bloated.
 
 ## License
 
