@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from pathlib import Path
 
 from . import config
@@ -74,6 +75,7 @@ def index_skills(skill_dir: Path | str | None) -> dict[str, tuple[str, str]]:
         return {}
     skills: dict[str, tuple[str, str]] = {}
     visited: set[str] = set()
+    found: list[tuple[str, str, str]] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         real = os.path.realpath(dirpath)
         if real in visited:
@@ -89,7 +91,12 @@ def index_skills(skill_dir: Path | str | None) -> dict[str, tuple[str, str]]:
         parsed = _parse_skill_frontmatter(Path(path))
         if parsed:
             name, desc = parsed
-            skills[name] = (path, desc)
+            found.append((path, name, desc))
+    # os.walk yields directories in arbitrary order, so resolve duplicate
+    # names by path explicitly: sort first, then insert, and the last file
+    # in sorted-path order wins (deterministic, like opencode's overwrite).
+    for path, name, desc in sorted(found):
+        skills[name] = (path, desc)
     return dict(sorted(skills.items()))
 
 
@@ -139,36 +146,137 @@ def load_agent_prompt(path: Path | str | None, skill_dir: Path | str | None = No
     return text or None
 
 
-def load_context_files(context_dir: Path | str | None) -> str | None:
-    """Read all files in *context_dir* and format them as context blocks.
+def _git_toplevel(directory: str) -> str:
+    """Return the git worktree root for *directory*.
+
+    Mirrors opencode's git.repo.discover: walk up for ``.git``, then
+    run ``git rev-parse --show-toplevel``.  Falls back to the nearest
+    ``.git`` parent when git itself is unusable, and to *directory*
+    when no repository is found (so AGENTS.md lookup still works in
+    non-git projects, bounded by the project directory).
+    """
+    d = Path(directory).resolve()
+    for parent in [d, *d.parents]:
+        if (parent / ".git").exists():
+            try:
+                proc = subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    cwd=str(parent),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    return proc.stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                pass
+            return str(parent)
+    return str(d)
+
+
+def _find_up(filename: str, start: Path, stop: Path) -> list[str]:
+    """Every *filename* from *start* up to and including *stop*.
+
+    Mirrors opencode's ``FileSystem.findUp``: collect EVERY match along
+    the way, not just the nearest one, and stop after *stop* (or at the
+    filesystem root, whichever comes first).
+    """
+    matches: list[str] = []
+    current = start
+    while True:
+        candidate = current / filename
+        if candidate.is_file():
+            matches.append(str(candidate))
+        if current == stop:
+            break
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return matches
+
+
+def find_agents_md_files(project_dir: str) -> list[str]:
+    """Locate the project's ``AGENTS.md`` files, nearest first.
+
+    Collects EVERY ``AGENTS.md`` walking up from *project_dir* to the
+    git worktree root (mirrors opencode's ``Instruction.systemPaths``),
+    so running the agent in a subdirectory still picks up the repo-root
+    instructions.
+
+    ``AGENTS.md`` is the ONLY recognized file: there is no user-global
+    instruction file and no ``CLAUDE.md``/``CONTEXT.md`` fallback, so a
+    project without an ``AGENTS.md`` gets nothing injected.  The walk
+    only ever goes upward, bounded by the git worktree root (or
+    *project_dir* outside a repo), so it neither escapes into unrelated
+    parent directories nor discovers files in subdirectories.
+    """
+    start = Path(project_dir).resolve()
+    stop = Path(_git_toplevel(project_dir)).resolve()
+    if not start.is_relative_to(stop):
+        # git reported a worktree root that is not an ancestor of the
+        # resolved project dir (differently-spelled paths — symlinked or
+        # automounted checkouts).  Without this guard _find_up would walk
+        # to the filesystem root looking for `stop` and pick up AGENTS.md
+        # files from unrelated ancestors.
+        stop = start
+    return _find_up("AGENTS.md", start, stop)
+
+
+def load_context_files(
+    context_dir: Path | str | None,
+    extra_files: list[str] | None = None,
+) -> str | None:
+    """Format *extra_files* plus every file in *context_dir* as context.
 
     Returns a string like:
         Request context:
 
-        In file `~/.emacs.d/contexts/README.md`:
+        In file `/path/to/project/AGENTS.md`:
 
-        ```
         <file contents>
-        ```
 
-    Returns None if no context directory or no readable files.
+        In file `/path/to/project/contexts/README.md`:
+
+        <file contents>
+
+    *extra_files* are individual files outside the context directory
+    (the project's ``AGENTS.md`` files) and come first, in the order
+    given; the context directory's own files follow, sorted by name.
+    They are read and rendered identically: an ``In file `path`:``
+    header is the only delimiter, and contents are NOT wrapped in a code
+    fence (a fence would be closed early by any file containing one).
+
+    Unreadable and empty files are skipped, and a file reachable both
+    ways (a *context_dir* that also holds a discovered ``AGENTS.md``) is
+    rendered once.  Returns None when there is nothing to inject.
     """
-    if not context_dir:
-        return None
-    d = Path(context_dir)
-    if not d.is_dir():
-        return None
+    paths: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        paths.append(path)
+
+    for extra in extra_files or []:
+        _add(Path(extra))
+    d = Path(context_dir) if context_dir else None
+    if d and d.is_dir():
+        for child in sorted(d.iterdir()):
+            if child.is_file():
+                _add(child)
     blocks: list[str] = []
-    for child in sorted(d.iterdir()):
-        if not child.is_file():
-            continue
+    for path in paths:
         try:
-            content = child.read_text(encoding="utf-8", errors="replace")
+            content = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         if not content.strip():
             continue
-        blocks.append(f"In file `{child}`:\n\n```\n{content.rstrip()}\n```")
+        blocks.append(f"In file `{path}`:\n\n{content.rstrip()}")
     if not blocks:
         return None
     return "Request context:\n\n" + "\n\n".join(blocks)
@@ -200,17 +308,18 @@ def assemble_agent_prompt(
 ) -> str | None:
     """Assemble the effective system prompt for an agent run.
 
-    Order: [project context files] -> task-completion-rules.md ->
-    the actual agent prompt.  The completion rules are always the LAST
-    context piece, immediately before the agent prompt, so they read as
-    global ground rules rather than part of the task instructions.
+    Order: [project context files, AGENTS.md first] ->
+    task-completion-rules.md -> the actual agent prompt.  The completion
+    rules are always the LAST context piece, immediately before the
+    agent prompt, so they read as global ground rules rather than part
+    of the task instructions.
 
-    ``include_context=False`` drops the project context files (rules are
-    still included).  This function is NOT used for sub-agents: their
-    system prompt is their own prompt file (subagent.md) only, with no
-    context files and no task-completion rules (see
-    ``cli.make_session`` and ``subagent._subagent_system_prompt``).
-    ``context_path`` overrides the default context directory discovery.
+    ``include_context=False`` drops the context section (rules are still
+    included).  This function is NOT used for sub-agents: their system
+    prompt is their own prompt file (subagent.md) only, with no context
+    files and no task-completion rules (see ``cli.make_session`` and
+    ``subagent._subagent_system_prompt``).  ``context_path`` overrides
+    the default context directory discovery.
     Returns None if every part is empty/missing.
     """
     parts: list[str] = []
@@ -218,7 +327,12 @@ def assemble_agent_prompt(
         # lazy import: harness imports this module at call time
         from .agent_session import find_context_dir
 
-        context_block = load_context_files(find_context_dir(project_dir, context_path))
+        # the project's AGENTS.md files are just context files that live
+        # outside the context directory — same block format, same section
+        context_block = load_context_files(
+            find_context_dir(project_dir, context_path),
+            extra_files=find_agents_md_files(project_dir),
+        )
         if context_block:
             parts.append(context_block)
     rules = load_task_completion_rules()
