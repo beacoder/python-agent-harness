@@ -297,6 +297,44 @@ class TestTui(unittest.TestCase):
             "[FINAL CHECK]\n- Goal: build the thing\n- Status: SUCCESS\n- Evidence: tests pass",
         )
 
+    def test_final_check_markdown_variants_hidden(self):
+        """Markdown-decorated check blocks are hidden too.
+
+        Models reformat the block: bold header, heading header, labels
+        with the colon outside the emphasis ("**Goal**:"), and a reply
+        that starts with blank lines (what's left after the leading
+        reasoning is stripped).  None of these carry a literal
+        "[FINAL CHECK] ... Goal:" sequence, and all of them leaked into
+        the panel before the pattern was made decoration-tolerant.
+        """
+        from python_agent_harness.tui import _strip_final_check
+
+        variants = [
+            "\n\n**[FINAL CHECK]**\n\n- **Goal**: g\n- **Status**: SUCCESS\n- **Evidence**: e",
+            "[FINAL CHECK]\n- **Goal:** g\n- **Status:** SUCCESS\n- **Evidence:** e",
+            "## Final Check\n\n- Goal: g\n- Status: SUCCESS\n- Evidence: e\n",
+            "answer.\n\n[Final check]\n* `Goal`: g\n* `Status`: SUCCESS\n* `Evidence`: e",
+        ]
+        for text in variants:
+            with self.subTest(text=text):
+                self.assertNotIn("Goal", _strip_final_check(text))
+                # no dangling markdown decoration left behind
+                self.assertNotIn("*", _strip_final_check(text))
+        # a reply's real content survives the strip
+        self.assertEqual(_strip_final_check(variants[-1]), "answer.")
+
+    def test_final_check_prose_mention_kept(self):
+        """ "...the final check..." in prose is not a header: only a
+        bracketed or line-starting header truncates a reply, so talking
+        about the check block doesn't delete the answer."""
+        from python_agent_harness.tui import _strip_final_check
+
+        text = (
+            "I ran the final check pass. The Goal: field, the Status: "
+            "field and the Evidence: field are all filled in."
+        )
+        self.assertEqual(_strip_final_check(text), text)
+
     def test_final_check_without_header_kept(self):
         """A reply WITHOUT the [FINAL CHECK] header (just checklist
         bullets) is NOT hidden — only the header pattern filters."""
