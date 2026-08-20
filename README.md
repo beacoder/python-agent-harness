@@ -60,7 +60,7 @@ Most of [opencode](https://github.com/anomalyco/opencode)'s prompts and behavior
 | AGENTS.md handling | `prompts.py` (`find_agents_md_files`, `load_context_files`, per-file resolution) |
 
 **Ported opencode behaviors**:
-- **AGENTS.md discovery** — project-level `AGENTS.md` is located by walking up to the git worktree root (`git rev-parse --show-toplevel`) and injected into the system prompt in the same block format as context files; per-file `AGENTS.md` files are attached as `<system-reminder>` when a file beneath them is read (deduplicated per session).
+- **AGENTS.md discovery** — project-level `AGENTS.md` is located by walking up to the git worktree root (`git rev-parse --show-toplevel`) and injected into the system prompt in the same block format as context files.
 - **Plan / Build modes** — read-only plan phase with a per-session plan file, then a build-mode switch (`/plan`, `/build`).
 - **Skills** — `SKILL.md` files indexed by frontmatter `name`/`description` and advertised in the system prompt.
 - **Sub-agents** — isolated context, parallel delegation, single summary result, error containment.
