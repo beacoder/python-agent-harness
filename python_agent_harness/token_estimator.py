@@ -69,9 +69,6 @@ class TokenCalibrator:
         return round(estimated * self.factor)
 
 
-_SYSTEM_KEYS = ("system", "system_instruction", "instructions", "systemInstruction")
-
-
 def payload_text(system: object, messages: list[dict], tools: list[dict]) -> str:
     """Serialize the full prompt payload into one plain-text buffer."""
     buf: list[str] = []
