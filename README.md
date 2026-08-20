@@ -10,7 +10,7 @@
 
 </div>
 
-A terminal coding agent inspired by [gptel-agent-harness](https://github.com/beacoder/gptel-agent-harness): reads your repo, plans, edits files, runs commands, and verifies its own work — with only **three runtime dependencies** (`rich`, `httpx`, `prompt_toolkit`) and any OpenAI-compatible API.
+A terminal coding agent inspired by [gptel-agent-harness](https://github.com/beacoder/gptel-agent-harness) and [opencode](https://github.com/anomalyco/opencode): reads your repo, plans, edits files, runs commands, and verifies its own work — with only **three runtime dependencies** (`rich`, `httpx`, `prompt_toolkit`) and any OpenAI-compatible API. It ports opencode's prompts and behaviors (AGENTS.md discovery, plan/build modes, skills, sub-agents, todo tracking) while staying dependency-light.
 
 ## Demo
 
@@ -39,6 +39,38 @@ Edit `~/.config/python-agent-harness/config.json`, set `base_url`/`api_key`/`mod
 - **A TUI built for focus** — rich live interface with pinned status bar, Todos panel, inline red/green diff rendering for Edit/Write, `prompt_toolkit` editor (Esc+Enter to submit, Tab completion, history, Ctrl-D quits, Ctrl-C cancels without leaving the app).
 - **MCP servers (optional)** — with the `[mcp]` extra, MCP tools become ordinary agent tools (`mcp__<server>__<tool>`); supports `stdio`, `streamable-http`, `sse` transports.
 - **Slash commands** — `/init`, `/review`, `/explain`, plus custom commands from `prompts/commands/*.md`.
+
+## Ported from opencode
+
+Most of [opencode](https://github.com/anomalyco/opencode)'s prompts and behaviors have been ported over, so the agent reasons and works like opencode while staying dependency-light.
+
+**Prompts extracted from opencode** (in `python_agent_harness/prompts/`):
+
+| opencode prompt | harness equivalent |
+|---|---|
+| `default.txt` (main agent) | `agent.md` |
+| `plan.txt` / `plan-mode.txt` / `build-switch.txt` | `plan.md` / `plan-mode.md` / `build-switch.md` |
+| `task.txt` (subagent) | `subagent.md` + `Agent` tool |
+| `todowrite.txt` / `question.txt` / `skill.txt` | `TodoWrite` / `Question` / `Skill` tools |
+| `read.txt` / `write.txt` / `edit.txt` / `grep.txt` / `glob.txt` | `Read` / `Write` / `Edit` / `Grep` / `Glob` tools |
+| `shell.txt` (git/bash guidance) | `Bash` tool + `agent.md` "Git and GitHub" section |
+| `plan-enter.txt` / `plan-exit.txt` | `PlanExit` tool |
+| `initialize.txt` / `review.txt` / `explain` commands | `initialize.md` / `review.md` / `commands/explain.md` |
+| compaction / summary / title | `compact.md` / `summary.md` / `title.md` |
+| AGENTS.md handling | `prompts.py` (`find_agents_md_files`, `load_context_files`, per-file resolution) |
+
+**Ported opencode behaviors**:
+- **AGENTS.md discovery** — project-level `AGENTS.md` is located by walking up to the git worktree root (`git rev-parse --show-toplevel`) and injected into the system prompt in the same block format as context files; per-file `AGENTS.md` files are attached as `<system-reminder>` when a file beneath them is read (deduplicated per session).
+- **Plan / Build modes** — read-only plan phase with a per-session plan file, then a build-mode switch (`/plan`, `/build`).
+- **Skills** — `SKILL.md` files indexed by frontmatter `name`/`description` and advertised in the system prompt.
+- **Sub-agents** — isolated context, parallel delegation, single summary result, error containment.
+- **Todo tracking** — `TodoWrite` task list surfaced in the TUI.
+- **Tool-call loop** — FSM-driven `WAIT → TOOL → TRET` execution with parallel tool calls, failed-call sanitization, and completion supervision (nudges the model back to work if it stops early).
+- **Context management** — CJK-aware token estimation, per-model context windows, automatic compaction at 70% usage.
+- **Resilient API client** — streaming + non-streaming, transient-failure retry (429/5xx) with exponential backoff + jitter honoring `Retry-After`.
+- **Session persistence** — auto-save after every response, LLM-generated titles, `/restore`, `/sessions`.
+- **Slash commands** — `/init`, `/review`, `/explain`, `/compact`, `/summary`, plus custom commands from `prompts/commands/*.md`.
+- **MCP integration** — MCP servers become ordinary agent tools (`mcp__<server>__<tool>`).
 
 ## Configuration
 
