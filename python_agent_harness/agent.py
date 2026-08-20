@@ -37,7 +37,7 @@ from typing import Any, Protocol
 
 from . import config
 from .models import Message, ToolCall
-from .prompts import read_prompt_file, user_prompt_texts
+from .prompts import compact_summary, compacted_messages, user_prompt_texts
 from .token_estimator import context_window_for, estimate_payload_tokens
 from .tools.base import PendingToolResult
 
@@ -281,26 +281,18 @@ class AgentLoop:
         self.session.compacting = True
         try:
             conversation = "\n\n".join(f"{m.role}: {m.text()}" for m in self.messages if m.text())
-            system = read_prompt_file("compact.md")
-            resp, _ = self.session.client.chat_sync(
-                [Message(role="user", content=conversation)],
-                system=system,
-                cancel_check=self._is_cancelled,
+            summary = compact_summary(
+                self.session.client, conversation, cancel_check=self._is_cancelled
             )
-            summary = resp.text_without_reasoning()
             if not summary:
                 return False
-            frame = config.COMPACT_HEADER + summary + config.COMPACT_SEPARATOR
             # The summary replaces the whole conversation history EXCEPT
             # the system prompt (self.system is passed separately and
             # stays untouched): it is part of the user turn, never a
             # system message.  Every real user prompt (nudges and other
             # harness-injected messages excluded) is preserved verbatim
             # after the frame, so the model keeps the actual requests.
-            self.messages = [
-                Message(role="user", content=frame.strip()),
-                *[Message(role="user", content=p) for p in prompts],
-            ]
+            self.messages = compacted_messages(summary, prompts)
             # The shared conversation now is the compacted one: mirror it
             # onto session.last_messages so the TUI (renders from it) and
             # a later manual /compact start from the summary, not the old

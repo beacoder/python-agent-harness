@@ -4,9 +4,10 @@ Ported from gptel-agent-harness.el: loads bundled prompt files
 (agent/subagent/commands), strips YAML frontmatter, discovers skills
 for the {{SKILLS}} placeholder, assembles the effective system prompt
 from project context files + task-completion rules + agent prompt, and
-provides user_prompt_texts() for the compaction flow (summarize the
-conversation and rebuild the history with every user prompt preserved
-verbatim).
+provides the compaction flow helpers (summarize the conversation with
+the compact prompt and rebuild the history with every user prompt
+preserved verbatim), shared by the in-loop compaction and the manual
+/compact command.
 """
 
 from __future__ import annotations
@@ -14,9 +15,12 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from . import config
+from .models import Message
 
 
 def read_prompt_file(name: str) -> str:
@@ -450,3 +454,45 @@ def user_prompt_texts(messages: list) -> list[str]:
             continue
         prompts.append(text)
     return prompts
+
+
+def compact_summary(
+    client: Any,
+    conversation: str,
+    cancel_check: Callable[[], bool] | None = None,
+) -> str | None:
+    """Ask the model to summarize *conversation* using the compact prompt.
+
+    Shared by the in-loop compaction (``AgentLoop.compact``) and the
+    manual /compact command (``AgentSession.compact_conversation``).
+    Returns the summary text with the reasoning preamble stripped, or
+    None when the response carries no text.  Client exceptions
+    propagate to the caller, which owns the failure handling
+    (log/notify/status message).
+    """
+    system = read_prompt_file("compact.md")
+    kwargs: dict[str, Any] = {}
+    if cancel_check is not None:
+        kwargs["cancel_check"] = cancel_check
+    resp, _ = client.chat_sync(
+        [Message(role="user", content=conversation)],
+        system=system,
+        **kwargs,
+    )
+    summary = resp.text_without_reasoning()
+    return summary or None
+
+
+def compacted_messages(summary: str, prompts: list[str]) -> list[Message]:
+    """The post-compaction history: the summary frame as a user message
+    followed by every preserved user prompt, oldest first.
+
+    The summary lives in the user turn (the system prompt is passed
+    separately and stays untouched); *prompts* are the real user
+    requests (see ``user_prompt_texts``) that must survive compaction.
+    """
+    frame = (config.COMPACT_HEADER + summary + config.COMPACT_SEPARATOR).strip()
+    return [
+        Message(role="user", content=frame),
+        *[Message(role="user", content=p) for p in prompts],
+    ]

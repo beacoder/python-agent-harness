@@ -715,8 +715,7 @@ class AgentSession:
         manual command just replaces the history and waits for the next
         user message.
         """
-        from .models import Message as Msg
-        from .prompts import read_prompt_file, user_prompt_texts
+        from .prompts import compact_summary, compacted_messages, user_prompt_texts
 
         # Replacing the conversation is a new generation: invalidate any
         # worker still winding down from a cancelled run, or its
@@ -730,12 +729,9 @@ class AgentSession:
         self.compacting = True
         try:
             conversation = self._conversation_text(messages)
-            system = read_prompt_file("compact.md")
-            resp, _ = self.client.chat_sync([Msg(role="user", content=conversation)], system=system)
-            summary = resp.text_without_reasoning()
+            summary = compact_summary(self.client, conversation)
             if not summary:
                 return False, "Compaction failed: empty summary."
-            frame = config.COMPACT_HEADER + summary + config.COMPACT_SEPARATOR
             # The summary is part of the user turn (the original system
             # prompt is passed separately and stays untouched), so it
             # replaces the history as a user message — matching the
@@ -744,10 +740,7 @@ class AgentSession:
             # (nudges and other harness-injected messages excluded) is
             # preserved verbatim after the frame, so the model keeps
             # the actual requests.
-            self.last_messages = [
-                Msg(role="user", content=frame.strip()),
-                *[Msg(role="user", content=p) for p in user_prompt_texts(messages)],
-            ]
+            self.last_messages = compacted_messages(summary, user_prompt_texts(messages))
             self.auto_save(self.last_messages, self.system_prompt)
             self.notify("compact")
             return True, "Buffer compacted successfully."
