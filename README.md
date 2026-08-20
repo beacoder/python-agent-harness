@@ -40,7 +40,7 @@ Edit `~/.config/python-agent-harness/config.json`, set `base_url`/`api_key`/`mod
 - **MCP servers (optional)** — with the `[mcp]` extra, MCP tools become ordinary agent tools (`mcp__<server>__<tool>`); supports `stdio`, `streamable-http`, `sse` transports.
 - **Slash commands** — `/init`, `/review`, `/explain`, plus custom commands from `prompts/commands/*.md`.
 
-## Ported from opencode
+## Mini opencode
 
 Most of [opencode](https://github.com/anomalyco/opencode)'s prompts and behaviors have been ported over, so the agent reasons and works like opencode while staying dependency-light.
 
@@ -58,19 +58,6 @@ Most of [opencode](https://github.com/anomalyco/opencode)'s prompts and behavior
 | `initialize.txt` / `review.txt` / `explain` commands | `initialize.md` / `review.md` / `commands/explain.md` |
 | compaction / summary / title | `compact.md` / `summary.md` / `title.md` |
 | AGENTS.md handling | `prompts.py` (`find_agents_md_files`, `load_context_files`, per-file resolution) |
-
-**Ported opencode behaviors**:
-- **AGENTS.md discovery** — project-level `AGENTS.md` is located by walking up to the git worktree root (`git rev-parse --show-toplevel`) and injected into the system prompt in the same block format as context files.
-- **Plan / Build modes** — read-only plan phase with a per-session plan file, then a build-mode switch (`/plan`, `/build`).
-- **Skills** — `SKILL.md` files indexed by frontmatter `name`/`description` and advertised in the system prompt.
-- **Sub-agents** — isolated context, parallel delegation, single summary result, error containment.
-- **Todo tracking** — `TodoWrite` task list surfaced in the TUI.
-- **Tool-call loop** — FSM-driven `WAIT → TOOL → TRET` execution with parallel tool calls, failed-call sanitization, and completion supervision (nudges the model back to work if it stops early).
-- **Context management** — CJK-aware token estimation, per-model context windows, automatic compaction at 70% usage.
-- **Resilient API client** — streaming + non-streaming, transient-failure retry (429/5xx) with exponential backoff + jitter honoring `Retry-After`.
-- **Session persistence** — auto-save after every response, LLM-generated titles, `/restore`, `/sessions`.
-- **Slash commands** — `/init`, `/review`, `/explain`, `/compact`, `/summary`, plus custom commands from `prompts/commands/*.md`.
-- **MCP integration** — MCP servers become ordinary agent tools (`mcp__<server>__<tool>`).
 
 ## Configuration
 
