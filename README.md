@@ -2,7 +2,7 @@
 
 # python-agent-harness
 
-**A minimal-dependency coding agent for your terminal** — FSM-driven execution, OpenAI-compatible, made for daily use and easy customization.
+**Lightweight Python coding-agent harness for building reliable autonomous coding agents.** — FSM-driven execution, OpenAI-compatible, made for daily use and easy customization.
 
 [![CI](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
