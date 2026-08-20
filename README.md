@@ -212,7 +212,7 @@ venv/bin/pip-audit                  # dependency audit
 
 CI blocks on Ruff and Pyright failures.
 
-## Design principle
+## Design philosophy
 
 **Keep it intact, not bloated.**
 
