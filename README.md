@@ -2,7 +2,8 @@
 
 # python-agent-harness
 
-**Lightweight Python coding-agent harness for building reliable autonomous coding agents.** — FSM-driven execution, OpenAI-compatible, made for daily use and easy customization.
+**A lightweight Python coding-agent harness for building reliable autonomous coding agents.**  
+FSM-driven execution · OpenAI-compatible · built for daily use and easy customization
 
 [![CI](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
@@ -10,58 +11,77 @@
 
 </div>
 
-A terminal coding agent inspired by [gptel-agent-harness](https://github.com/beacoder/gptel-agent-harness) and [opencode](https://github.com/anomalyco/opencode): reads your repo, plans, edits files, runs commands, and verifies its own work — with only **three runtime dependencies** (`rich`, `httpx`, `prompt_toolkit`) and any OpenAI-compatible API. It ports opencode's prompts and behaviors (AGENTS.md discovery, plan/build modes, skills, sub-agents, todo tracking) while staying dependency-light.
+A terminal coding agent that reads your codebase, plans changes, edits files, runs commands, and verifies its work.
+
+`python-agent-harness` is inspired by [gptel-agent-harness](https://github.com/beacoder/gptel-agent-harness) and [opencode](https://github.com/anomalyco/opencode). It brings opencode's prompts and core behaviors—such as `AGENTS.md` discovery, plan/build modes, skills, sub-agents, and todo tracking—into a lightweight Python implementation with only **three runtime dependencies**:
+
+- `rich`
+- `httpx`
+- `prompt_toolkit`
+
+It works with any **OpenAI-compatible API** and is designed to be easy to inspect, customize, and use for everyday software development.
 
 ## Demo
 
-![Demo](demo.png)
+![python-agent-harness demo](demo.png)
 
 ## Quick start
 
 ```sh
 git clone git@github.com:beacoder/python-agent-harness.git
 cd python-agent-harness
-make install                        # create venv, install deps + package
+
+make install
 . venv/bin/activate
-python-agent-harness config --init  # write ~/.config/python-agent-harness/config.json
-python-agent-harness run            # launch the agent in your project dir
+
+python-agent-harness config --init
+python-agent-harness run
 ```
 
-Edit `~/.config/python-agent-harness/config.json`, set `base_url`/`api_key`/`model`, and run. Optional: `pip install -e ".[mcp]"` for MCP server integration; `pip install -e ".[dev]"` for dev tooling.
+Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_key`, and `model`.
+
+Optional extras:
+
+```sh
+pip install -e ".[mcp]"   # MCP server integration
+pip install -e ".[dev]"   # development tools
+```
 
 ## Features
 
-- **FSM-driven execution** (`WAIT`/`TOOL`/`TRET`/`SUPERVISE`/`DONE`/`ERRS`/`ABRT`) with completion supervision: the model is nudged (max 2) if it stops early; failed tool calls are sanitized and never strand the machine. Transient failures (429/5xx) retry with exponential backoff + jitter.
-- **Context management** — CJK-aware token estimation, per-model context windows, automatic compaction at 70% usage.
-- **Real coding tools** — Agent (sub-agents), TodoWrite, Glob, Grep, Read, Insert, Edit (incl. unified diffs), Write, Mkdir, Bash, Skill, Question, PlanExit. Synchronous tools run one at a time; asynchronous ones (Bash, Agent) run concurrently in emitted order.
-- **Plan / Build modes** — plan mode is read-only except the per-session plan file.
-- **Sessions that survive** — auto-saved to `~/.local/share/python-agent-harness/sessions/` after every response, LLM-generated titles, `/restore --latest`, `/sessions`.
-- **A TUI built for focus** — rich live interface with pinned status bar, Todos panel, inline red/green diff rendering for Edit/Write, `prompt_toolkit` editor (Esc+Enter to submit, Tab completion, history, Ctrl-D quits, Ctrl-C cancels without leaving the app).
-- **MCP servers (optional)** — with the `[mcp]` extra, MCP tools become ordinary agent tools (`mcp__<server>__<tool>`); supports `stdio`, `streamable-http`, `sse` transports.
-- **Slash commands** — `/init`, `/review`, `/explain`, plus custom commands from `prompts/commands/*.md`.
+- **FSM-driven execution** — explicit `WAIT` / `TOOL` / `TRET` / `SUPERVISE` / `DONE` / `ERRS` / `ABRT` states. Completion supervision nudges the model when it stops early, while failed tool calls are sanitized so they never strand the agent. Transient API failures (`429` / `5xx`) retry with exponential backoff and jitter.
+- **Context management** — CJK-aware token estimation, per-model context windows, and automatic compaction at 70% usage.
+- **Coding tools** — `Agent`, `TodoWrite`, `Glob`, `Grep`, `Read`, `Insert`, `Edit` (including unified diffs), `Write`, `Mkdir`, `Bash`, `Skill`, `Question`, and `PlanExit`. Synchronous tools execute sequentially; asynchronous tools such as `Bash` and `Agent` can run concurrently while preserving emitted order.
+- **Plan / Build modes** — plan mode is read-only except for the per-session plan file.
+- **Persistent sessions** — sessions are automatically saved after every response to `~/.local/share/python-agent-harness/sessions/`, with LLM-generated titles and support for `/restore --latest` and `/sessions`.
+- **Focused TUI** — a Rich-based interface with a pinned status bar, Todos panel, inline red/green diff rendering for `Edit` and `Write`, and a `prompt_toolkit` editor with history and completion. `Esc+Enter` submits, `Ctrl-D` quits, and `Ctrl-C` cancels without leaving the application.
+- **MCP support** — optional MCP integration through the `[mcp]` extra. MCP tools become ordinary agent tools such as `mcp__<server>__<tool>`. Supports `stdio`, `streamable-http`, and `sse` transports.
+- **Slash commands** — built-in `/init`, `/review`, `/explain`, and other commands, plus custom commands loaded from `prompts/commands/*.md`.
 
-## Mini opencode
+## Inspired by opencode
 
-Most of [opencode](https://github.com/anomalyco/opencode)'s prompts and behaviors have been ported over, so the agent reasons and works like opencode while staying dependency-light.
+Most of [opencode](https://github.com/anomalyco/opencode)'s prompts and core behaviors have been ported to this project. The goal is to retain its practical coding-agent workflow while keeping the implementation small, dependency-light, and easy to customize.
 
-**Prompts extracted from opencode** (in `python_agent_harness/prompts/`):
+### Prompt and behavior mapping
 
-| opencode prompt | harness equivalent |
+The following opencode prompts have corresponding implementations in `python-agent-harness`:
+
+| opencode | python-agent-harness |
 |---|---|
 | `default.txt` (main agent) | `agent.md` |
 | `plan.txt` / `plan-mode.txt` / `build-switch.txt` | `plan.md` / `plan-mode.md` / `build-switch.md` |
-| `task.txt` (subagent) | `subagent.md` + `Agent` tool |
+| `task.txt` (sub-agent) | `subagent.md` + `Agent` tool |
 | `todowrite.txt` / `question.txt` / `skill.txt` | `TodoWrite` / `Question` / `Skill` tools |
 | `read.txt` / `write.txt` / `edit.txt` / `grep.txt` / `glob.txt` | `Read` / `Write` / `Edit` / `Grep` / `Glob` tools |
-| `shell.txt` (git/bash guidance) | `Bash` tool + `agent.md` "Git and GitHub" section |
+| `shell.txt` | `Bash` tool + `agent.md` Git/GitHub guidance |
 | `plan-enter.txt` / `plan-exit.txt` | `PlanExit` tool |
-| `initialize.txt` / `review.txt` / `explain` commands | `initialize.md` / `review.md` / `commands/explain.md` |
+| `initialize.txt` / `review.txt` / `explain` | `initialize.md` / `review.md` / `commands/explain.md` |
 | compaction / summary / title | `compact.md` / `summary.md` / `title.md` |
-| AGENTS.md handling | `prompts.py` (`find_agents_md_files`, `load_context_files`, per-file resolution) |
+| `AGENTS.md` handling | `prompts.py` (`find_agents_md_files`, `load_context_files`, per-file resolution) |
 
 ## Configuration
 
-All LLM settings live in one JSON config file (no env vars required):
+All LLM settings live in a single JSON configuration file. Environment variables are optional.
 
 ```json
 {
@@ -74,93 +94,134 @@ All LLM settings live in one JSON config file (no env vars required):
   },
   "models": {
     "_comment": "Named LLM profiles for /model switching. Partial settings; unset keys inherit the main llm.",
-    "deepseek": { "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat" },
-    "qwen": { "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen3.5-coder" }
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat"
+    },
+    "qwen": {
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen3.5-coder"
+    }
   },
   "subagent_llm": {
     "profile": null,
-    "base_url": null, "api_key": null, "model": null,
-    "temperature": null, "max_tokens": null, "timeout": null,
-    "reasoning_effort": null, "stream": null
+    "base_url": null,
+    "api_key": null,
+    "model": null,
+    "temperature": null,
+    "max_tokens": null,
+    "timeout": null,
+    "reasoning_effort": null,
+    "stream": null
   },
-  "paths": { "context_path": null, "skill_path": null },
+  "paths": {
+    "context_path": null,
+    "skill_path": null
+  },
   "mcp": {
     "servers": {
-      "example": { "transport": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"], "env": [], "parallel": false, "timeout": null, "enabled": false }
+      "example": {
+        "transport": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "/tmp"
+        ],
+        "env": [],
+        "parallel": false,
+        "timeout": null,
+        "enabled": false
+      }
     }
   }
 }
 ```
 
-- Optional `llm` keys: `backend`, `temperature`, `max_tokens`, `timeout`, `reasoning_effort` (passed to the API as-is when set), `stream` (`run --no-stream` overrides).
-- **`models`** — named LLM profiles for runtime switching via `/model` (in the TUI: no arg lists, name or number switches; `default` always restores the main `llm` settings). Each profile is a partial settings dict; unset keys inherit the main `llm`.
-- **`subagent_llm`** — LLM for Agent-tool requests; every key optional, unset keys inherit main `llm`. Set `profile` to a name from `models` to reuse a profile; precedence: profile settings > explicit `subagent_llm` keys > main `llm` > env.
-- **`paths.context_path` / `paths.skill_path`** — where to load context files / skills from. Unset means the project's own `<project>/contexts` and `<project>/skills`.
-- **`mcp.servers`** — requires the `[mcp]` extra; each server is `{transport, command, args, env, url, headers, parallel, timeout, enabled}`.
-- **Precedence**: code defaults < config file < `OPENAI_*` env vars. Sub-agent settings honor `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`, `_BACKEND`).
-- Custom config: `--config PATH` or `PYTHON_AGENT_HARNESS_CONFIG`.
-- LLM request/response bodies are logged as JSON to `/tmp/python-agent-harness-<date>-<id>.json` (override dir with `LLM_LOG_DIR`); path printed at startup.
+### Configuration options
+
+- **`llm`** — main LLM configuration. Optional keys include `backend`, `temperature`, `max_tokens`, `timeout`, `reasoning_effort`, and `stream`. Values such as `reasoning_effort` are passed to the API as-is when set. `run --no-stream` overrides `stream`.
+- **`models`** — named LLM profiles for runtime switching with `/model`. A profile is a partial settings dictionary; unset keys inherit from the main `llm`. `default` restores the main LLM configuration.
+- **`subagent_llm`** — LLM configuration for `Agent` tool requests. Unset values inherit from the main `llm`. Set `profile` to reuse a profile from `models`. Precedence is: profile settings > explicit `subagent_llm` settings > main `llm` > environment variables.
+- **`paths.context_path` / `paths.skill_path`** — locations from which to load context files and skills. When unset, the project-local `<project>/contexts` and `<project>/skills` directories are used.
+- **`mcp.servers`** — MCP server configuration. Requires the `[mcp]` extra. Each server supports `transport`, `command`, `args`, `env`, `url`, `headers`, `parallel`, `timeout`, and `enabled`.
+- **Configuration precedence** — code defaults < config file < `OPENAI_*` environment variables. Sub-agent settings also support `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`, `_BACKEND`).
+- **Custom config** — use `--config PATH` or `PYTHON_AGENT_HARNESS_CONFIG`.
+- **LLM logging** — request and response bodies are logged as JSON to `/tmp/python-agent-harness-<date>-<id>.json`. Set `LLM_LOG_DIR` to change the directory. The log path is printed at startup.
 
 ## Usage
 
 ```sh
-python-agent-harness run [project-dir]   # interactive TUI agent
+python-agent-harness run [project-dir]
 ```
 
-| Command | What it does |
-|---|---|
-| `/plan` / `/build` | switch between read-only plan and build mode |
-| `/init` | create/update `AGENTS.md` |
-| `/review` | review uncommitted changes / commit / branch / PR |
-| `/explain [project] [target]` | explain code |
-| `/compact` | compact the conversation |
-| `/summary` | append a conversation summary |
-| `/save` | save the session |
-| `/sessions` | list saved sessions |
-| `/restore [path\|title\|--latest\|latest]` | restore a session (title substring match) |
-| `/clear` | start a fresh conversation |
-| `/model [name]` | switch LLM model profile (`default` restores the session's original model; no arg: list available) |
-| `/exit` | quit |
+Launches the interactive TUI agent. If `project-dir` is omitted, the current directory is used.
 
-Custom commands from `prompts/commands/*.md` are registered as slash commands too (TUI-only).
+### Slash commands
+
+| Command | Description |
+|---|---|
+| `/plan` / `/build` | Switch between read-only plan mode and build mode |
+| `/init` | Create or update `AGENTS.md` |
+| `/review` | Review uncommitted changes, commits, branches, or pull requests |
+| `/explain [project] [target]` | Explain code |
+| `/compact` | Compact the conversation |
+| `/summary` | Append a conversation summary |
+| `/save` | Save the current session |
+| `/sessions` | List saved sessions |
+| `/restore [path\|title\|--latest\|latest]` | Restore a session; title matching uses substring search |
+| `/clear` | Start a fresh conversation |
+| `/model [name]` | Switch LLM profiles; `default` restores the session's original model |
+| `/exit` | Quit |
+
+Custom commands from `prompts/commands/*.md` are registered as slash commands as well (TUI only).
 
 ## Project layout
 
-```
+```text
 python_agent_harness/
-├── agent.py        agent FSM (states, transitions, supervision, compaction)
-├── client.py       OpenAI-compatible streaming client (httpx)
-├── models.py       Message / ToolCall / ToolSpec data classes
-├── token_estimator.py  CJK-aware token estimation + calibration
-├── planmode.py     build/plan mode + plan file lifecycle
-├── prompts.py      prompt loading + system prompt assembly
-├── session_store.py  session persistence + titles
-├── agent_session.py  AgentSession (wiring hub; MCP lifecycle)
-├── subagent.py     sub-agent runner (error containment, plan reminder)
-├── commands.py     init/review/custom command definitions
-├── cli.py          argparse entry points
-├── tui.py          rich + prompt_toolkit TUI
-├── diffrender.py   unified diff generation + rich rendering
-├── mcp/            optional MCP client (config, SDK wrapper, manager)
-└── tools/          tool implementations + registry (incl. MCPTool adapter)
+├── agent.py           # Agent FSM: states, transitions, supervision, compaction
+├── client.py          # OpenAI-compatible streaming client (httpx)
+├── models.py          # Message / ToolCall / ToolSpec data classes
+├── token_estimator.py # CJK-aware token estimation + calibration
+├── planmode.py        # Plan/build modes + plan-file lifecycle
+├── prompts.py         # Prompt loading + system-prompt assembly
+├── session_store.py   # Session persistence + titles
+├── agent_session.py   # AgentSession wiring hub + MCP lifecycle
+├── subagent.py        # Sub-agent runner + error containment
+├── commands.py        # Init/review/custom command definitions
+├── cli.py             # CLI entry points
+├── tui.py             # Rich + prompt_toolkit TUI
+├── diffrender.py      # Unified diff generation + Rich rendering
+├── mcp/               # Optional MCP client
+└── tools/              # Tool implementations + registry
 ```
 
 ## Development
 
-Python ≥ 3.11 (CI runs 3.11 / 3.12 / 3.13).
+Requires Python ≥ 3.11. CI runs against Python 3.11, 3.12, and 3.13.
 
 ```sh
-make test                           # unit tests (unittest discover)
-venv/bin/pip install -e ".[dev]"    # dev tools: ruff, pyright, build, pip-audit
-venv/bin/ruff check .               # lint (CI blocks on this)
-venv/bin/pyright                    # type check, basic mode (CI blocks on this)
-venv/bin/python -m build            # sdist + wheel
+make test                           # unit tests
+venv/bin/pip install -e ".[dev]"    # development tools
+venv/bin/ruff check .               # lint
+venv/bin/pyright                    # type checking
+venv/bin/python -m build            # build sdist + wheel
 venv/bin/pip-audit                  # dependency audit
 ```
 
-## Principle
+CI blocks on Ruff and Pyright failures.
 
-Keep it intact, not bloated.
+## Design principle
+
+**Keep it intact, not bloated.**
+
+The project aims to provide a capable coding-agent runtime without hiding the core agent loop behind a heavyweight framework.
+
+## Related projects
+
+- [gptel-agent-harness](https://github.com/beacoder/gptel-agent-harness) — the Emacs-based implementation that inspired this project.
+- [opencode](https://github.com/anomalyco/opencode) — the primary source of many prompts and coding-agent behaviors.
 
 ## License
 
