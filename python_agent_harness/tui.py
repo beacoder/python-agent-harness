@@ -99,9 +99,34 @@ def _tool_result_preview(content: str) -> str:
     return _head_chars(preview, config.TOOL_RESULT_PREVIEW_CHARS)
 
 
-# the completion-check filter: a [FINAL CHECK] header followed by the
-# Goal:/Status:/Evidence: labels (anywhere in the block, any lines)
-_FINAL_CHECK_RE = re.compile(r"\[FINAL CHECK\].*Goal:.*Status:.*Evidence:", re.DOTALL)
+# the completion-check filter: a FINAL CHECK header followed by the
+# Goal/Status/Evidence labels (anywhere in the block, any lines).
+#
+# Models reformat the block from task-completion-rules.md freely, so the
+# pattern must tolerate markdown decoration.  Seen in the wild:
+# "[FINAL CHECK]", "**[FINAL CHECK]**", "## Final Check", and labels as
+# "Goal:", "**Goal:**" or "**Goal**:" (colon outside the emphasis) —
+# the last variant has no literal "Goal:" in it, which is what made the
+# old literal pattern miss and leak the block into the panel.
+#
+# The header must be bracketed or start its own line: that keeps prose
+# like "let me do the final check" from truncating a real reply.
+_FC_LABEL = r"[*_`]*[ \t]*:"  # "Goal:", "**Goal:**", "**Goal**:", "`Goal` :"
+_FC_HEADER = (
+    r"(?:"
+    r"(?:\*\*|__|#{1,6}[ \t]*)?"  # decoration before a bracketed header
+    r"\[[ \t]*final[ \t_]*check[ \t]*\]"  # [FINAL CHECK], bracketed anywhere
+    r"|(?:^|\n)[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*|__)?[ \t]*"
+    r"final[ \t_]+check\b"  # ## Final Check / **FINAL CHECK**, line-anchored
+    r")"
+)
+_FINAL_CHECK_RE = re.compile(
+    _FC_HEADER + rf".*?Goal{_FC_LABEL}.*?Status{_FC_LABEL}.*?Evidence{_FC_LABEL}",
+    re.DOTALL | re.IGNORECASE,
+)
+# a line left holding nothing but markdown decoration once the block is
+# cut away (e.g. the "> " or "**" in front of a decorated header)
+_FC_DANGLING_RE = re.compile(r"(?:^|\n)[ \t]*[*_#>`\-]+[ \t]*$")
 
 
 def _is_injected_user_text(text: str) -> bool:
@@ -123,9 +148,9 @@ def _strip_final_check(text: str) -> str:
 
     The task-completion rules make the model end with a [FINAL CHECK]
     block (Goal / Status / Evidence) — verification bookkeeping, not
-    content the user wants to read.  The filter is the
-    "[FINAL CHECK].*Goal:.*Status:.*Evidence:" pattern: everything
-    from the header onward is dropped.
+    content the user wants to read.  The filter is ``_FINAL_CHECK_RE``
+    (header + the three labels, markdown decoration tolerated):
+    everything from the header onward is dropped.
 
     The block is hidden even when it is the reply's ONLY content —
     check-only replies never render.  Replies without the header are
@@ -134,7 +159,8 @@ def _strip_final_check(text: str) -> str:
     """
     m = _FINAL_CHECK_RE.search(text)
     if m is not None:
-        return text[: m.start()].rstrip()
+        head = text[: m.start()].rstrip()
+        return _FC_DANGLING_RE.sub("", head).rstrip()
     return text
 
 
