@@ -27,18 +27,25 @@ completion supervision as an extension:
 - a cancelled run with no successor salvages its partial history
   (truncated to the last complete tool round) instead of losing it;
   a stale worker superseded by a newer run never touches shared state
+
+Tool execution and context/compaction live in tool_runner.py and
+context_manager.py (extracted, no logic changes); the FSM delegates
+to them via ``_tool_runner`` / ``_context_manager``.
 """
 
 from __future__ import annotations
 
-import json
-import time
 from typing import Any, Protocol
 
 from . import config
+from .context_manager import ContextManager
 from .models import Message, ToolCall
-from .prompts import compact_summary, compacted_messages, user_prompt_texts
 from .token_estimator import context_window_for, estimate_payload_tokens
+from .tool_runner import (
+    NIL_RESULT_PLACEHOLDER,  # noqa: F401  (re-exported for backward compat)
+    ToolRunner,
+    sanitize_tool_result,  # noqa: F401  (tests import it from .agent)
+)
 from .tools.base import PendingToolResult
 
 
@@ -92,6 +99,11 @@ class AgentLoop:
         self.error: str | None = None
         self.harness_injected: bool = False
         self.supervisor = Supervisor(session)
+        # extracted machinery (no logic changes): tool execution and
+        # context/compaction live in tool_runner.py / context_manager.py;
+        # the loop delegates to them and keeps the FSM state
+        self._tool_runner = ToolRunner(self)
+        self._context_manager = ContextManager(self)
         # FSM state: `state` is the current state, `info` the per-round
         # context read by the transition-table predicates, `history`
         # the states visited so far (newest last), `rounds` the number
@@ -213,25 +225,16 @@ class AgentLoop:
     # context management
     # ------------------------------------------------------------------
     def _update_context_ratio(self) -> None:
-        raw = estimate_payload_tokens(
-            self.system,
-            [m.to_api() for m in self.messages],
-            [t.to_api() for t in self.session.tool_specs()],
-        )
-        self.session.calibrator.last_raw_estimate = raw
-        calibrated = self.session.calibrator.calibrate(raw)
-        window = context_window_for(self.session.model)
-        self.session.context_ratio = calibrated / float(window)
-        self.session.notify("context")
+        """Update the session's context ratio (see ContextManager)."""
+        # the estimator functions are resolved here — in the agent
+        # module namespace — so tests patching
+        # python_agent_harness.agent.estimate_payload_tokens keep
+        # intercepting the call site
+        self._context_manager.update_context_ratio(estimate_payload_tokens, context_window_for)
 
     def _need_compaction(self) -> bool:
-        return (
-            self.top_level
-            and self.session.tools_enabled
-            and not self.session.compacting
-            and self.session.context_ratio is not None
-            and self.session.context_ratio > config.CONTEXT_TRIGGER
-        )
+        """Whether the context ratio is past the trigger (see ContextManager)."""
+        return self._context_manager.need_compaction()
 
     # ------------------------------------------------------------------
     # prompt injection (plan/build mode)
@@ -268,207 +271,49 @@ class AgentLoop:
     # compaction
     # ------------------------------------------------------------------
     def compact(self) -> bool:
-        """Compact the conversation; return True on success.
-
-        On success the history is replaced by the summary frame followed
-        by every real user prompt (nudges and other harness-injected
-        messages excluded), so the model keeps the actual requests; the
-        last prompt is the resume request for the next round.
-        """
-        prompts = user_prompt_texts(self.messages)
-        if not prompts:
-            return False
-        self.session.compacting = True
-        try:
-            conversation = "\n\n".join(f"{m.role}: {m.text()}" for m in self.messages if m.text())
-            summary = compact_summary(
-                self.session.client, conversation, cancel_check=self._is_cancelled
-            )
-            if not summary:
-                return False
-            # The summary replaces the whole conversation history EXCEPT
-            # the system prompt (self.system is passed separately and
-            # stays untouched): it is part of the user turn, never a
-            # system message.  Every real user prompt (nudges and other
-            # harness-injected messages excluded) is preserved verbatim
-            # after the frame, so the model keeps the actual requests.
-            self.messages = compacted_messages(summary, prompts)
-            # The shared conversation now is the compacted one: mirror it
-            # onto session.last_messages so the TUI (renders from it) and
-            # a later manual /compact start from the summary, not the old
-            # full history.
-            if self.top_level and not self._is_cancelled():
-                self.session.last_messages = list(self.messages)
-            # Fresh start for the resumed conversation: the pre-compaction
-            # nudge budget must not carry over, or the first terminal
-            # answer after compaction ends the run immediately.
-            self.supervisor.reset_nudges()
-            self.session.notify("compact")
-            return True
-        except Exception as e:  # noqa: BLE001 - compaction failure is non-fatal
-            self.session.notify("error")
-            self.session.log(f"compaction failed: {e}")
-            return False
-        finally:
-            self.session.compacting = False
+        """Compact the conversation; return True on success (see ContextManager)."""
+        return self._context_manager.compact()
 
     # ------------------------------------------------------------------
     # tool execution
     # ------------------------------------------------------------------
     def _execute_tool_call(self, call: ToolCall) -> str | PendingToolResult:
-        if not self.top_level and call.name in config.SUBAGENT_EXCLUDED_TOOLS:
-            # defense in depth: a hallucinated call must never reach the
-            # registry — the spec was filtered, so refuse it here too
-            return f"Error: {call.name} is not available to sub-agents — it is a parent-only tool"
-        args = call.arguments
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except json.JSONDecodeError:
-                args = {}
-        if not isinstance(args, dict):
-            args = {}
-        # Validate required parameters from the tool schema
-        tool = self.session.registry.get(call.name)
-        if tool is not None:
-            required = tool.parameters.get("required", [])
-            missing = [k for k in required if k not in args]
-            if missing:
-                return f"Error: {call.name} is missing required argument(s): {', '.join(missing)}"
-        return self.session.execute_tool(call.name, args, call_id=call.id)
+        """Run one tool call (see ToolRunner.execute_tool_call)."""
+        return self._tool_runner.execute_tool_call(call)
 
     def _deliver_tool_result(self, p: ToolCall, result: str) -> None:
-        """Append one tool result message for call P (parent thread only)."""
-        p.result = result
-        if hasattr(self.session, "take_diff"):
-            p.diff = self.session.take_diff(p.id)
-        self.messages.append(
-            Message(
-                role="tool",
-                content=result,
-                tool_call_id=p.id,
-                name=p.name,
-            )
-        )
-        if self.top_level and not self._is_cancelled():
-            # only the top-level loop mirrors its messages onto the
-            # shared session: a sub-agent runs inside the parent's
-            # tool round and must never clobber the parent's
-            # conversation history (the TUI renders from it)
-            self.session.last_messages = list(self.messages)
+        """Append one tool result message for call P (parent thread only).
+
+        See ToolRunner.deliver_tool_result.  Kept on the loop (instead
+        of being called directly on the runner) so subclass or test
+        overrides of this method keep intercepting deliveries.
+        """
+        self._tool_runner.deliver_tool_result(p, result)
 
     def _run_tools(self, calls: list[ToolCall], results: dict[str, str]) -> None:
         """Run CALLS in model-emitted order, filling RESULTS.
 
-        Mirrors gptel's `gptel--handle-tool-use': synchronous tools
-        (Read, Edit, Glob, ...) execute ONE AT A TIME, in call order;
-        asynchronous tools (Bash, Agent — those whose ``run`` returns a
-        ``PendingToolResult``) are dispatched in line and run
-        concurrently in the background, their results awaited
-        afterwards, again in original call order.  Delivery happens
-        later, in original tool-call order, by the caller.
-
-        A cancel landing before a call starts skips it (tools have side
-        effects); a call already running — or an async tool already
-        dispatched — cannot be stopped, but its result stays local to
-        the (dead) run.
+        See ToolRunner.run_tools for the full contract (gptel-style
+        sync one-at-a-time / async concurrent dispatch, cancel
+        semantics).
         """
-        async_calls: list[tuple[ToolCall, PendingToolResult]] = []
-        for p in calls:
-            # A cancel landing while a call is still QUEUED must skip
-            # it (tools have side effects): the sequential loop checks
-            # before every call, so a call that has not started yet must
-            # not run after Ctrl-C.
-            if self._is_cancelled():
-                results[p.id] = "Error: tool call cancelled (user aborted the run)."
-                continue
-            # Notify the TUI which tool is currently executing so the
-            # status bar can show the active tool name beside the spinner.
-            if self.top_level:
-                self.session.notify("tool_running", p.name)
-            start = time.monotonic()
-            try:
-                result = self._execute_tool_call(p)
-            except Exception as e:  # noqa: BLE001 - containment boundary
-                p.elapsed = time.monotonic() - start
-                results[p.id] = f"Error: tool {p.name!r} crashed during execution — {e}"
-                continue
-            if isinstance(result, PendingToolResult):
-                # async tool (e.g. Bash): run() spawned the work and
-                # returned its handle immediately; await the real result
-                # after the sequential loop so sibling calls keep
-                # executing in the meantime
-                async_calls.append((p, result))
-            else:
-                p.elapsed = time.monotonic() - start
-                results[p.id] = sanitize_tool_result(result)
-        for p, pending in async_calls:
-            start = time.monotonic()
-            try:
-                result = pending.wait()
-            except Exception as e:  # noqa: BLE001 - containment boundary
-                results[p.id] = f"Error: tool {p.name!r} crashed during execution — {e}"
-            else:
-                p.elapsed = time.monotonic() - start
-                results[p.id] = sanitize_tool_result(result)
+        self._tool_runner.run_tools(calls, results)
 
     def _execute_pending(self) -> None:
         """TOOL state: run the round's pending tool calls.
 
-        The assistant message carrying the tool calls was already
-        appended by the WAIT state.  Results land in
-        ``self.info["tool_result"]`` and are delivered by the TRET
-        state in original tool-call order.
-
-        Synchronous tools run ONE AT A TIME in model-emitted order
-        (gptel-style); asynchronous tools (Bash, Agent) are dispatched
-        in line and run concurrently in the background.
+        See ToolRunner.execute_pending (sync one-at-a-time,
+        async-concurrent dispatch, cancel semantics).
         """
-        pending = list(self.pending)
-        if not pending:
-            return
-        if self._is_cancelled():
-            # Ctrl-C before the round started: do not run tools (they
-            # have side effects) and do not touch shared state — a stale
-            # worker must never mirror its partial history over the next
-            # run's `session.last_messages`.
-            return
-        results: dict[str, str] = {}
-        self._run_tools(pending, results)
-        if self._is_cancelled():
-            # cancelled mid-round: tools already submitted may have run
-            # (their side effects are done), but the results stay local
-            # to this (dead) run
-            self.pending = []
-            return
-        self.info["tool_result"] = results
+        self._tool_runner.execute_pending()
 
     def _deliver_results(self) -> None:
         """TRET state: deliver the round's results to the conversation.
 
-        Results are appended as tool messages in the original
-        tool-call order regardless of execution order.  On cancel the
-        partial delivery is discarded — the shared history salvage
-        cuts the dangling round so no tool call is left unanswered.
+        See ToolRunner.deliver_results (results are appended in
+        original tool-call order regardless of execution order).
         """
-        pending = list(self.pending)
-        if not pending:
-            return
-        if self._is_cancelled():
-            self.pending = []
-            return
-        results = self.info.get("tool_result", {})
-        for p in pending:
-            if self._is_cancelled():
-                self.pending = []
-                return
-            self._deliver_tool_result(p, results[p.id])
-            # Notify per-tool so the TUI rebuilds history progressively
-            # (each tool result appears as soon as it is committed to
-            # the conversation, instead of all at once at the end)
-            if self.top_level:
-                self.session.notify("tools")
-        self.pending = []
+        self._tool_runner.deliver_results()
 
     def _run_tool_round(self) -> None:
         """Execute all pending tool calls (sync one at a time, async
@@ -484,36 +329,10 @@ class AgentLoop:
     def _salvage_messages(self) -> list[Message]:
         """Longest valid prefix of ``self.messages`` for the shared history.
 
-        A cancelled run may end mid-tool-round: the assistant message
-        carrying the tool calls is present but some (or all) results are
-        missing.  Committing that as-is would hand the next turn an
-        invalid request (a tool call without its response), so cut back
-        to the last complete round — the model redoes the dangling work
-        on the next turn.
+        See ToolRunner.salvage_messages (cuts a dangling tool round so
+        no tool call is left unanswered in the shared history).
         """
-        msgs = self.messages
-        open_round: int | None = None
-        pending: dict[str, bool] = {}
-        for i, m in enumerate(msgs):
-            if m.role == "assistant":
-                if m.tool_calls:
-                    if open_round is not None:
-                        return msgs[:open_round]
-                    open_round = i
-                    pending = {tc.id: False for tc in m.tool_calls}
-                elif open_round is not None:
-                    return msgs[:open_round]
-            elif m.role == "tool":
-                if m.tool_call_id in pending:
-                    pending[m.tool_call_id] = True
-                    if all(pending.values()):
-                        open_round = None
-                        pending = {}
-            elif open_round is not None:
-                return msgs[:open_round]
-        if open_round is not None:
-            return msgs[:open_round]
-        return msgs
+        return self._tool_runner.salvage_messages()
 
     # ------------------------------------------------------------------
     # state machine driver
@@ -825,11 +644,6 @@ def run_agent_loop(
     ).run()
 
 
-NIL_RESULT_PLACEHOLDER = (
-    "Error: tool produced no result (it may have been interrupted or failed to return)."
-)
-
-
 class Supervisor:
     """Completion supervision: nudge the model when it stops too early."""
 
@@ -887,17 +701,3 @@ class Supervisor:
             self.inject_nudge()
             return True
         return False
-
-
-def sanitize_tool_result(result: object) -> str:
-    """Sanitize a tool result for the model.
-
-    - str (incl. empty) kept as-is
-    - None -> error placeholder (backends reject JSON null content)
-    - anything else -> str()
-    """
-    if result is None:
-        return NIL_RESULT_PLACEHOLDER
-    if isinstance(result, str):
-        return result
-    return str(result)
