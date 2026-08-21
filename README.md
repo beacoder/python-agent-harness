@@ -180,7 +180,9 @@ Custom commands from `prompts/commands/*.md` are registered as slash commands as
 
 ```text
 python_agent_harness/
-├── agent.py           # Agent FSM: states, transitions, supervision, compaction
+├── agent.py           # Agent FSM core: states, transitions, supervision
+├── tool_runner.py     # Tool-call execution/delivery + history salvage
+├── context_manager.py # Context-ratio tracking + compaction
 ├── client.py          # OpenAI-compatible streaming client (httpx)
 ├── models.py          # Message / ToolCall / ToolSpec data classes
 ├── token_estimator.py # CJK-aware token estimation + calibration
