@@ -10,7 +10,9 @@ from __future__ import annotations
 import os
 import shlex
 import threading
+from typing import TYPE_CHECKING, Any
 
+from rich.console import Console
 from rich.live import Live
 
 from .. import config
@@ -24,6 +26,11 @@ from ..session_store import (
     unescape_role_header,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ..agent_session import AgentSession
+
 
 class CommandMixin:
     """Slash command methods for the TUI.
@@ -33,6 +40,30 @@ class CommandMixin:
     ``agent_running``, ``status``, ``_current_tool``, ``_start_agent``,
     ``_status_bar``, ``_flush``, ``_render_frame``.
     """
+
+    if TYPE_CHECKING:
+        session: AgentSession
+        console: Console
+        conversation_history: list[Message]
+        _history_dirty: bool
+        _data_event: threading.Event
+        agent_running: bool
+        status: str
+        _current_tool: str
+        _round_times: list[float]
+
+        def _start_agent(
+            self,
+            text: str,
+            system: str | None = None,
+            restore: Callable[[], None] | None = None,
+        ) -> None: ...
+
+        def _status_bar(self) -> Any: ...
+
+        def _flush(self) -> None: ...
+
+        def _render_frame(self) -> Any: ...
 
     # ------------------------------------------------------------------
     # slash commands
