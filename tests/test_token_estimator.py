@@ -26,9 +26,9 @@ class TestTokenizer(unittest.TestCase):
 
     def test_context_window_matching(self):
         self.assertEqual(context_window_for("deepseek-v4"), 1_000_000)
-        self.assertEqual(context_window_for("gpt-5-mini"), 128000)
-        self.assertEqual(context_window_for("claude-sonnet"), 200000)
-        self.assertEqual(context_window_for("unknown-model"), 32768)
+        self.assertEqual(context_window_for("gpt-5-mini"), 128_000)
+        self.assertEqual(context_window_for("claude-sonnet"), 200_000)
+        self.assertEqual(context_window_for("unknown-model"), 128_000)
 
     def test_calibrator(self):
         c = TokenCalibrator()
