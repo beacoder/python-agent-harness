@@ -11,10 +11,10 @@ import json
 import math
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rich.cells import cell_len
-from rich.console import Group
+from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
@@ -23,6 +23,12 @@ from rich.text import Text
 from .. import config
 from ..diffrender import render_diff
 from ..prompts import _is_mode_reminder_text
+
+if TYPE_CHECKING:
+    import threading
+
+    from ..agent_session import AgentSession
+    from .input import UiQuestion
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -165,6 +171,23 @@ class RenderMixin:
     ``_data_event``, ``_history_cache``, ``_history_dirty``,
     ``_round_times``, ``_run_start``.
     """
+
+    if TYPE_CHECKING:
+        session: AgentSession
+        console: Console
+        stream_text: str
+        lock: threading.Lock
+        question: UiQuestion | None
+        agent_running: bool
+        status: str
+        _current_tool: str
+        round_start: int
+        round_user_text: str
+        _data_event: threading.Event
+        _history_cache: list[Any] | None
+        _history_dirty: bool
+        _round_times: list[float]
+        _run_start: float | None
 
     # ------------------------------------------------------------------
     # rendering
