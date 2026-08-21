@@ -989,7 +989,7 @@ class TestTui(unittest.TestCase):
             Message(role="user", content="q2"),
             Message(role="assistant", content="partial answer"),
         ]
-        with mock.patch("python_agent_harness.tui.run_agent_loop", return_value=None):
+        with mock.patch("python_agent_harness.tui.core.run_agent_loop", return_value=None):
             tui._run_agent("q2", tui.run_seq)
         self.assertEqual(
             [m.text() for m in tui.conversation_history],
@@ -2107,12 +2107,12 @@ class TestTui(unittest.TestCase):
 
     def test_run_shows_llm_log_path(self):
         """With LLM logging enabled the log path is printed at startup."""
-        import python_agent_harness.tui as tui_mod
+        import python_agent_harness.tui.core as tui_core
 
         tui, buf = make_tui()
         tui.session.client.log_path = "/tmp/llm.log"
         with (
-            mock.patch.object(tui_mod.config, "LLM_LOG_ENABLED", True),
+            mock.patch.object(tui_core.config, "LLM_LOG_ENABLED", True),
             mock.patch.object(tui, "_read_multiline", return_value=None),
         ):
             tui.run()
@@ -2212,7 +2212,7 @@ class TestTui(unittest.TestCase):
             raise RuntimeError("stop")
 
         with (
-            mock.patch("python_agent_harness.tui.run_agent_loop", side_effect=boom),
+            mock.patch("python_agent_harness.tui.core.run_agent_loop", side_effect=boom),
             mock.patch.object(tui, "_run_live", return_value=False) as live,
         ):
             tui._start_agent("hello")
@@ -2233,7 +2233,7 @@ class TestTui(unittest.TestCase):
             file=io.StringIO(),
         )
         with (
-            mock.patch("python_agent_harness.tui.run_agent_loop", side_effect=RuntimeError("stop")),
+            mock.patch("python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("stop")),
             mock.patch.object(tui, "_run_dumb", return_value=False) as dumb,
         ):
             tui._start_agent("hello")
@@ -2249,7 +2249,7 @@ class TestTui(unittest.TestCase):
         q = UiQuestion("Approve?")
         tui.question = q
         with (
-            mock.patch("python_agent_harness.tui.run_agent_loop", side_effect=RuntimeError("stop")),
+            mock.patch("python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("stop")),
             mock.patch.object(tui, "_run_live", side_effect=KeyboardInterrupt),
         ):
             tui._start_agent("hello", restore=lambda: released.append(1))
@@ -2318,7 +2318,7 @@ class TestTui(unittest.TestCase):
         status bar."""
         tui, _ = make_tui()
         with mock.patch(
-            "python_agent_harness.tui.run_agent_loop", side_effect=RuntimeError("boom")
+            "python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("boom")
         ):
             tui._run_agent("hi", tui.run_seq)
         self.assertIn("agent error: boom", tui.status)
@@ -2328,7 +2328,7 @@ class TestTui(unittest.TestCase):
         tui, _ = make_tui()
         restored = []
         with mock.patch(
-            "python_agent_harness.tui.run_agent_loop", side_effect=RuntimeError("boom")
+            "python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("boom")
         ):
             tui._run_agent("hi", tui.run_seq, restore=lambda: restored.append(1))
         self.assertEqual(restored, [1])
@@ -2391,7 +2391,7 @@ class TestTui(unittest.TestCase):
     def test_run_slash_command_unknown(self):
         """A slash command with no registered SessionCommand is reported."""
         tui, buf = make_tui()
-        with mock.patch("python_agent_harness.tui.find_command", return_value=None):
+        with mock.patch("python_agent_harness.tui.commands.find_command", return_value=None):
             tui._run_slash_command("bogus", "")
         self.assertIn("unknown command: /bogus", buf.getvalue())
 
@@ -2434,7 +2434,7 @@ class TestTui(unittest.TestCase):
 
     def test_run_sessions_empty(self):
         tui, buf = make_tui()
-        with mock.patch("python_agent_harness.tui.SessionStore.list_sessions", return_value=[]):
+        with mock.patch("python_agent_harness.tui.commands.SessionStore.list_sessions", return_value=[]):
             tui._run_sessions()
         self.assertIn("no saved sessions", buf.getvalue())
 
@@ -2450,7 +2450,7 @@ class TestTui(unittest.TestCase):
                     ";; End:\n"
                 )
             with mock.patch(
-                "python_agent_harness.tui.SessionStore.list_sessions",
+                "python_agent_harness.tui.commands.SessionStore.list_sessions",
                 return_value=[path],
             ):
                 tui._run_sessions()
@@ -2462,7 +2462,7 @@ class TestTui(unittest.TestCase):
     def test_run_sessions_skips_unreadable_files(self):
         tui, buf = make_tui()
         with mock.patch(
-            "python_agent_harness.tui.SessionStore.list_sessions",
+            "python_agent_harness.tui.commands.SessionStore.list_sessions",
             return_value=["/nonexistent/session.md"],
         ):
             tui._run_sessions()  # must not raise
@@ -2475,7 +2475,7 @@ class TestTui(unittest.TestCase):
         """/restore with nothing to restore prints the yellow hint."""
         tui, buf = make_tui()
         with mock.patch(
-            "python_agent_harness.tui.SessionStore.latest_session",
+            "python_agent_harness.tui.commands.SessionStore.latest_session",
             return_value=None,
         ):
             tui._run_restore("")
@@ -2489,7 +2489,7 @@ class TestTui(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("**user**: hello\n\n**assistant**: hi")
             with mock.patch(
-                "python_agent_harness.tui.SessionStore.latest_session",
+                "python_agent_harness.tui.commands.SessionStore.latest_session",
                 return_value=path,
             ):
                 tui._run_restore("--latest")
@@ -2506,7 +2506,7 @@ class TestTui(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("**user**: hello\n\n**assistant**: hi")
             with mock.patch(
-                "python_agent_harness.tui.SessionStore.latest_session",
+                "python_agent_harness.tui.commands.SessionStore.latest_session",
                 return_value=path,
             ) as latest:
                 tui._run_restore("latest")
@@ -2520,7 +2520,7 @@ class TestTui(unittest.TestCase):
         """A resolved path that is not a file reports an error."""
         tui, buf = make_tui()
         with mock.patch(
-            "python_agent_harness.tui.SessionStore.latest_session",
+            "python_agent_harness.tui.commands.SessionStore.latest_session",
             return_value="/nonexistent/session.md",
         ):
             tui._run_restore("--latest")
@@ -2545,7 +2545,7 @@ class TestTui(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("**user**: hello\n\n**assistant**: hi")
             with mock.patch(
-                "python_agent_harness.tui.SessionStore.list_sessions",
+                "python_agent_harness.tui.commands.SessionStore.list_sessions",
                 return_value=[path],
             ):
                 tui._run_restore("MY SESSION")
@@ -2562,7 +2562,7 @@ class TestTui(unittest.TestCase):
                 open(f, "w", encoding="utf-8").close()
             files = [dash, spaced]
             with mock.patch(
-                "python_agent_harness.tui.SessionStore.list_sessions",
+                "python_agent_harness.tui.commands.SessionStore.list_sessions",
                 return_value=files,
             ):
                 # exact basename match (with and without .md)
@@ -2623,7 +2623,7 @@ class TestTui(unittest.TestCase):
         tui.session.llm_settings = {"model": "gpt-5-mini", "base_url": "https://default"}
         tui.session.model = "glm-5.2"  # current IS a profile (index 3)
         with mock.patch(
-            "python_agent_harness.tui.config.load_models_config", return_value=profiles
+            "python_agent_harness.tui.commands.config.load_models_config", return_value=profiles
         ):
             # 1 == default: switches back to the original model
             with mock.patch.object(tui, "_model_switch_by_name") as switch:
@@ -2659,7 +2659,7 @@ class TestTui(unittest.TestCase):
         tui.session.model = "deepseek-chat"
         with (
             mock.patch("builtins.input", return_value="1"),
-            mock.patch("python_agent_harness.tui.config.load_models_config", return_value=profiles),
+            mock.patch("python_agent_harness.tui.commands.config.load_models_config", return_value=profiles),
             mock.patch.object(tui, "_model_switch_by_name") as switch,
         ):
             tui._run_model_command("")
@@ -2671,7 +2671,7 @@ class TestTui(unittest.TestCase):
         profiles = {"deepseek": {"model": "deepseek-chat"}}
         tui.session.model_profiles = dict(profiles)
         with (
-            mock.patch("python_agent_harness.tui.config.load_models_config", return_value=profiles),
+            mock.patch("python_agent_harness.tui.commands.config.load_models_config", return_value=profiles),
             mock.patch.object(tui.session, "switch_model", return_value=(True, "switched")) as sw,
         ):
             tui._run_model_command("deepseek")
@@ -2685,7 +2685,7 @@ class TestTui(unittest.TestCase):
         tui, buf = make_tui()
         # no profiles configured: default is still listed
         with (
-            mock.patch("python_agent_harness.tui.config.load_models_config", return_value={}),
+            mock.patch("python_agent_harness.tui.commands.config.load_models_config", return_value={}),
             mock.patch("builtins.input", return_value=""),
         ):
             tui._run_model_command("")
@@ -2696,7 +2696,7 @@ class TestTui(unittest.TestCase):
         new_profiles = {"new": {"model": "new-model", "base_url": "https://new/v1"}}
         with (
             mock.patch(
-                "python_agent_harness.tui.config.load_models_config", return_value=new_profiles
+                "python_agent_harness.tui.commands.config.load_models_config", return_value=new_profiles
             ),
             mock.patch("builtins.input", return_value=""),
         ):
@@ -2705,7 +2705,7 @@ class TestTui(unittest.TestCase):
         buf.truncate(0)
         # and switchable by name immediately
         with mock.patch(
-            "python_agent_harness.tui.config.load_models_config", return_value=new_profiles
+            "python_agent_harness.tui.commands.config.load_models_config", return_value=new_profiles
         ):
             tui._run_model_command("new")
         self.assertEqual(tui.session.model, "new-model")
