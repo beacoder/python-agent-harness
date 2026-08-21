@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import threading
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -15,9 +15,13 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
+from rich.console import Console
 from rich.text import Text
 
 from .. import config
+
+if TYPE_CHECKING:
+    from ..agent_session import AgentSession
 
 SLASH_COMMANDS = [
     "/plan",
@@ -251,6 +255,17 @@ class InputMixin:
     Expects the host class to provide: ``session``, ``console``,
     ``question``, ``prompt_session``, ``_data_event``.
     """
+
+    if TYPE_CHECKING:
+        session: AgentSession
+        console: Console
+        question: UiQuestion | None
+        prompt_session: PromptSession
+        _data_event: threading.Event
+
+        def _render_frame(self) -> Any: ...
+
+        def _flush(self) -> None: ...
 
     def _input_prompt(self) -> FormattedText:
         """Styled input prompt: short model name + caret.
