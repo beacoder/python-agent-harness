@@ -2233,7 +2233,9 @@ class TestTui(unittest.TestCase):
             file=io.StringIO(),
         )
         with (
-            mock.patch("python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("stop")),
+            mock.patch(
+                "python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("stop")
+            ),
             mock.patch.object(tui, "_run_dumb", return_value=False) as dumb,
         ):
             tui._start_agent("hello")
@@ -2249,7 +2251,9 @@ class TestTui(unittest.TestCase):
         q = UiQuestion("Approve?")
         tui.question = q
         with (
-            mock.patch("python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("stop")),
+            mock.patch(
+                "python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("stop")
+            ),
             mock.patch.object(tui, "_run_live", side_effect=KeyboardInterrupt),
         ):
             tui._start_agent("hello", restore=lambda: released.append(1))
@@ -2434,7 +2438,9 @@ class TestTui(unittest.TestCase):
 
     def test_run_sessions_empty(self):
         tui, buf = make_tui()
-        with mock.patch("python_agent_harness.tui.commands.SessionStore.list_sessions", return_value=[]):
+        with mock.patch(
+            "python_agent_harness.tui.commands.SessionStore.list_sessions", return_value=[]
+        ):
             tui._run_sessions()
         self.assertIn("no saved sessions", buf.getvalue())
 
@@ -2659,7 +2665,9 @@ class TestTui(unittest.TestCase):
         tui.session.model = "deepseek-chat"
         with (
             mock.patch("builtins.input", return_value="1"),
-            mock.patch("python_agent_harness.tui.commands.config.load_models_config", return_value=profiles),
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config", return_value=profiles
+            ),
             mock.patch.object(tui, "_model_switch_by_name") as switch,
         ):
             tui._run_model_command("")
@@ -2671,7 +2679,9 @@ class TestTui(unittest.TestCase):
         profiles = {"deepseek": {"model": "deepseek-chat"}}
         tui.session.model_profiles = dict(profiles)
         with (
-            mock.patch("python_agent_harness.tui.commands.config.load_models_config", return_value=profiles),
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config", return_value=profiles
+            ),
             mock.patch.object(tui.session, "switch_model", return_value=(True, "switched")) as sw,
         ):
             tui._run_model_command("deepseek")
@@ -2685,7 +2695,9 @@ class TestTui(unittest.TestCase):
         tui, buf = make_tui()
         # no profiles configured: default is still listed
         with (
-            mock.patch("python_agent_harness.tui.commands.config.load_models_config", return_value={}),
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config", return_value={}
+            ),
             mock.patch("builtins.input", return_value=""),
         ):
             tui._run_model_command("")
@@ -2696,7 +2708,8 @@ class TestTui(unittest.TestCase):
         new_profiles = {"new": {"model": "new-model", "base_url": "https://new/v1"}}
         with (
             mock.patch(
-                "python_agent_harness.tui.commands.config.load_models_config", return_value=new_profiles
+                "python_agent_harness.tui.commands.config.load_models_config",
+                return_value=new_profiles,
             ),
             mock.patch("builtins.input", return_value=""),
         ):
