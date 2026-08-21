@@ -18,19 +18,22 @@ CONTEXT_TRIGGER = 0.70
 # Entries are matched in order (first match wins): put more specific
 # patterns before general ones.
 CONTEXT_WINDOWS: list[tuple[str, int]] = [
-    ("gpt-5-mini", 128000),
-    ("gpt-5", 400000),
-    ("claude", 200000),
-    ("deepseek-v3", 128000),
+    ("gpt-5-mini", 128_000),
+    ("gpt-5", 400_000),
+    ("gpt-oss-120b", 128_000),
+    ("claude", 200_000),
+    ("deepseek-v3", 128_000),
     ("deepseek-v4", 1_000_000),
-    ("qwen3.5", 131072),
-    ("qwen3", 131072),
+    ("qwen3.5", 131_072),
+    ("qwen3.6", 262_144),
+    ("qwen3.8", 262_144),
+    ("qwen3", 131_072),
     ("glm-5.2", 1_000_000),
-    ("glm-5.1", 128000),
-    ("kimi-k2.7", 256000),
-    ("kimi", 128000),
+    ("glm-5.1", 128_000),
+    ("kimi-k2.7", 256_000),
+    ("kimi", 128_000),
 ]
-DEFAULT_CONTEXT_WINDOW = 32768
+DEFAULT_CONTEXT_WINDOW = 128_000
 
 # ---- completion supervision ----------------------------------------------
 MAX_NUDGES = 2
