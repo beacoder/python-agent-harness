@@ -192,7 +192,6 @@ python_agent_harness/
 ├── commands.py        # Init/review/custom command definitions
 ├── cli.py             # CLI entry points
 ├── tui/               # Rich + prompt_toolkit TUI (package)
-│   ├── __init__.py    #   re-exports public API
 │   ├── core.py        #   Tui coordinator: state, run loop, agent lifecycle
 │   ├── render.py      #   RenderMixin: conversation panel, status bar, dump
 │   ├── input.py       #   InputMixin: SlashCompleter, UiQuestion, key bindings
