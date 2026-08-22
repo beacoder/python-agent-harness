@@ -338,9 +338,7 @@ class TestSubagentDedicatedClient(unittest.TestCase):
             entered.wait(timeout=5)
             return f"done-{description}"
 
-        with mock.patch(
-            "python_agent_harness.session.run_subagent", side_effect=fake_run_subagent
-        ):
+        with mock.patch("python_agent_harness.session.run_subagent", side_effect=fake_run_subagent):
             threads = [
                 threading.Thread(target=lambda i=i: session.run_subagent("subagent", f"t{i}", "p"))
                 for i in range(n)
@@ -476,9 +474,7 @@ class TestSubagentDedicatedClient(unittest.TestCase):
             seen.append(client)
             return "done"
 
-        with mock.patch(
-            "python_agent_harness.session.run_subagent", side_effect=fake_run_subagent
-        ):
+        with mock.patch("python_agent_harness.session.run_subagent", side_effect=fake_run_subagent):
             result = session.run_subagent("subagent", "t0", "p")
         self.assertEqual(result, "done")
         self.assertIs(seen[0], stub)
