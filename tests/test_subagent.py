@@ -11,9 +11,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
 
-from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, Usage
-from python_agent_harness.session_store import SessionStore
+from python_agent_harness.persistence import SessionPersistence
+from python_agent_harness.session import Session
 from python_agent_harness.subagent import run_subagent
 from python_agent_harness.tools import default_registry
 
@@ -52,7 +52,7 @@ def make_session(system_prompt, subagent_system_prompt, session_dir):
     import python_agent_harness.config as cfg
 
     cfg.SESSION_DIR = Path(session_dir)
-    session = AgentSession(
+    session = Session(
         project_dir="/tmp/fakeproj",
         client=SpyClient(),
         model="gpt-5-mini",
@@ -60,7 +60,7 @@ def make_session(system_prompt, subagent_system_prompt, session_dir):
         subagent_system_prompt=subagent_system_prompt,
         registry=default_registry(),
     )
-    session.store = SessionStore(
+    session.store = SessionPersistence(
         project_dir="/tmp/fakeproj",
         model=session.model,
         backend=session.backend,
@@ -142,7 +142,7 @@ class TestSubagentPromptSelection(unittest.TestCase):
         self.assertIn("risky task", result)
 
     def test_default_session_does_not_auto_load_prompt(self):
-        """A bare AgentSession() must NOT silently auto-load the bundled
+        """A bare Session() must NOT silently auto-load the bundled
         subagent prompt — defaulting is cli.make_session's responsibility
         (covered in test_cli.py); the bundled files themselves are
         checked in test_prompts.py."""

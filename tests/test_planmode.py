@@ -124,10 +124,10 @@ class TestPlanExitConfirm(unittest.TestCase):
             pass
 
     def make_session(self):
-        from python_agent_harness.agent_session import AgentSession
+        from python_agent_harness.session import Session
         from python_agent_harness.tools import default_registry
 
-        s = AgentSession(
+        s = Session(
             project_dir="/tmp/proj",
             client=self.FakeClient(),
             model="m",
@@ -201,10 +201,10 @@ class TestPlanModeMCPGuard(unittest.TestCase):
             return "SHOULD NOT RUN"
 
     def make_session(self):
-        from python_agent_harness.agent_session import AgentSession
+        from python_agent_harness.session import Session
         from python_agent_harness.tools import default_registry
 
-        s = AgentSession(
+        s = Session(
             project_dir="/tmp/proj",
             client=TestPlanExitConfirm.FakeClient(),
             model="m",

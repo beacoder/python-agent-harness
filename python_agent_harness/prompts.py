@@ -330,7 +330,7 @@ def assemble_agent_prompt(
     parts: list[str] = []
     if include_context:
         # lazy import: harness imports this module at call time
-        from .agent_session import find_context_dir
+        from .session import find_context_dir
 
         # the project's AGENTS.md files are just context files that live
         # outside the context directory — same block format, same section
@@ -464,7 +464,7 @@ def compact_summary(
     """Ask the model to summarize *conversation* using the compact prompt.
 
     Shared by the in-loop compaction (``AgentLoop.compact``) and the
-    manual /compact command (``AgentSession.compact_conversation``).
+    manual /compact command (``Session.compact_conversation``).
     Returns the summary text with the reasoning preamble stripped, or
     None when the response carries no text.  Client exceptions
     propagate to the caller, which owns the failure handling

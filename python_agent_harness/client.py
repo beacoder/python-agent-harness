@@ -237,7 +237,7 @@ class Client:
         connection failure (or Ctrl-C abort) would tear down a
         sibling's in-flight request on the same client.  Each
         concurrent sub-agent clones its own client (see
-        ``AgentSession.run_subagent``), keeping pools and the abort
+        ``Session.run_subagent``), keeping pools and the abort
         flag strictly per-request.  The log file is shared so one
         session's LLM interactions stay in one log.
         """

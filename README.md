@@ -188,8 +188,8 @@ python_agent_harness/
 ├── token_estimator.py # CJK-aware token estimation + calibration
 ├── planmode.py        # Plan/build modes + plan-file lifecycle
 ├── prompts.py         # Prompt loading + system-prompt assembly
-├── session_store.py   # Session persistence + titles
-├── agent_session.py   # AgentSession wiring hub + MCP lifecycle
+├── persistence.py     # Session persistence + titles
+├── session.py         # Session wiring hub + MCP lifecycle
 ├── subagent.py        # Sub-agent runner + error containment
 ├── commands.py        # Init/review/custom command definitions
 ├── cli.py             # CLI entry points

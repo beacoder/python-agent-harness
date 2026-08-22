@@ -1,7 +1,7 @@
 """Tests for the remaining tool modules: base (ToolContext/Registry),
 Question, PlanExit, Skill, TodoWrite, Bash internals, and AgentTool.
 
-These tools are normally exercised end-to-end through AgentSession
+These tools are normally exercised end-to-end through Session
 integration tests; this file drives them directly through their
 injection points (session callbacks) so the interactive/async paths and
 error containment boundaries are covered.

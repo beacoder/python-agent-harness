@@ -14,9 +14,9 @@ import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs
 from rich.console import Console
 from rich.live import Live
 
-from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.client import Client
 from python_agent_harness.models import Message, ToolCall
+from python_agent_harness.session import Session
 from python_agent_harness.tools import default_registry
 from python_agent_harness.tui import (
     Tui,
@@ -28,7 +28,7 @@ from python_agent_harness.tui import (
 
 def make_tui() -> tuple[Tui, io.StringIO]:
     c = Client(base_url="http://127.0.0.1:1/v1", api_key="x", model="fake")
-    s = AgentSession(
+    s = Session(
         project_dir="/tmp/fakeproj",
         client=c,
         model="fake",
@@ -2439,7 +2439,7 @@ class TestTui(unittest.TestCase):
     def test_run_sessions_empty(self):
         tui, buf = make_tui()
         with mock.patch(
-            "python_agent_harness.tui.commands.SessionStore.list_sessions", return_value=[]
+            "python_agent_harness.tui.commands.SessionPersistence.list_sessions", return_value=[]
         ):
             tui._run_sessions()
         self.assertIn("no saved sessions", buf.getvalue())
@@ -2456,7 +2456,7 @@ class TestTui(unittest.TestCase):
                     ";; End:\n"
                 )
             with mock.patch(
-                "python_agent_harness.tui.commands.SessionStore.list_sessions",
+                "python_agent_harness.tui.commands.SessionPersistence.list_sessions",
                 return_value=[path],
             ):
                 tui._run_sessions()
@@ -2468,7 +2468,7 @@ class TestTui(unittest.TestCase):
     def test_run_sessions_skips_unreadable_files(self):
         tui, buf = make_tui()
         with mock.patch(
-            "python_agent_harness.tui.commands.SessionStore.list_sessions",
+            "python_agent_harness.tui.commands.SessionPersistence.list_sessions",
             return_value=["/nonexistent/session.md"],
         ):
             tui._run_sessions()  # must not raise
@@ -2481,7 +2481,7 @@ class TestTui(unittest.TestCase):
         """/restore with nothing to restore prints the yellow hint."""
         tui, buf = make_tui()
         with mock.patch(
-            "python_agent_harness.tui.commands.SessionStore.latest_session",
+            "python_agent_harness.tui.commands.SessionPersistence.latest_session",
             return_value=None,
         ):
             tui._run_restore("")
@@ -2495,7 +2495,7 @@ class TestTui(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("**user**: hello\n\n**assistant**: hi")
             with mock.patch(
-                "python_agent_harness.tui.commands.SessionStore.latest_session",
+                "python_agent_harness.tui.commands.SessionPersistence.latest_session",
                 return_value=path,
             ):
                 tui._run_restore("--latest")
@@ -2512,7 +2512,7 @@ class TestTui(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("**user**: hello\n\n**assistant**: hi")
             with mock.patch(
-                "python_agent_harness.tui.commands.SessionStore.latest_session",
+                "python_agent_harness.tui.commands.SessionPersistence.latest_session",
                 return_value=path,
             ) as latest:
                 tui._run_restore("latest")
@@ -2526,7 +2526,7 @@ class TestTui(unittest.TestCase):
         """A resolved path that is not a file reports an error."""
         tui, buf = make_tui()
         with mock.patch(
-            "python_agent_harness.tui.commands.SessionStore.latest_session",
+            "python_agent_harness.tui.commands.SessionPersistence.latest_session",
             return_value="/nonexistent/session.md",
         ):
             tui._run_restore("--latest")
@@ -2551,7 +2551,7 @@ class TestTui(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("**user**: hello\n\n**assistant**: hi")
             with mock.patch(
-                "python_agent_harness.tui.commands.SessionStore.list_sessions",
+                "python_agent_harness.tui.commands.SessionPersistence.list_sessions",
                 return_value=[path],
             ):
                 tui._run_restore("MY SESSION")
@@ -2568,7 +2568,7 @@ class TestTui(unittest.TestCase):
                 open(f, "w", encoding="utf-8").close()
             files = [dash, spaced]
             with mock.patch(
-                "python_agent_harness.tui.commands.SessionStore.list_sessions",
+                "python_agent_harness.tui.commands.SessionPersistence.list_sessions",
                 return_value=files,
             ):
                 # exact basename match (with and without .md)

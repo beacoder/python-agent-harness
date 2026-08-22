@@ -108,7 +108,7 @@ def cleanup_spooled_files() -> None:
     """Delete all tracked spooled temp files (best effort).
 
     Mirrors ``PlanMode.cleanup_plan_file``: called from
-    ``AgentSession.close`` so oversized tool results do not accumulate
+    ``Session.close`` so oversized tool results do not accumulate
     in the temp dir.  Files already removed (e.g. by a restored
     session) are skipped.
     """

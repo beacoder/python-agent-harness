@@ -26,10 +26,10 @@ import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs
 
 from python_agent_harness import config
 from python_agent_harness.agent import AgentLoop
-from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.client import Client
 from python_agent_harness.models import Message, ToolCall, Usage
-from python_agent_harness.session_store import SessionStore
+from python_agent_harness.persistence import SessionPersistence
+from python_agent_harness.session import Session
 from python_agent_harness.tools import default_registry
 
 # `discover -s tests` puts the tests dir on sys.path, but a direct
@@ -106,7 +106,7 @@ class BlockingClient(ScriptedClient):
         self.unblock.set()
 
 
-class ScenarioSession(AgentSession):
+class ScenarioSession(Session):
     _test_session_dir = None
 
     def __init__(self, project_dir="/tmp/fakeproj"):
@@ -124,7 +124,7 @@ class ScenarioSession(AgentSession):
             registry=default_registry(),
         )
         self.executed = []
-        self.store = SessionStore(
+        self.store = SessionPersistence(
             project_dir=project_dir,
             model=self.model,
             backend=self.backend,
@@ -137,7 +137,7 @@ class ScenarioSession(AgentSession):
     def execute_tool(self, name, args, call_id=None):
         self.executed.append((name, args))
         if name in ("Agent", "PlanExit"):
-            return AgentSession.execute_tool(self, name, args, call_id=call_id)
+            return Session.execute_tool(self, name, args, call_id=call_id)
         if name == "Read":
             return "file content"
         if name == "Bash":
@@ -307,7 +307,7 @@ class TestScenarioCancellation(unittest.TestCase):
             session.tools_enabled = False
 
             def real_execute(name, args, call_id=None):
-                return AgentSession.execute_tool(session, name, args, call_id=call_id)
+                return Session.execute_tool(session, name, args, call_id=call_id)
 
             started = threading.Event()
 

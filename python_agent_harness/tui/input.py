@@ -21,7 +21,7 @@ from rich.text import Text
 from .. import config
 
 if TYPE_CHECKING:
-    from ..agent_session import AgentSession
+    from ..session import Session
 
 SLASH_COMMANDS = [
     "/plan",
@@ -257,7 +257,7 @@ class InputMixin:
     """
 
     if TYPE_CHECKING:
-        session: AgentSession
+        session: Session
         console: Console
         question: UiQuestion | None
         prompt_session: PromptSession

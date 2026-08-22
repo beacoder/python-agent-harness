@@ -91,7 +91,7 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         ctx_dir.mkdir()
         (ctx_dir / "notes.md").write_text("# My Notes\nHello world\n", encoding="utf-8")
         with mock.patch(
-            "python_agent_harness.agent_session.find_context_dir",
+            "python_agent_harness.session.find_context_dir",
             return_value=str(ctx_dir),
         ):
             session = cli.make_session(self._tmp.name, config_path=self._config_path)
@@ -108,7 +108,7 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         import unittest.mock as mock
 
         with mock.patch(
-            "python_agent_harness.agent_session.find_context_dir",
+            "python_agent_harness.session.find_context_dir",
             return_value=None,
         ):
             session = cli.make_session(self._tmp.name, config_path=self._config_path)
@@ -290,7 +290,7 @@ class TestCommandToolAvailability(unittest.TestCase):
     - init/review: all tools except PlanExit (allow_planexit=False)
     - custom commands: all tools, incl. PlanExit (allow_planexit=True)
     - compact/summary: no tools (chat_sync without tools — covered by
-      agent_session/client; nothing to configure here)
+      session/client; nothing to configure here)
     """
 
     def test_init_and_review_forbid_planexit(self):
@@ -326,11 +326,11 @@ class TestCommandToolAvailability(unittest.TestCase):
         self.assertIsNone(hide_planexit(NoPlanExit()))
 
     def test_hide_planexit_removes_and_restores(self):
-        from python_agent_harness.agent_session import AgentSession
         from python_agent_harness.commands import hide_planexit
+        from python_agent_harness.session import Session
         from python_agent_harness.tools import default_registry
 
-        s = AgentSession(
+        s = Session(
             project_dir="/tmp",
             client=object(),
             model="m",
@@ -444,8 +444,8 @@ class TestCliEntryPoints(unittest.TestCase):
 
 
 def _load(path, project_dir=None, with_context=False):
-    from python_agent_harness.agent_session import find_context_dir, find_skill_dir
     from python_agent_harness.prompts import load_agent_prompt, load_context_files
+    from python_agent_harness.session import find_context_dir, find_skill_dir
 
     skill_dir = find_skill_dir(project_dir) if project_dir else None
     prompt = load_agent_prompt(path, skill_dir=skill_dir)

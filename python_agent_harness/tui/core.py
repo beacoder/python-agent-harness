@@ -24,8 +24,8 @@ from rich.text import Text
 
 from .. import config
 from ..agent import run_agent_loop
-from ..agent_session import AgentSession
 from ..models import Message
+from ..session import Session
 from .commands import CommandMixin
 from .input import InputMixin, SlashCompleter, UiQuestion, _history_path, _make_prompt_session
 from .render import RenderMixin
@@ -39,7 +39,7 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
     services interactive questions (Question tool, PlanExit confirmation).
     """
 
-    def __init__(self, session: AgentSession, console: Console | None = None) -> None:
+    def __init__(self, session: Session, console: Console | None = None) -> None:
         self.session = session
         self.console = console or Console()
         self.stream_text = ""

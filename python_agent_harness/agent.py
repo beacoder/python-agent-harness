@@ -80,7 +80,7 @@ class AgentLoop:
         self.messages: list[Message] = messages if messages is not None else []
         self.top_level = top_level
         # an explicit per-run client (a dedicated clone for this
-        # sub-agent invocation, see AgentSession.run_subagent) wins
+        # sub-agent invocation, see Session.run_subagent) wins
         # over the session's shared sub-agent client
         self._client = client
         # fall back to the session's prompt so a run never loses it;

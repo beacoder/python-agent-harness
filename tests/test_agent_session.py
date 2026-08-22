@@ -1,4 +1,4 @@
-"""AgentSession unit tests: dir discovery, plan-mode guards, skills,
+"""Session unit tests: dir discovery, plan-mode guards, skills,
 auto-save/title/cancel edge cases, compact/summarize failure paths."""
 
 import os
@@ -13,12 +13,12 @@ import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs
 from test_agent import FakeClient, RecordingSession
 
 from python_agent_harness import config
-from python_agent_harness.agent_session import (
-    AgentSession,
+from python_agent_harness.models import Message, Usage
+from python_agent_harness.session import (
+    Session,
     find_context_dir,
     find_skill_dir,
 )
-from python_agent_harness.models import Message, Usage
 
 
 class TestFindDirs(unittest.TestCase):
@@ -105,7 +105,7 @@ class TestPlanModeGuard(unittest.TestCase):
 
     def test_bash_blocked_in_plan_mode(self):
         session = self.make_plan_session()
-        result = AgentSession.execute_tool(session, "Bash", {"command": "ls"})
+        result = Session.execute_tool(session, "Bash", {"command": "ls"})
         self.assertIn("blocked by plan mode", result)
         self.assertIn("Bash is disabled", result)
 
@@ -339,7 +339,7 @@ class TestSubagentDedicatedClient(unittest.TestCase):
             return f"done-{description}"
 
         with mock.patch(
-            "python_agent_harness.agent_session.run_subagent", side_effect=fake_run_subagent
+            "python_agent_harness.session.run_subagent", side_effect=fake_run_subagent
         ):
             threads = [
                 threading.Thread(target=lambda i=i: session.run_subagent("subagent", f"t{i}", "p"))
@@ -401,7 +401,7 @@ class TestSubagentDedicatedClient(unittest.TestCase):
 
         try:
             with mock.patch(
-                "python_agent_harness.agent_session.run_subagent", side_effect=fake_run_subagent
+                "python_agent_harness.session.run_subagent", side_effect=fake_run_subagent
             ):
                 t = threading.Thread(target=lambda: session.run_subagent("subagent", "t0", "p"))
                 t.start()
@@ -446,7 +446,7 @@ class TestSubagentDedicatedClient(unittest.TestCase):
 
         try:
             with mock.patch(
-                "python_agent_harness.agent_session.run_subagent", side_effect=fake_run_subagent
+                "python_agent_harness.session.run_subagent", side_effect=fake_run_subagent
             ):
                 t = threading.Thread(target=lambda: session.run_subagent("subagent", "t0", "p"))
                 t.start()
@@ -477,7 +477,7 @@ class TestSubagentDedicatedClient(unittest.TestCase):
             return "done"
 
         with mock.patch(
-            "python_agent_harness.agent_session.run_subagent", side_effect=fake_run_subagent
+            "python_agent_harness.session.run_subagent", side_effect=fake_run_subagent
         ):
             result = session.run_subagent("subagent", "t0", "p")
         self.assertEqual(result, "done")

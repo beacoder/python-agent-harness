@@ -2,7 +2,7 @@
 
 ``PlanMode.ensure_plan_file()`` puts PLAN.md in a fresh
 ``python-agent-plans-*`` dir under the temp dir (usually /tmp).
-Production ``AgentSession.close()`` intentionally keeps the plan file
+Production ``Session.close()`` intentionally keeps the plan file
 (one unique file per session), so tests must clean up their own:
 this module is imported (for its side effects) by the test files that
 can create plan files — it records every plan file created by

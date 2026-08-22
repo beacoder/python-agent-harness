@@ -6,7 +6,7 @@ event-loop thread (``asyncio.run`` per call would bind SDK resources —
 subprocess pipes, anyio memory streams — to a fresh loop each time and
 break on the next call).
 
-Lifecycle (mirrors the session lifecycle; see ``AgentSession``)::
+Lifecycle (mirrors the session lifecycle; see ``Session``)::
 
     manager = MCPManager(config)
     failures = manager.connect_all()     # connect every configured server

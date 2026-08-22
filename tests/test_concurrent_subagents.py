@@ -6,7 +6,7 @@ Before the fix every sub-agent shared ONE httpx Client, so one
 sub-agent's connection failure (``_reset_http`` swaps and closes the
 shared pool), abort (the shared ``_aborted`` flag) or retry could tear
 down a sibling's in-flight request.  Each invocation now runs on its
-own Client clone (``AgentSession.run_subagent``).
+own Client clone (``Session.run_subagent``).
 
 All tests run concurrent sub-agents against a REAL HTTP server that
 scripts per-request behaviors (success / 500-then-retry /
@@ -28,8 +28,8 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.client import Client
+from python_agent_harness.session import Session
 from python_agent_harness.tools import default_registry
 
 SUCCESS_CHUNKS = 4
@@ -178,7 +178,7 @@ class TestConcurrentSubagents(unittest.TestCase):
             retry_base_delay=0.01,
             retry_max_delay=0.05,
         )
-        self.session = AgentSession(
+        self.session = Session(
             project_dir="/tmp/fakeproj",
             client=self.template,
             model="fake",

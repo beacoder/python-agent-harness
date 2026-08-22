@@ -19,8 +19,8 @@ import os
 import sys
 
 from . import config
-from .agent_session import AgentSession
 from .client import Client
+from .session import Session
 from .tools import default_registry
 
 
@@ -29,8 +29,8 @@ def make_session(
     config_path: str | None = None,
     model: str | None = None,
     stream: bool | None = None,
-) -> AgentSession:
-    """Create an AgentSession from config file + env (no env required).
+) -> Session:
+    """Create a Session from config file + env (no env required).
 
     The system prompt defaults to the ported main-agent prompt
     (config.DEFAULT_AGENT_PROMPT_FILE); the sub-agent prompt always
@@ -71,8 +71,8 @@ def make_session(
         # same LLM log file — the TUI advertises the main client's log
         # path, and a separate sub-agent log would fragment debugging
         subagent_client.log_path = client.log_path
-    from .agent_session import find_skill_dir
     from .prompts import assemble_agent_prompt, load_agent_prompt
+    from .session import find_skill_dir
 
     abs_project = os.path.abspath(project_dir)
     skill_dir = find_skill_dir(abs_project, paths.get("skill_path"))
@@ -97,7 +97,7 @@ def make_session(
     # instead of values drifted by earlier switches.
     llm_settings = dict(settings)
     llm_settings["stream"] = effective_stream
-    return AgentSession(
+    return Session(
         project_dir=abs_project,
         client=client,
         model=model,
@@ -128,8 +128,8 @@ def make_session_with_mcp(
     config_path: str | None = None,
     model: str | None = None,
     stream: bool | None = None,
-) -> AgentSession:
-    """Create an AgentSession and connect its configured MCP servers.
+) -> Session:
+    """Create a Session and connect its configured MCP servers.
 
     Wraps ``make_session``: the session's MCP servers are connected and
     their tools registered before the session is returned (discovery

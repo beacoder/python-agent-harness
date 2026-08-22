@@ -58,9 +58,9 @@ from test_agent import ParallelToolSession, RecordingSession, agent_call  # noqa
 
 from python_agent_harness import config  # noqa: E402
 from python_agent_harness.agent import AgentLoop  # noqa: E402
-from python_agent_harness.agent_session import AgentSession  # noqa: E402
 from python_agent_harness.client import Client  # noqa: E402
 from python_agent_harness.models import Message, ToolCall, Usage  # noqa: E402
+from python_agent_harness.session import Session  # noqa: E402
 from python_agent_harness.tools import default_registry  # noqa: E402
 
 # ----------------------------------------------------------------------
@@ -661,7 +661,7 @@ class TestPlanModeWriteGuard(unittest.TestCase):
         self.addCleanup(session.plan_mode.cleanup_plan_file)
 
         def execute(name, args, call_id=None):
-            return AgentSession.execute_tool(session, name, args, call_id=call_id)
+            return Session.execute_tool(session, name, args, call_id=call_id)
 
         session.execute_tool = execute
         return session
@@ -803,7 +803,7 @@ class TestPlanModeWriteGuard(unittest.TestCase):
             session = RecordingSession(project_dir=tmpdir)
 
             def execute(name, args, call_id=None):
-                return AgentSession.execute_tool(session, name, args, call_id=call_id)
+                return Session.execute_tool(session, name, args, call_id=call_id)
 
             session.execute_tool = execute
             r = session.execute_tool(
@@ -1198,7 +1198,7 @@ class TestRetryNoDuplication(unittest.TestCase):
             config.SESSION_DIR = Path(d)
             with serve_drop_server() as (host, port):
                 client = make_fast_client(f"http://{host}:{port}/v1")
-                session = AgentSession(
+                session = Session(
                     project_dir=d,
                     client=client,
                     model="fake",
@@ -1237,7 +1237,7 @@ class TestRetryExhaustionTerminates(unittest.TestCase):
             config.SESSION_DIR = Path(d)
             with serve_drop_server() as (host, port):
                 client = make_fast_client(f"http://{host}:{port}/v1")
-                session = AgentSession(
+                session = Session(
                     project_dir=d,
                     client=client,
                     model="fake",

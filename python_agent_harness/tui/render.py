@@ -27,7 +27,7 @@ from ..prompts import _is_mode_reminder_text
 if TYPE_CHECKING:
     import threading
 
-    from ..agent_session import AgentSession
+    from ..session import Session
     from .input import UiQuestion
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -173,7 +173,7 @@ class RenderMixin:
     """
 
     if TYPE_CHECKING:
-        session: AgentSession
+        session: Session
         console: Console
         stream_text: str
         lock: threading.Lock

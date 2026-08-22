@@ -16,10 +16,10 @@ import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs
 
 from python_agent_harness import config
 from python_agent_harness.agent import AgentLoop, Supervisor, sanitize_tool_result
-from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall, Usage
+from python_agent_harness.persistence import SessionPersistence
 from python_agent_harness.planmode import PlanMode
-from python_agent_harness.session_store import SessionStore
+from python_agent_harness.session import Session
 from python_agent_harness.tools import default_registry
 
 
@@ -86,7 +86,7 @@ class FakeClient:
         return Message(role="assistant", content="SYNC-OK"), Usage()
 
 
-class RecordingSession(AgentSession):
+class RecordingSession(Session):
     _test_session_dir: str | None = None
 
     def __init__(self, project_dir="/tmp/fakeproj", model_profiles=None, llm_settings=None):
@@ -106,7 +106,7 @@ class RecordingSession(AgentSession):
             llm_settings=llm_settings,
         )
         self.executed = []
-        self.store = SessionStore(
+        self.store = SessionPersistence(
             project_dir=project_dir,
             model=self.model,
             backend=self.backend,
@@ -215,7 +215,7 @@ class StaggeredSession(RecordingSession):
 
 class RealParallelSession(RecordingSession):
     """Session that runs REAL sub-agents (the Agent tool delegates to
-    the real AgentSession.execute_tool) while every other tool blocks
+    the real Session.execute_tool) while every other tool blocks
     DURATION seconds, tracking concurrency across the parent round and
     the sub-agent's own round alike (a sub-agent shares this session)."""
 
@@ -229,7 +229,7 @@ class RealParallelSession(RecordingSession):
 
     def execute_tool(self, name, args, call_id=None):
         if name == "Agent":
-            return AgentSession.execute_tool(self, name, args, call_id=call_id)
+            return Session.execute_tool(self, name, args, call_id=call_id)
         with self._lock:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
@@ -370,7 +370,7 @@ class TestAgentLoop(unittest.TestCase):
             session.tools_enabled = False
 
             def real_execute(name, args, call_id=None):
-                return AgentSession.execute_tool(session, name, args, call_id=call_id)
+                return Session.execute_tool(session, name, args, call_id=call_id)
 
             session.execute_tool = real_execute
             loop = AgentLoop(session, messages=[Message(role="user", content="run")])
@@ -636,7 +636,7 @@ class TestAgentLoop(unittest.TestCase):
             # run the REAL Edit implementation (RecordingSession normally
             # returns canned results)
             def real_execute(name, args, call_id=None):
-                return AgentSession.execute_tool(session, name, args, call_id=call_id)
+                return Session.execute_tool(session, name, args, call_id=call_id)
 
             session.execute_tool = real_execute
             loop = AgentLoop(session, messages=[Message(role="user", content="edit")])
@@ -726,7 +726,7 @@ class TestAgentLoop(unittest.TestCase):
         )
 
         def real_execute(name, args, call_id=None):
-            return AgentSession.execute_tool(session, name, args, call_id=call_id)
+            return Session.execute_tool(session, name, args, call_id=call_id)
 
         session.execute_tool = real_execute
         with tempfile.TemporaryDirectory(prefix="pah-plan-") as tmpdir:
@@ -777,7 +777,7 @@ class TestAgentLoop(unittest.TestCase):
             session.tools_enabled = False
 
             def real_execute(name, args, call_id=None):
-                return AgentSession.execute_tool(session, name, args, call_id=call_id)
+                return Session.execute_tool(session, name, args, call_id=call_id)
 
             session.execute_tool = real_execute
             loop = AgentLoop(session, messages=[Message(role="user", content="run")])
@@ -1115,7 +1115,7 @@ class TestAgentLoop(unittest.TestCase):
                 srv = serve()
                 host, port = srv.server_address
                 client = Client(base_url=f"http://{host}:{port}/v1", api_key="test", model="fake")
-                session = AgentSession(
+                session = Session(
                     project_dir=d,
                     client=client,
                     model="fake",
@@ -2195,7 +2195,7 @@ class TestBashAsync(unittest.TestCase):
         session.tools_enabled = False
 
         def real_execute(name, args, call_id=None):
-            return AgentSession.execute_tool(session, name, args, call_id=call_id)
+            return Session.execute_tool(session, name, args, call_id=call_id)
 
         session.execute_tool = real_execute
         loop = AgentLoop(session, messages=[Message(role="user", content="run")])

@@ -36,7 +36,7 @@ def run_subagent(
     """Run a sub-agent task; return a result string (never raises).
 
     ``client`` (when given) is the per-invocation dedicated client
-    (see ``AgentSession.run_subagent``); the loop falls back to the
+    (see ``Session.run_subagent``); the loop falls back to the
     session's shared sub-agent client otherwise.
     """
     session = parent_session

@@ -99,7 +99,7 @@ def title_from_filename(session_file: str) -> str | None:
     return title
 
 
-class SessionStore:
+class SessionPersistence:
     """Saves/restores sessions for one agent session."""
 
     def __init__(

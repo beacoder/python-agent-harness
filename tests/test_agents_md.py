@@ -198,7 +198,7 @@ class TestAssembleAgentPromptWithAgentsMd(unittest.TestCase):
             ctx.mkdir()
             (ctx / "general.md").write_text("GENERAL CONTEXT", encoding="utf-8")
             with mock.patch(
-                "python_agent_harness.agent_session.find_context_dir",
+                "python_agent_harness.session.find_context_dir",
                 return_value=str(ctx),
             ):
                 prompt = assemble_agent_prompt(d, "AGENT PROMPT")

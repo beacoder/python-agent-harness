@@ -7,8 +7,8 @@ import json
 import unittest
 
 from python_agent_harness.agent import AgentLoop
-from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall, Usage
+from python_agent_harness.session import Session
 from python_agent_harness.tools import default_registry
 
 
@@ -51,8 +51,8 @@ class FakeClient:
         pass
 
 
-def make_session() -> AgentSession:
-    return AgentSession(
+def make_session() -> Session:
+    return Session(
         project_dir="/tmp/fakeproj",
         client=FakeClient([]),
         model="m",

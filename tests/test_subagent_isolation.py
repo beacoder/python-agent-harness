@@ -8,8 +8,8 @@ import unittest
 
 from python_agent_harness import config
 from python_agent_harness.agent import run_agent_loop
-from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.models import Message, ToolCall, Usage
+from python_agent_harness.session import Session
 from python_agent_harness.tools import default_registry
 
 
@@ -74,8 +74,8 @@ AGENT_CALL = json.dumps(
 )
 
 
-def make_session(client) -> AgentSession:
-    return AgentSession(
+def make_session(client) -> Session:
+    return Session(
         project_dir="/tmp/fakeproj",
         client=client,
         model="m",
@@ -139,7 +139,7 @@ class TestSubagentIsolation(unittest.TestCase):
             ]
         )
         sub_client = RecClient(["sub done"])
-        s = AgentSession(
+        s = Session(
             project_dir="/tmp/fakeproj",
             client=parent_client,
             subagent_client=sub_client,
@@ -336,7 +336,7 @@ class TestSubagentIsolation(unittest.TestCase):
 
         from python_agent_harness.agent import AgentLoop
 
-        class BlockingSession(AgentSession):
+        class BlockingSession(Session):
             def __init__(self, client, duration=0.3):
                 super().__init__(
                     project_dir="/tmp/fakeproj",

@@ -18,8 +18,8 @@ from rich.live import Live
 from .. import config
 from ..commands import find_command
 from ..models import Message
-from ..session_store import (
-    SessionStore,
+from ..persistence import (
+    SessionPersistence,
     escape_role_headers,
     split_role_header,
     title_from_filename,
@@ -29,7 +29,7 @@ from ..session_store import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from ..agent_session import AgentSession
+    from ..session import Session
 
 
 class CommandMixin:
@@ -42,7 +42,7 @@ class CommandMixin:
     """
 
     if TYPE_CHECKING:
-        session: AgentSession
+        session: Session
         console: Console
         conversation_history: list[Message]
         _history_dirty: bool
@@ -253,7 +253,7 @@ class CommandMixin:
         msgs = self.session.last_messages or []
         parts = []
         for m in msgs:
-            # escaped: see session_store.escape_role_headers
+            # escaped: see persistence.escape_role_headers
             body = escape_role_headers(m.text())
             if body:
                 parts.append(f"**{m.role}**: {body}")
@@ -455,7 +455,7 @@ class CommandMixin:
 
     def _run_sessions(self) -> None:
         """List saved sessions with metadata."""
-        files = SessionStore.list_sessions()
+        files = SessionPersistence.list_sessions()
         if not files:
             self.console.print("[dim]no saved sessions[/dim]")
             return
@@ -465,7 +465,7 @@ class CommandMixin:
                     text = fh.read()
             except OSError:
                 continue
-            meta = SessionStore.parse_metadata(text)
+            meta = SessionPersistence.parse_metadata(text)
             basename = os.path.basename(f)
             model = meta.get("gptel-model", "?")
             project = meta.get("python-agent-harness--project-dir", "?")
@@ -483,7 +483,7 @@ class CommandMixin:
         """
         path: str | None = None
         if not arg or arg in ("--latest", "latest"):
-            path = SessionStore.latest_session()
+            path = SessionPersistence.latest_session()
         elif os.path.isfile(arg):
             path = arg
         else:
@@ -506,8 +506,8 @@ class CommandMixin:
         except OSError as e:
             self.console.print(f"[red]cannot read {path}: {e}[/red]")
             return
-        meta = SessionStore.parse_metadata(text)
-        body = SessionStore.strip_metadata(text)
+        meta = SessionPersistence.parse_metadata(text)
+        body = SessionPersistence.strip_metadata(text)
         # Rebuild conversation history from the saved markdown format
         messages = self._parse_saved_body(body)
         # Round timestamps are persisted in the metadata block; restore
@@ -600,7 +600,7 @@ class CommandMixin:
         query_lower = query.lower()
         # Strip .md from query if present, for cleaner substring matching
         query_stem = query_lower[:-3] if query_lower.endswith(".md") else query_lower
-        files = SessionStore.list_sessions()  # already sorted by mtime desc
+        files = SessionPersistence.list_sessions()  # already sorted by mtime desc
         for f in files:
             basename = os.path.basename(f)
             basename_lower = basename.lower()

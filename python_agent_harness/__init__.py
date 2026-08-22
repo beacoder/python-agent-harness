@@ -1,14 +1,14 @@
 """python-agent-harness: a Python port of the gptel-agent-harness."""
 
-from .agent_session import AgentSession
 from .mcp.config import MCPConfig, MCPServerConfig
 from .mcp.manager import MCPManager
 from .models import AgentMode, Message, ToolCall, ToolSpec
+from .session import Session
 
 __version__ = "1.2.0"
 
 __all__ = [
-    "AgentSession",
+    "Session",
     "AgentMode",
     "MCPConfig",
     "MCPManager",

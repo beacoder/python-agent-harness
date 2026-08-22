@@ -1,4 +1,4 @@
-"""AgentSession: the runtime hub wiring tools, plan mode.
+"""Session: the runtime hub wiring tools, plan mode.
 
 The session implements the ToolContext-facing API (sub-agents,
 questions) and the agent-loop-facing API (client, calibrator, plan
@@ -20,9 +20,9 @@ from .client import Client
 from .mcp.config import MCPConfig
 from .mcp.manager import MCPManager
 from .models import AgentMode
+from .persistence import SessionPersistence, escape_role_headers
 from .planmode import PlanMode
 from .prompts import index_skills
-from .session_store import SessionStore, escape_role_headers
 from .subagent import run_subagent
 from .token_estimator import TokenCalibrator
 from .tools import Registry, ToolContext
@@ -63,7 +63,7 @@ def find_context_dir(project_dir: str, configured: str | None = None) -> str | N
     return None
 
 
-class AgentSession:
+class Session:
     """One interactive agent session (a "buffer" in elisp terms)."""
 
     def __init__(
@@ -158,7 +158,7 @@ class AgentSession:
         # active clones are tracked so cancel()/close() can reach them.
         self._subagent_clients_lock = threading.Lock()
         self._active_subagent_clients: list[Client] = []
-        self.store = SessionStore(
+        self.store = SessionPersistence(
             project_dir=project_dir,
             model=model,
             backend=backend,

@@ -24,10 +24,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 from test_agent import RecordingSession
 
 from python_agent_harness import config
-from python_agent_harness.agent_session import AgentSession
 from python_agent_harness.mcp.client import MCPUnavailableError
 from python_agent_harness.mcp.config import MCPConfig, MCPServerConfig
 from python_agent_harness.mcp.manager import MCPManager, MCPToolSpec
+from python_agent_harness.session import Session
 from python_agent_harness.tools.base import PendingToolResult
 from python_agent_harness.tools.mcp import (
     MCPTool,
@@ -728,8 +728,8 @@ class TestMCPCallCancel(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_MCP_SDK, "requires the optional `mcp` extra")
-class TestAgentSessionMCP(unittest.TestCase):
-    """AgentSession lifecycle: connect_mcp registers tools into the
+class TestSessionMCP(unittest.TestCase):
+    """Session lifecycle: connect_mcp registers tools into the
     registry; close() disconnects."""
 
     def make_session(self):
@@ -750,9 +750,9 @@ class TestAgentSessionMCP(unittest.TestCase):
             self.assertIn("mcp__demo__fail", names)
             # the tool executes through the real MCP path (not the
             # RecordingSession execute_tool override)
-            result = AgentSession.execute_tool(session, "mcp__demo__echo", {"text": "hi"})
+            result = Session.execute_tool(session, "mcp__demo__echo", {"text": "hi"})
             self.assertEqual(result, "echo:hi")
-            result = AgentSession.execute_tool(session, "mcp__demo__fail", {})
+            result = Session.execute_tool(session, "mcp__demo__fail", {})
             self.assertTrue(result.startswith("Error:"), result)
             self.assertIn("MCP: registered", "\n".join(session.logs))
         finally:
@@ -804,18 +804,18 @@ class TestAgentSessionMCP(unittest.TestCase):
                 AgentMode.PLAN,
                 {"plan": "P1", "plan-mode": "P2", "build-switch": "B"},
             )
-            result = AgentSession.execute_tool(session, "mcp__demo__echo", {"text": "hi"})
+            result = Session.execute_tool(session, "mcp__demo__echo", {"text": "hi"})
             self.assertIn("blocked by plan mode", result)
             self.assertIn("MCP tools are disabled", result)
             # the write-capable fake tool is refused the same way
-            result = AgentSession.execute_tool(session, "mcp__demo__fail", {})
+            result = Session.execute_tool(session, "mcp__demo__fail", {})
             self.assertIn("blocked by plan mode", result)
             # back in build mode the tool runs again
             session.plan_mode.set_mode(
                 AgentMode.BUILD,
                 {"plan": "P1", "plan-mode": "P2", "build-switch": "B"},
             )
-            result = AgentSession.execute_tool(session, "mcp__demo__echo", {"text": "hi"})
+            result = Session.execute_tool(session, "mcp__demo__echo", {"text": "hi"})
             self.assertEqual(result, "echo:hi")
         finally:
             session.close()
