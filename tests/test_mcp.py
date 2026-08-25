@@ -21,7 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from test_agent import RecordingSession
+from agent.agent_test_utils import RecordingSession
 
 from python_agent_harness import config
 from python_agent_harness.mcp.client import MCPUnavailableError
