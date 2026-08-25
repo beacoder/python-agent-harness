@@ -2230,11 +2230,6 @@ class TestTui(unittest.TestCase):
     # ------------------------------------------------------------------
     # _read_multiline
     # ------------------------------------------------------------------
-    def test_read_multiline_returns_text(self):
-        tui, _ = make_tui()
-        with mock.patch.object(tui.prompt_session, "prompt", return_value="hello"):
-            self.assertEqual(tui._read_multiline(), "hello")
-
     def test_read_multiline_eof_quits(self):
         tui, _ = make_tui()
         with mock.patch.object(tui.prompt_session, "prompt", side_effect=EOFError):
@@ -2261,6 +2256,30 @@ class TestTui(unittest.TestCase):
         self.assertIn("deepseek-flash-v4", plain)  # short model name
         self.assertNotIn("deepseek-ai/", plain)  # org prefix stripped
         self.assertTrue(plain.endswith("> "))
+
+    def test_read_multiline_uses_styled_prompt_with_title(self):
+        """When a session title is available, the input prompt shows the
+        short model name plus the dimmed title in parentheses, truncated
+        to 20 chars."""
+        from prompt_toolkit.formatted_text import FormattedText
+
+        tui, _ = make_tui()
+        tui.session.model = "deepseek-ai/deepseek-flash-v4"
+        tui.session.store.title = "A very long session title that exceeds twenty chars"
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="hello") as m:
+            self.assertEqual(tui._read_multiline(), "hello")
+        prompt = m.call_args.args[0]
+        self.assertIsInstance(prompt, FormattedText)
+        plain = "".join(text for _, text in prompt)
+        self.assertIn("deepseek-flash-v4", plain)  # short model name
+        self.assertNotIn("deepseek-ai/", plain)  # org prefix stripped
+        # title present, truncated to 20 chars, wrapped in parens
+        self.assertIn("(A very long session )", plain)
+        self.assertNotIn("exceeds twenty chars", plain)
+        self.assertTrue(plain.endswith("> "))
+        # the title fragment is rendered dim
+        styles = [style for style, _ in prompt]
+        self.assertIn("dim", styles)
 
     # ------------------------------------------------------------------
     # _start_agent / run loops
@@ -2555,39 +2574,25 @@ class TestTui(unittest.TestCase):
         self.assertIn("no session found", buf.getvalue())
 
     def test_restore_latest_session(self):
-        """/restore --latest loads the most recent session file."""
+        """/restore --latest and /restore latest both load the most recent
+        session file (same code branch, two accepted spellings)."""
         tui, buf = make_tui()
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "session.md")
             with open(path, "w", encoding="utf-8") as f:
                 f.write("**user**: hello\n\n**assistant**: hi")
-            with mock.patch(
-                "python_agent_harness.tui.commands.SessionPersistence.latest_session",
-                return_value=path,
-            ):
-                tui._run_restore("--latest")
-        out = buf.getvalue()
-        self.assertIn("restored:", out)
-        self.assertIn("session.md", out)
-        self.assertEqual([m.text() for m in tui.session.last_messages], ["hello", "hi"])
-
-    def test_restore_latest_keyword(self):
-        """/restore latest (no dashes) also loads the most recent session."""
-        tui, buf = make_tui()
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "session.md")
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("**user**: hello\n\n**assistant**: hi")
-            with mock.patch(
-                "python_agent_harness.tui.commands.SessionPersistence.latest_session",
-                return_value=path,
-            ) as latest:
-                tui._run_restore("latest")
-        latest.assert_called_once_with()
-        out = buf.getvalue()
-        self.assertIn("restored:", out)
-        self.assertIn("session.md", out)
-        self.assertEqual([m.text() for m in tui.session.last_messages], ["hello", "hi"])
+            for arg in ("--latest", "latest"):
+                buf.truncate(0)
+                with mock.patch(
+                    "python_agent_harness.tui.commands.SessionPersistence.latest_session",
+                    return_value=path,
+                ) as latest:
+                    tui._run_restore(arg)
+                latest.assert_called_once_with()
+                out = buf.getvalue()
+                self.assertIn("restored:", out)
+                self.assertIn("session.md", out)
+                self.assertEqual([m.text() for m in tui.session.last_messages], ["hello", "hi"])
 
     def test_restore_resolved_path_not_a_file(self):
         """A resolved path that is not a file reports an error."""
