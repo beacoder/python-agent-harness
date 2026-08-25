@@ -276,6 +276,18 @@ class InputMixin:
         """
         model = self.session.model or ""
         short = model.rsplit("/", 1)[-1] if "/" in model else model
+        title = getattr(self.session.store, "title", None)
+        if title:
+            title = title.strip()
+            if len(title) > 20:
+                title = title[:20]
+            return FormattedText(
+                [
+                    ("bold cyan", f"{short} " if short else ""),
+                    ("dim", f"({title}) "),
+                    ("ansibrightblack", "> "),
+                ]
+            )
         return FormattedText(
             [
                 ("bold cyan", f"{short} " if short else ""),
