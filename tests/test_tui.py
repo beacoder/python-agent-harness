@@ -1760,6 +1760,73 @@ class TestTui(unittest.TestCase):
             [m.text() for m in compacted],
         )
 
+    def test_compact_resets_running_state(self):
+        tui, _ = make_tui()
+        compacted = [
+            Message(role="user", content="**[Compacted Summary]**\n\nx"),
+        ]
+        with (
+            mock.patch.object(
+                tui.session,
+                "compact_conversation",
+                return_value=(True, "ok"),
+            ),
+            mock.patch.object(
+                tui.session,
+                "last_messages",
+                compacted,
+                create=True,
+            ),
+        ):
+            tui._run_compact()
+        self.assertFalse(tui.agent_running)
+        self.assertEqual(tui.status, "")
+
+    def test_compact_failure_prints_error_and_resets_state(self):
+        tui, buf = make_tui()
+        with mock.patch.object(
+            tui.session,
+            "compact_conversation",
+            side_effect=RuntimeError("boom"),
+        ):
+            tui._run_compact()
+        self.assertIn("Compaction failed: boom", buf.getvalue())
+        self.assertFalse(tui.agent_running)
+        self.assertEqual(tui.status, "")
+
+    def test_compact_renders_status_bar_while_running(self):
+        tui, buf = make_tui()
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_compact():
+            started.set()
+            release.wait(2)
+            return (True, "ok")
+
+        compacted = [
+            Message(role="user", content="**[Compacted Summary]**\n\nx"),
+        ]
+        with (
+            mock.patch.object(
+                tui.session,
+                "compact_conversation",
+                side_effect=slow_compact,
+            ),
+            mock.patch.object(
+                tui.session,
+                "last_messages",
+                compacted,
+                create=True,
+            ),
+        ):
+            run_thread = threading.Thread(target=tui._run_compact, daemon=True)
+            run_thread.start()
+            self.assertTrue(started.wait(2))
+            release.set()
+            run_thread.join(2)
+        self.assertIn("compacting", buf.getvalue())
+
     def test_summary_syncs_tui_conversation_history(self):
         tui, _ = make_tui()
         tui.conversation_history = [Message(role="user", content="hello")]
