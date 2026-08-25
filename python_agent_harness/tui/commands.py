@@ -262,9 +262,74 @@ class CommandMixin:
     # ------------------------------------------------------------------
     # direct commands (no LLM agent loop)
     # ------------------------------------------------------------------
+    def _run_with_status(
+        self,
+        worker: Callable[[], None],
+        *,
+        status_text: str,
+        cancel_message: str,
+    ) -> None:
+        """Run *worker* in a background thread with status bar updates.
+
+        Sets the status bar to *status_text*, renders the spinner while
+        the worker is in flight, and handles KeyboardInterrupt with
+        *cancel_message*.  Used by /compact and /summary to avoid
+        duplicating the thread + Live boilerplate.
+        """
+        self.status = status_text
+        self._current_tool = ""
+        self.agent_running = True
+        self._data_event.clear()
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        try:
+            if self.console.is_dumb_terminal:
+                while thread.is_alive():
+                    self._data_event.wait(timeout=0.1)
+                    self._data_event.clear()
+                    self.console.print(self._status_bar())
+                    self._flush()
+            else:
+                with Live(
+                    self._status_bar(),
+                    console=self.console,
+                    refresh_per_second=30,
+                    screen=False,
+                ) as live:
+                    while thread.is_alive():
+                        self._data_event.wait(timeout=0.1)
+                        self._data_event.clear()
+                        live.update(self._status_bar())
+                        self._flush()
+        except KeyboardInterrupt:
+            self.console.print(f"\n[dim]{cancel_message}[/dim]")
+            self._flush()
+        finally:
+            self.agent_running = False
+            self.status = ""
+            self._data_event.set()
+
     def _run_compact(self) -> None:
         """Compact the current conversation directly."""
-        ok, msg = self.session.compact_conversation()
+        result: dict[str, Any] = {}
+
+        def worker() -> None:
+            try:
+                ok, msg = self.session.compact_conversation()
+                result["ok"] = ok
+                result["msg"] = msg
+            except Exception as e:  # noqa: BLE001 - surfaced to the user
+                result["ok"] = False
+                result["msg"] = f"Compaction failed: {e}"
+
+        self._run_with_status(
+            worker,
+            status_text=" ⏳ compacting",
+            cancel_message="compact cancelled — the result may still be applied",
+        )
+        ok = result.get("ok", False)
+        msg = result.get("msg", "Compaction failed: unknown error.")
         if ok:
             # The shared conversation was replaced: sync the TUI's own
             # history too, or the next run would restart from the old
@@ -394,17 +459,7 @@ class CommandMixin:
         self._model_switch_by_name(arg)
 
     def _run_summary(self) -> None:
-        """Append a summary of the conversation (tools disabled).
-
-        The summary request is synchronous (non-streaming), so it runs
-        in a worker thread like the agent loop: the main thread keeps
-        rendering the status bar / spinner while the request is in
-        flight, and the result is printed when it lands.
-        """
-        self.status = " ⏳ summarizing"
-        self._current_tool = ""
-        self.agent_running = True
-        self._data_event.clear()
+        """Append a summary of the conversation (tools disabled)."""
         result: dict[str, str] = {}
 
         def worker() -> None:
@@ -413,34 +468,11 @@ class CommandMixin:
             except Exception as e:  # noqa: BLE001 - surfaced to the user
                 result["msg"] = f"Summary failed: {e}"
 
-        thread = threading.Thread(target=worker, daemon=True)
-        thread.start()
-        try:
-            if self.console.is_dumb_terminal:
-                while thread.is_alive():
-                    self._data_event.wait(timeout=0.1)
-                    self._data_event.clear()
-                    self.console.print(self._status_bar())
-                    self._flush()
-            else:
-                with Live(
-                    self._status_bar(),
-                    console=self.console,
-                    refresh_per_second=30,
-                    screen=False,
-                ) as live:
-                    while thread.is_alive():
-                        self._data_event.wait(timeout=0.1)
-                        self._data_event.clear()
-                        live.update(self._status_bar())
-                        self._flush()
-        except KeyboardInterrupt:
-            self.console.print("\n[dim]summary cancelled — the result may still be appended[/dim]")
-            self._flush()
-        finally:
-            self.agent_running = False
-            self.status = ""
-            self._data_event.set()
+        self._run_with_status(
+            worker,
+            status_text=" ⏳ summarizing",
+            cancel_message="summary cancelled — the result may still be appended",
+        )
         msg = result.get("msg", "Summary failed: unknown error.")
         self.conversation_history = list(self.session.last_messages)
         self._history_dirty = True
