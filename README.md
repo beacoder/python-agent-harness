@@ -218,7 +218,7 @@ CI blocks on Ruff and Pyright failures.
 
 **Keep it intact, not bloated.**
 
-The project aims to provide a capable coding-agent runtime without hiding the core agent loop behind a heavyweight framework.
+The project aims to provide a capable coding-agent runtime within a heavyweight framework.
 
 ## Related projects
 
