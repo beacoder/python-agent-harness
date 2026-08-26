@@ -13,6 +13,7 @@ import os
 import random
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -101,8 +102,6 @@ def _retry_delay(
 
 def _llm_log_path() -> Path:
     """Return the LLM log file path for a new session."""
-    import uuid
-
     date_str = time.strftime("%Y%m%d")
     session_id = uuid.uuid4().hex[:8]
     log_dir = os.environ.get("LLM_LOG_DIR")
