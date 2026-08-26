@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 from rich.live import Live
+from prompt_toolkit.patch_stdout import patch_stdout
 
 from .. import config
 from ..commands import find_command
@@ -411,7 +412,8 @@ class CommandMixin:
 
             # Prompt user for selection
             try:
-                selection = input("Select model: ").strip()
+                with patch_stdout():
+                    selection = self.prompt_session.prompt("Select model: ").strip()
                 if not selection:
                     return
 
