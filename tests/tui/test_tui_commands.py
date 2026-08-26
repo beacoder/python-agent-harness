@@ -491,7 +491,7 @@ class TestTuiCommands(unittest.TestCase):
         tui.session.llm_settings = {"model": "gpt-5-mini", "base_url": "https://default"}
         tui.session.model = "deepseek-chat"
         with (
-            mock.patch("builtins.input", return_value="1"),
+            mock.patch.object(tui.prompt_session, "prompt", return_value="1"),
             mock.patch(
                 "python_agent_harness.tui.commands.config.load_models_config", return_value=profiles
             ),
@@ -525,7 +525,7 @@ class TestTuiCommands(unittest.TestCase):
             mock.patch(
                 "python_agent_harness.tui.commands.config.load_models_config", return_value={}
             ),
-            mock.patch("builtins.input", return_value=""),
+            mock.patch.object(tui.prompt_session, "prompt", return_value=""),
         ):
             tui._run_model_command("")
         self.assertIn("default", buf.getvalue())
@@ -538,7 +538,7 @@ class TestTuiCommands(unittest.TestCase):
                 "python_agent_harness.tui.commands.config.load_models_config",
                 return_value=new_profiles,
             ),
-            mock.patch("builtins.input", return_value=""),
+            mock.patch.object(tui.prompt_session, "prompt", return_value=""),
         ):
             tui._run_model_command("")
         self.assertIn("new", buf.getvalue())
