@@ -282,38 +282,52 @@ def _config_path(path: str | os.PathLike | None = None) -> Path:
     return CONFIG_FILE
 
 
+def _read_config(path: str | os.PathLike | None = None) -> dict:
+    """Read and parse the config file; ``{}`` when it does not exist.
+
+    Raises ValueError on unreadable/invalid JSON so config errors
+    surface at session start.  Callers that tolerate a broken file
+    (e.g. `load_paths_config`) catch it and fall back to defaults.
+    """
+    import json
+
+    cfg_path = _config_path(path)
+    if not cfg_path.exists():
+        return {}
+    try:
+        with open(cfg_path, "rb") as f:
+            data = json.load(f)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"cannot read config file {cfg_path}: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError(f"config file {cfg_path}: top level must be an object")
+    return data
+
+
 def load_llm_config(path: str | os.PathLike | None = None) -> dict:
     """Resolve LLM settings: code defaults < config file < environment.
 
     The config file is JSON with an ``llm`` object (see `CONFIG_TEMPLATE`).
     Environment variables still win if set, so existing setups keep working.
     """
-    import json
-
     settings = dict(DEFAULT_LLM)
-    cfg_path = _config_path(path)
-    if cfg_path.exists():
-        try:
-            with open(cfg_path, "rb") as f:
-                data = json.load(f)
-        except Exception as e:  # noqa: BLE001
-            raise ValueError(f"cannot read config file {cfg_path}: {e}") from e
-        llm = data.get("llm") or {}
-        if not isinstance(llm, dict):
-            raise ValueError(f"config file {cfg_path}: llm must be an object")
-        for key in (
-            "base_url",
-            "api_key",
-            "model",
-            "backend",
-            "temperature",
-            "max_tokens",
-            "timeout",
-            "reasoning_effort",
-            "stream",
-        ):
-            if key in llm and llm[key] is not None:
-                settings[key] = llm[key]
+    data = _read_config(path)
+    llm = data.get("llm") or {}
+    if not isinstance(llm, dict):
+        raise ValueError(f"config file {_config_path(path)}: llm must be an object")
+    for key in (
+        "base_url",
+        "api_key",
+        "model",
+        "backend",
+        "temperature",
+        "max_tokens",
+        "timeout",
+        "reasoning_effort",
+        "stream",
+    ):
+        if key in llm and llm[key] is not None:
+            settings[key] = llm[key]
     for key, env in _ENV_OVERRIDES.items():
         val = os.environ.get(env)
         if val:
@@ -340,47 +354,39 @@ def load_subagent_llm_config(
     `load_llm_config`) that callers can use to build a sub-agent
     Client; when no override is set anywhere it equals ``main``.
     """
-    import json
-
     main = dict(main) if main else dict(DEFAULT_LLM)
     overrides = dict(DEFAULT_SUBAGENT_LLM)
-    cfg_path = _config_path(path)
-    if cfg_path.exists():
-        try:
-            with open(cfg_path, "rb") as f:
-                data = json.load(f)
-        except Exception as e:  # noqa: BLE001
-            raise ValueError(f"cannot read config file {cfg_path}: {e}") from e
-        sub = data.get("subagent_llm") or {}
-        if not isinstance(sub, dict):
-            raise ValueError(f"config file {cfg_path}: subagent_llm must be an object")
-        for key in DEFAULT_SUBAGENT_LLM:
-            if key in sub and sub[key] is not None:
-                overrides[key] = sub[key]
-        profile_name = overrides.get("profile")
-        if profile_name:
-            models = data.get("models") or {}
-            if not isinstance(models, dict):
-                raise ValueError(f"config file {cfg_path}: models must be an object")
-            profile = models.get(profile_name)
-            if not isinstance(profile, dict):
-                raise ValueError(
-                    f"config file {cfg_path}: subagent_llm.profile references "
-                    f"unknown models profile {profile_name!r}"
-                )
-            for key in (
-                "base_url",
-                "api_key",
-                "model",
-                "backend",
-                "temperature",
-                "max_tokens",
-                "timeout",
-                "reasoning_effort",
-                "stream",
-            ):
-                if key in profile and profile[key] is not None:
-                    overrides[key] = profile[key]
+    data = _read_config(path)
+    sub = data.get("subagent_llm") or {}
+    if not isinstance(sub, dict):
+        raise ValueError(f"config file {_config_path(path)}: subagent_llm must be an object")
+    for key in DEFAULT_SUBAGENT_LLM:
+        if key in sub and sub[key] is not None:
+            overrides[key] = sub[key]
+    profile_name = overrides.get("profile")
+    if profile_name:
+        models = data.get("models") or {}
+        if not isinstance(models, dict):
+            raise ValueError(f"config file {_config_path(path)}: models must be an object")
+        profile = models.get(profile_name)
+        if not isinstance(profile, dict):
+            raise ValueError(
+                f"config file {_config_path(path)}: subagent_llm.profile references "
+                f"unknown models profile {profile_name!r}"
+            )
+        for key in (
+            "base_url",
+            "api_key",
+            "model",
+            "backend",
+            "temperature",
+            "max_tokens",
+            "timeout",
+            "reasoning_effort",
+            "stream",
+        ):
+            if key in profile and profile[key] is not None:
+                overrides[key] = profile[key]
     for key, env in _SUBAGENT_ENV_OVERRIDES.items():
         val = os.environ.get(env)
         if val:
@@ -399,23 +405,18 @@ def load_paths_config(path: str | os.PathLike | None = None) -> dict:
     Values are expanded (~ → home) and resolved to absolute paths when
     set; None means "use default discovery logic".
     """
-    import json
-
     settings = dict(DEFAULT_PATHS)
-    cfg_path = _config_path(path)
-    if cfg_path.exists():
-        try:
-            with open(cfg_path, "rb") as f:
-                data = json.load(f)
-        except Exception:  # noqa: BLE001
-            return settings
-        paths = data.get("paths") or {}
-        if not isinstance(paths, dict):
-            return settings
-        for key in ("context_path", "skill_path"):
-            val = paths.get(key)
-            if isinstance(val, str) and val.strip():
-                settings[key] = os.path.abspath(os.path.expanduser(val.strip()))
+    try:
+        data = _read_config(path)
+    except ValueError:
+        return settings
+    paths = data.get("paths") or {}
+    if not isinstance(paths, dict):
+        return settings
+    for key in ("context_path", "skill_path"):
+        val = paths.get(key)
+        if isinstance(val, str) and val.strip():
+            settings[key] = os.path.abspath(os.path.expanduser(val.strip()))
     return settings
 
 
@@ -428,21 +429,12 @@ def load_mcp_config(path: str | os.PathLike | None = None) -> MCPConfig:
     ``mcp`` SDK is only needed when servers are actually configured and
     connected — reading the config never requires it.
     """
-    import json
-
     from .mcp.config import MCPConfig
 
-    cfg_path = _config_path(path)
-    data: dict = {}
-    if cfg_path.exists():
-        try:
-            with open(cfg_path, "rb") as f:
-                data = json.load(f)
-        except Exception as e:  # noqa: BLE001 - mirror load_llm_config's tolerance
-            raise ValueError(f"cannot read config file {cfg_path}: {e}") from e
+    data = _read_config(path)
     section = data.get("mcp") or {}
     if not isinstance(section, dict):
-        raise ValueError(f"config file {cfg_path}: mcp must be an object")
+        raise ValueError(f"config file {_config_path(path)}: mcp must be an object")
     return MCPConfig.from_dict(section.get("servers"))
 
 
@@ -455,25 +447,16 @@ def load_models_config(path: str | os.PathLike | None = None) -> dict[str, dict]
     profile is applied.  An empty dict when the file has no ``models``
     section or it is empty.
     """
-    import json
-
-    cfg_path = _config_path(path)
-    if not cfg_path.exists():
-        return {}
-    try:
-        with open(cfg_path, "rb") as f:
-            data = json.load(f)
-    except Exception as e:  # noqa: BLE001
-        raise ValueError(f"cannot read config file {cfg_path}: {e}") from e
+    data = _read_config(path)
     section = data.get("models") or {}
     if not isinstance(section, dict):
-        raise ValueError(f"config file {cfg_path}: models must be an object")
+        raise ValueError(f"config file {_config_path(path)}: models must be an object")
     profiles: dict[str, dict] = {}
     for name, val in section.items():
         if name.startswith("_"):
             continue
         if not isinstance(val, dict):
-            raise ValueError(f"config file {cfg_path}: models.{name} must be an object")
+            raise ValueError(f"config file {_config_path(path)}: models.{name} must be an object")
         profiles[name] = val
     return profiles
 
