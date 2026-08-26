@@ -137,6 +137,13 @@ def _strip_final_check(text: str) -> str:
     untouched.  The agent loop still produces and stores the message
     unchanged; this only trims it from the TUI display.
     """
+    # Fast path: the regex below is expensive on large buffers (the live
+    # stream row can be ~100K chars and is re-stripped every frame), so
+    # gate it behind a cheap substring check.  The header always contains
+    # both words, so a miss means no block to strip.
+    low = text.lower()
+    if "final" not in low or "check" not in low:
+        return text
     m = _FINAL_CHECK_RE.search(text)
     if m is not None:
         head = text[: m.start()].rstrip()
