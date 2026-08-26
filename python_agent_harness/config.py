@@ -5,6 +5,7 @@ Mirrors the defcustom defaults of the Emacs gptel-agent-harness.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -289,8 +290,6 @@ def _read_config(path: str | os.PathLike | None = None) -> dict:
     surface at session start.  Callers that tolerate a broken file
     (e.g. `load_paths_config`) catch it and fall back to defaults.
     """
-    import json
-
     cfg_path = _config_path(path)
     if not cfg_path.exists():
         return {}
