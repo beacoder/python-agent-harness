@@ -12,9 +12,10 @@ import shlex
 import threading
 from typing import TYPE_CHECKING, Any
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.live import Live
-from prompt_toolkit.patch_stdout import patch_stdout
 
 from .. import config
 from ..commands import find_command
@@ -45,6 +46,7 @@ class CommandMixin:
     if TYPE_CHECKING:
         session: Session
         console: Console
+        prompt_session: PromptSession
         conversation_history: list[Message]
         _history_dirty: bool
         _data_event: threading.Event
