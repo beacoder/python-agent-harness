@@ -8,6 +8,7 @@ to reduce drift.
 from __future__ import annotations
 
 import json
+import re
 
 from . import config
 
@@ -23,11 +24,17 @@ def is_cjk_char(c: str) -> bool:
     )
 
 
+# The same ranges as `is_cjk_char`, as a single compiled character class.
+# Scanning for CJK runs in C (the regex engine) instead of a per-character
+# Python loop, so large payloads count CJK chars much faster.
+_CJK_RE = re.compile(r"[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef\U00020000-\U0002fa1f]")
+
+
 def estimate_tokens(text: str) -> int:
     """Estimate tokens in TEXT: Latin ~4 chars/token, CJK ~2 chars/token."""
     if not text:
         return 0
-    cjk = sum(1 for ch in text if is_cjk_char(ch))
+    cjk = len(_CJK_RE.findall(text))
     latin = len(text) - cjk
     return round(latin / 4.0 + cjk / 2.0)
 
