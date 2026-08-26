@@ -118,7 +118,7 @@ class Tool(ABC):
 class Registry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
-        self._lock = __import__("threading").Lock()
+        self._lock = threading.Lock()
 
     def register(self, tool: Tool) -> None:
         with self._lock:
