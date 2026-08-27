@@ -13,7 +13,6 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.live import Live
 
@@ -414,8 +413,7 @@ class CommandMixin:
 
             # Prompt user for selection
             try:
-                with patch_stdout():
-                    selection = self.prompt_session.prompt("Select model: ").strip()
+                selection = input("Select model: ").strip()
                 if not selection:
                     return
 
