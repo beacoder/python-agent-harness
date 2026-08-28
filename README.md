@@ -23,7 +23,7 @@ It works with any **OpenAI-compatible API** and is designed to be easy to inspec
 
 ## Demo
 
-![python-agent-harness demo](demo.png)
+![python-agent-harness demo](https://raw.githubusercontent.com/beacoder/python-agent-harness/main/demo.png)
 
 ## Quick start
 
