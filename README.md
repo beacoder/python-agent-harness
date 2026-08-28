@@ -6,6 +6,7 @@
 FSM-driven execution · OpenAI-compatible · built for daily use and easy customization
 
 [![CI](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/python-agent-harness.svg)](https://pypi.org/project/python-agent-harness/)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
