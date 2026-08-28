@@ -27,6 +27,24 @@ It works with any **OpenAI-compatible API** and is designed to be easy to inspec
 
 ## Quick start
 
+### Install from PyPI
+
+```sh
+pip install python-agent-harness
+
+python-agent-harness config --init
+python-agent-harness run
+```
+
+Optional extras:
+
+```sh
+pip install "python-agent-harness[mcp]"   # MCP server integration
+pip install "python-agent-harness[dev]"   # development tools
+```
+
+### Install from source (GitHub)
+
 ```sh
 git clone git@github.com:beacoder/python-agent-harness.git
 cd python-agent-harness
@@ -38,14 +56,14 @@ python-agent-harness config --init
 python-agent-harness run
 ```
 
-Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_key`, and `model`.
-
 Optional extras:
 
 ```sh
 pip install -e ".[mcp]"   # MCP server integration
 pip install -e ".[dev]"   # development tools
 ```
+
+Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_key`, and `model`.
 
 ## Features
 
