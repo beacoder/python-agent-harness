@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "python-agent-harness"
 version = "1.5.2"
-description = "Python agent execution harness: agent loop, tools, plan/build modes, sessions"
+description = "A mini-OpenCode written in Python — lightweight, hackable, and easy to customize"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
