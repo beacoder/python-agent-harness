@@ -17,22 +17,25 @@ from .model_capabilities import fetch_model_info
 CONTEXT_TRIGGER = 0.70
 
 # Entries are matched in order (first match wins): put more specific
-# patterns before general ones. Supports wildcards (*).
+# patterns before general ones. Supports wildcards (*).  Trailing `*`
+# on explicit entries preserves prefix matching for suffixed model
+# names (e.g. "deepseek-v4-flash" -> deepseek-v4*), matching the
+# legacy substring behavior.
 CONTEXT_WINDOWS: list[tuple[str, int]] = [
-    ("gpt-5-mini", 128_000),
-    ("gpt-5", 400_000),
-    ("gpt-oss-120b", 128_000),
-    ("claude", 200_000),
-    ("deepseek-v3", 128_000),
-    ("deepseek-v4", 1_000_000),
-    ("qwen3.5", 131_072),
-    ("qwen3.6", 262_144),
-    ("qwen3.8", 262_144),
-    ("qwen3", 131_072),
-    ("glm-5.2", 1_000_000),
-    ("glm-5.1", 128_000),
-    ("kimi-k2.7", 256_000),
-    ("kimi", 128_000),
+    ("gpt-5-mini*", 128_000),
+    ("gpt-5*", 400_000),
+    ("gpt-oss-120b*", 128_000),
+    ("claude*", 200_000),
+    ("deepseek-v3*", 128_000),
+    ("deepseek-v4*", 1_000_000),
+    ("qwen3.5*", 131_072),
+    ("qwen3.6*", 262_144),
+    ("qwen3.8*", 262_144),
+    ("qwen3*", 131_072),
+    ("glm-5.2*", 1_000_000),
+    ("glm-5.1*", 128_000),
+    ("kimi-k2.7*", 256_000),
+    ("kimi*", 128_000),
     # Wildcard fallbacks for unknown models
     ("gpt-*", 128_000),
     ("claude-*", 200_000),
