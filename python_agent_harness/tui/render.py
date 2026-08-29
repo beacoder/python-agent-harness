@@ -91,9 +91,7 @@ def _tool_result_preview(content: str) -> str:
 #
 # The header must be bracketed or start its own line: that keeps prose
 # like "let me do the final check" from truncating a real reply.
-# "Goal:", "**Goal:**", "**Goal**:", "`Goal` :", and labels carrying a
-# parenthetical before the colon ("Evidence (re-verified):")
-_FC_LABEL = r"[*_`]*[ \t]*(?:\([^)\n]*\)[ \t]*)?:"
+_FC_LABEL = r"[*_`]*[ \t]*:"  # "Goal:", "**Goal:**", "**Goal**:", "`Goal` :"
 _FC_HEADER = (
     r"(?:"
     r"(?:\*\*|__|#{1,6}[ \t]*)?"  # decoration before a bracketed header
@@ -264,12 +262,7 @@ class RenderMixin:
                     if stripped != body:
                         body = stripped
                         collapsed_reasoning = True
-                stripped = _strip_final_check(body)
-                # a reply that was ONLY the completion-check block
-                # leaves nothing behind — surface a done marker so the
-                # round doesn't render blank
-                check_only = stripped != body and not stripped.strip()
-                body = stripped
+                body = _strip_final_check(body)
                 if not full:
                     body = _tail_lines(body, 12)
                 if collapsed_reasoning:
@@ -295,9 +288,7 @@ class RenderMixin:
                             params = ""
                         label = f"tool: {tc.name}({params})" if params else f"tool: {tc.name}"
                         rows.append(Text(f"▶ {label}", style="magenta"))
-                if check_only:
-                    rows.append(Text("Task complete.", style="dim"))
-                elif body.strip():
+                if body.strip():
                     rows.append(Markdown(f"**assistant:** {body}", style=ASSISTANT_STYLE))
             elif m.role == "tool":
                 preview = _tool_result_preview(m.text())
@@ -347,12 +338,7 @@ class RenderMixin:
         """Live stream row (cheap Text, tail-capped)."""
         with self.lock:
             stream = self.stream_text
-        stripped = _strip_final_check(stream)
-        if stripped != stream and not stripped:
-            # the stream was only the completion-check block: replace
-            # the (now hidden) bookkeeping with a done marker
-            return Text("Task complete.", style="dim")
-        stream = stripped
+        stream = _strip_final_check(stream)
         if not stream:
             return None
         cap = self._visible_row_cap()
