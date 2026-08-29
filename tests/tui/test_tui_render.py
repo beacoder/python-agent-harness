@@ -220,10 +220,10 @@ class TestTuiRender(unittest.TestCase):
     def test_nudge_and_final_check_hidden(self):
         """Harness bookkeeping is hidden from the panel: the injected
         completion-nudge user prompt and the assistant's [FINAL CHECK]
-        block never show up — even when the check block is the reply's
-        ONLY content (a reply carrying real content keeps its content).
-        The stored messages are untouched — the agent loop keeps
-        working exactly as before."""
+        block never show up — a check-only reply renders as a "Task
+        complete." marker instead, and a reply carrying real content
+        keeps its content.  The stored messages are untouched — the
+        agent loop keeps working exactly as before."""
         from python_agent_harness import config
 
         tui, buf = make_tui()
@@ -247,10 +247,11 @@ class TestTuiRender(unittest.TestCase):
         self.assertIn("build the thing", out)
         self.assertIn("Done. All tests pass.", out)
         # the [FINAL CHECK] block is hidden even when it is the whole
-        # reply — check-only messages never render
+        # reply — a check-only message renders as the done marker
         self.assertNotIn("FINAL CHECK", out)
         self.assertNotIn("Status: SUCCESS", out)
         self.assertNotIn(config.NUDGE_MESSAGE, out)
+        self.assertIn("Task complete.", out)
         # the agent loop's history is untouched
         self.assertEqual(
             tui.session.last_messages[1].text(),
@@ -280,6 +281,7 @@ class TestTuiRender(unittest.TestCase):
             "[FINAL CHECK]\n- **Goal:** g\n- **Status:** SUCCESS\n- **Evidence:** e",
             "## Final Check\n\n- Goal: g\n- Status: SUCCESS\n- Evidence: e\n",
             "answer.\n\n[Final check]\n* `Goal`: g\n* `Status`: SUCCESS\n* `Evidence`: e",
+            "answer.\n\n[FINAL CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence (re-verified): e",
         ]
         for text in variants:
             with self.subTest(text=text):
@@ -287,6 +289,7 @@ class TestTuiRender(unittest.TestCase):
                 # no dangling markdown decoration left behind
                 self.assertNotIn("*", _strip_final_check(text))
         # a reply's real content survives the strip
+        self.assertEqual(_strip_final_check(variants[-2]), "answer.")
         self.assertEqual(_strip_final_check(variants[-1]), "answer.")
 
     def test_final_check_prose_mention_kept(self):
@@ -320,14 +323,16 @@ class TestTuiRender(unittest.TestCase):
         self.assertIn("Status: SUCCESS", out)
         self.assertIn("Evidence:", out)
 
-    def test_stream_pure_final_check_hidden(self):
-        """A stream that is only the [FINAL CHECK] block never renders
-        — the row goes blank on the final reply instead of flashing
-        bookkeeping."""
+    def test_stream_pure_final_check_shows_marker(self):
+        """A stream that is only the [FINAL CHECK] block renders the
+        done marker instead of flashing bookkeeping or going blank."""
         tui, _ = make_tui()
         tui.stream_text = "[FINAL CHECK]\n- Goal: x\n- Status: SUCCESS\n- Evidence: y"
         row = tui._stream_row()
-        self.assertIsNone(row)
+        self.assertIsNotNone(row)
+        self.assertIn("Task complete.", row.plain)
+        self.assertNotIn("FINAL CHECK", row.plain)
+        self.assertNotIn("Status: SUCCESS", row.plain)
 
     def test_reasoning_streams_normally(self):
         """While streaming, reasoning content shows up live like any
