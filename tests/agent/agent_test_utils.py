@@ -29,6 +29,12 @@ class FakeClient:
         self.model = "gpt-5-mini"
         self.timeout = 600.0
 
+    @property
+    def context_window(self) -> int:
+        from python_agent_harness.token_estimator import context_window_for
+
+        return context_window_for(self.model)
+
     def set_timeout(self, timeout):
         self.timeout = timeout
 

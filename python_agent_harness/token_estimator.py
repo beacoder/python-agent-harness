@@ -42,13 +42,13 @@ def estimate_tokens(text: str) -> int:
 def context_window_for(model: str) -> int:
     """Return the context window for MODEL, or a safe fallback.
 
-    Entries are matched in order using substring matching, so more
-    specific patterns must come before general ones (see config).
+    Delegates to ``config._match_context_window`` (fnmatch over
+    CONTEXT_WINDOWS, first match wins, case-insensitive); unknown
+    models get DEFAULT_CONTEXT_WINDOW.
     """
-    lowered = model.lower()
-    for pattern, size in config.CONTEXT_WINDOWS:
-        if pattern in lowered:
-            return size
+    matched = config._match_context_window(model)
+    if matched is not None:
+        return matched
     return config.DEFAULT_CONTEXT_WINDOW
 
 

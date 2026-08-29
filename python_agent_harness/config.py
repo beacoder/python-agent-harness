@@ -5,19 +5,19 @@ Mirrors the defcustom defaults of the Emacs gptel-agent-harness.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from .mcp.config import MCPConfig
+from .mcp.config import MCPConfig
+from .model_capabilities import fetch_model_info
 
 # ---- context management -------------------------------------------------
 CONTEXT_TRIGGER = 0.70
 
 # Entries are matched in order (first match wins): put more specific
-# patterns before general ones.
+# patterns before general ones. Supports wildcards (*).
 CONTEXT_WINDOWS: list[tuple[str, int]] = [
     ("gpt-5-mini", 128_000),
     ("gpt-5", 400_000),
@@ -33,6 +33,13 @@ CONTEXT_WINDOWS: list[tuple[str, int]] = [
     ("glm-5.1", 128_000),
     ("kimi-k2.7", 256_000),
     ("kimi", 128_000),
+    # Wildcard fallbacks for unknown models
+    ("gpt-*", 128_000),
+    ("claude-*", 200_000),
+    ("deepseek-*", 128_000),
+    ("qwen-*", 128_000),
+    ("glm-*", 128_000),
+    ("kimi-*", 128_000),
 ]
 DEFAULT_CONTEXT_WINDOW = 128_000
 
@@ -428,8 +435,6 @@ def load_mcp_config(path: str | os.PathLike | None = None) -> MCPConfig:
     ``mcp`` SDK is only needed when servers are actually configured and
     connected — reading the config never requires it.
     """
-    from .mcp.config import MCPConfig
-
     data = _read_config(path)
     section = data.get("mcp") or {}
     if not isinstance(section, dict):
@@ -462,3 +467,58 @@ def load_models_config(path: str | os.PathLike | None = None) -> dict[str, dict]
 
 def mask_secret(value: str | None) -> str:
     return "****" if value else "(unset)"
+
+
+def _match_context_window(model: str) -> int | None:
+    """Match model name against CONTEXT_WINDOWS patterns (supports wildcards).
+
+    Args:
+        model: The model ID to match (e.g., "gpt-5-mini", "claude-3-opus")
+
+    Returns:
+        The context window size if matched, None otherwise
+    """
+    lowered = model.lower()
+    for pattern, size in CONTEXT_WINDOWS:
+        if fnmatch.fnmatch(lowered, pattern):
+            return size
+    return None
+
+
+def get_context_window_for_model(
+    base_url: str,
+    api_key: str,
+    model: str,
+) -> int:
+    """Get context window for a model, trying API first then falling back to config.
+
+    Tries to fetch context window from the provider's /models endpoint
+    (blocking).  Permanent absence of information falls back to pattern
+    matching in CONTEXT_WINDOWS, then finally DEFAULT_CONTEXT_WINDOW.
+
+    Raises:
+        ModelDiscoveryError: the /models endpoint is TRANSIENTLY
+            unreachable (network, timeout, 429, 5xx) — the caller must
+            NOT cache the fallback and should retry later.
+
+    Args:
+        base_url: The LLM API base URL
+        api_key: The API key for authentication
+        model: The model ID to query
+
+    Returns:
+        The context window size as an integer
+    """
+    # API discovery: raises ModelDiscoveryError on transient failure so
+    # the caller can retry; permanent no-info falls through below.
+    info = fetch_model_info(base_url, api_key, model, timeout=10.0)
+    if info.context_window is not None:
+        return info.context_window
+
+    # Try pattern matching in CONTEXT_WINDOWS
+    matched = _match_context_window(model)
+    if matched is not None:
+        return matched
+
+    # Final fallback to default
+    return DEFAULT_CONTEXT_WINDOW

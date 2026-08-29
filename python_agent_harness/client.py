@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import random
+import socket as _socket
 import threading
 import time
 import uuid
@@ -21,6 +22,7 @@ from typing import Any
 import httpx
 
 from . import config
+from .model_capabilities import ModelDiscoveryError
 from .models import Message, ToolCall, ToolSpec, Usage
 
 # serializes appends to the shared LLM log file: concurrent sub-agents
@@ -211,6 +213,8 @@ class Client:
         )
         self._config_path = config_path
         self._http = httpx.Client(timeout=timeout, verify=self.verify)
+        # Resolve context window for this model (API discovery + fallbacks)
+        self._context_window = None  # lazy-loaded
         # True while the in-flight request was aborted (Ctrl-C): a
         # connection error on an aborted request must NOT be retried —
         # the user asked to stop.  Cleared at the start of each chat()
@@ -223,6 +227,37 @@ class Client:
             if log_path is not None
             else (_llm_log_path() if config.LLM_LOG_ENABLED else None)
         )
+
+    @property
+    def context_window(self) -> int:
+        """Get the context window for this model.
+
+        Resolution order: provider /models discovery (via
+        ``config.get_context_window_for_model``) -> CONTEXT_WINDOWS
+        pattern match -> DEFAULT_CONTEXT_WINDOW.  A successful
+        resolution — including permanent "provider has no info" — is
+        cached, so the API call happens at most once per client.  A
+        TRANSIENT discovery failure is NOT cached: the next access
+        retries the API (the property is read once per agent round, so
+        this is event-driven, not time-driven).
+        """
+        if self._context_window is None:
+            try:
+                self._context_window = config.get_context_window_for_model(
+                    self.base_url, self.api_key or "", self.model
+                )
+            except ModelDiscoveryError:
+                # Transient: leave the cache empty so the next access
+                # retries discovery.
+                pass
+            except Exception:
+                # Unexpected bug inside discovery: cache the default so
+                # a broken path is not hammered on every access.
+                self._context_window = config.DEFAULT_CONTEXT_WINDOW
+        if self._context_window is None:
+            matched = config._match_context_window(self.model)
+            return matched if matched else config.DEFAULT_CONTEXT_WINDOW
+        return self._context_window
 
     def close(self) -> None:
         self._http.close()
@@ -810,8 +845,6 @@ def _abort_inflight_sockets(client: httpx.Client) -> None:
     down an idle socket is harmless (the pool is closed right after
     anyway); any failure is ignored (best effort).
     """
-    import socket as _socket
-
     pool = getattr(getattr(client, "_transport", None), "_pool", None)
     for conn in getattr(pool, "_connections", None) or ():
         try:

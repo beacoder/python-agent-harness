@@ -20,6 +20,15 @@ STATUS_QUEUE: list[int] = []
 RETRY_AFTER_HEADER: str | None = None
 # Every request body received, in order (for asserting payloads).
 REQUEST_BODIES: list[dict] = []
+# Optional /models (GET) response body; None -> empty model list.
+MODELS_RESPONSE: dict | None = None
+# Queue of HTTP statuses consumed by /models (GET) requests in order;
+# a non-200 entry makes the server respond with that error status.
+# Separate from STATUS_QUEUE so chat retry tests are unaffected by the
+# context-window discovery GET.
+MODELS_STATUS_QUEUE: list[int] = []
+# Number of /models (GET) requests served (for caching assertions).
+MODELS_CALLS: int = 0
 
 
 def reset_state() -> None:
@@ -32,9 +41,32 @@ def reset_state() -> None:
     REQUEST_BODIES.clear()
     global RETRY_AFTER_HEADER
     RETRY_AFTER_HEADER = None
+    global MODELS_RESPONSE
+    MODELS_RESPONSE = None
+    MODELS_STATUS_QUEUE.clear()
+    global MODELS_CALLS
+    MODELS_CALLS = 0
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        global MODELS_CALLS
+        MODELS_CALLS += 1
+        status = MODELS_STATUS_QUEUE.pop(0) if MODELS_STATUS_QUEUE else 200
+        if status != 200:
+            err = b'{"error": "transient failure"}'
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(err)))
+            self.end_headers()
+            self.wfile.write(err)
+            return
+        data = json.dumps(MODELS_RESPONSE if MODELS_RESPONSE is not None else {"data": []})
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data.encode())))
+        self.end_headers()
+        self.wfile.write(data.encode())
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")

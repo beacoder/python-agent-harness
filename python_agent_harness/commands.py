@@ -17,6 +17,7 @@ Tool availability per command:
 from __future__ import annotations
 
 import re
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -35,8 +36,6 @@ def _substitute(text: str, path: str, extra: str | None) -> str:
 
 def _project_root(cwd: str) -> str:
     """Best-effort project root (git dir or parent with AGENTS.md)."""
-    import subprocess
-
     d = Path(cwd).resolve()
     try:
         out = subprocess.run(

@@ -12,6 +12,7 @@ Ported from gptel-agent-harness-session.el.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import threading
@@ -284,8 +285,6 @@ class SessionPersistence:
 
 def _parse_metadata_value(value: str) -> str:
     """Parse a repr()-style metadata value, mirroring elisp read-from-string."""
-    import ast
-
     try:
         parsed = ast.literal_eval(value)
         if isinstance(parsed, str):

@@ -18,10 +18,12 @@ content-block dicts), ``structured_content`` and ``is_error``.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any
 
 try:
+    import httpx2  # shipped as part of the mcp SDK
     from mcp import Client
     from mcp.client.sse import sse_client
     from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -93,8 +95,6 @@ class MCPClient:
         assert cfg.url is not None
         if cfg.transport == "streamable-http":
             if cfg.headers:
-                import httpx2  # shipped as part of the mcp SDK
-
                 self._http_client = httpx2.AsyncClient(headers=cfg.headers)
                 return streamable_http_client(cfg.url, http_client=self._http_client)
             return streamable_http_client(cfg.url)
@@ -117,8 +117,6 @@ class MCPClient:
 
     async def close(self) -> None:
         """Tear down the connection (best effort, never raises)."""
-        import contextlib
-
         client, self._client = self._client, None
         if client is not None:
             with contextlib.suppress(Exception):  # teardown noise is not an error

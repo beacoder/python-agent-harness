@@ -20,7 +20,10 @@ class ContextManager:
     ``update_context_ratio`` receives the two token-estimator functions
     from the loop's delegate so the call site keeps resolving them
     through the ``agent`` module namespace (tests patch
-    ``python_agent_harness.agent.estimate_payload_tokens``).
+    ``python_agent_harness.agent.estimate_payload_tokens``).  The
+    context window comes from the session's client (cached, API-aware);
+    ``context_window_for`` is only the fallback for clients without the
+    property.
     """
 
     def __init__(self, loop: Any) -> None:
@@ -39,7 +42,13 @@ class ContextManager:
         )
         loop.session.calibrator.last_raw_estimate = raw
         calibrated = loop.session.calibrator.calibrate(raw)
-        window = context_window_for(loop.session.model)
+        # Prefer the client's cached window (API discovery -> patterns ->
+        # default); fall back to the static pattern matcher for clients
+        # without the property (test doubles).
+        client = loop.session.client
+        window = getattr(client, "context_window", None)
+        if window is None:
+            window = context_window_for(loop.session.model)
         loop.session.context_ratio = calibrated / float(window)
         loop.session.notify("context")
 

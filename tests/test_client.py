@@ -27,13 +27,14 @@ def make_client(
     retry_max: int | None = None,
     retry_base_delay: float | None = None,
     retry_max_delay: float | None = None,
+    model: str = "fake",
 ) -> Client:
     srv = serve()
     host, port = srv.server_address
     c = Client(
         base_url=f"http://{host}:{port}/v1",
         api_key="test",
-        model="fake",
+        model=model,
         retry_max=retry_max,
         retry_base_delay=retry_base_delay,
         retry_max_delay=retry_max_delay,
@@ -1688,6 +1689,92 @@ class TestAuthRefreshOn401(unittest.TestCase):
         self.assertEqual(calls["n"], 2)
         self.assertEqual(msg.text(), "title generated")
         c.close()
+
+
+class TestContextWindow(unittest.TestCase):
+    """Client.context_window: /models discovery -> pattern match -> default.
+
+    The result is cached: the API call happens at most once per client.
+    """
+
+    def setUp(self):
+        fake_openai_server.reset_state()
+
+    def tearDown(self):
+        fake_openai_server.reset_state()
+
+    def test_api_discovery_and_cache(self):
+        """A provider-reported context window wins, and the resolved
+        value is cached for the life of the client."""
+        fake_openai_server.MODELS_RESPONSE = {"data": [{"id": "fake", "context_window": 999_999}]}
+        c = make_client()
+        try:
+            self.assertEqual(c.context_window, 999_999)
+            # cached: a later provider change must not affect the window
+            fake_openai_server.MODELS_RESPONSE = {
+                "data": [{"id": "fake", "context_window": 111_111}]
+            }
+            self.assertEqual(c.context_window, 999_999)
+        finally:
+            c.close()
+
+    def test_fallback_to_pattern_match(self):
+        """No discovery info for the model -> CONTEXT_WINDOWS wildcard."""
+        fake_openai_server.MODELS_RESPONSE = {"data": []}
+        c = make_client(model="gpt-4-turbo")
+        try:
+            self.assertEqual(c.context_window, 128_000)
+        finally:
+            c.close()
+
+    def test_fallback_to_default(self):
+        """No discovery info and no pattern match -> DEFAULT_CONTEXT_WINDOW."""
+        fake_openai_server.MODELS_RESPONSE = {"data": []}
+        c = make_client(model="totally-unknown-model")
+        try:
+            self.assertEqual(c.context_window, config.DEFAULT_CONTEXT_WINDOW)
+        finally:
+            c.close()
+
+    def test_discovery_error_falls_back(self):
+        """A transient /models failure must not raise: it falls back to
+        pattern matching / default for THIS access."""
+        fake_openai_server.MODELS_STATUS_QUEUE.append(500)
+        c = make_client(model="gpt-4-turbo")
+        try:
+            self.assertEqual(c.context_window, 128_000)
+        finally:
+            c.close()
+
+    def test_transient_failure_retries_next_access(self):
+        """A transient /models failure is NOT cached: the next access
+        re-queries the API and picks up the recovered value (event-
+        driven retry, no timers)."""
+        fake_openai_server.MODELS_STATUS_QUEUE.append(500)
+        fake_openai_server.MODELS_RESPONSE = {"data": [{"id": "fake", "context_window": 999_999}]}
+        c = make_client()
+        try:
+            # first access: transient failure -> fallback, not cached
+            self.assertEqual(c.context_window, config.DEFAULT_CONTEXT_WINDOW)
+            # provider recovered -> the very next access re-queries
+            self.assertEqual(c.context_window, 999_999)
+            # and now it is cached: no third request
+            self.assertEqual(fake_openai_server.MODELS_CALLS, 2)
+        finally:
+            c.close()
+
+    def test_permanent_no_info_is_cached(self):
+        """Permanent absence of info (provider has no usable /models
+        endpoint) IS cached: no repeated requests on every access."""
+        fake_openai_server.MODELS_STATUS_QUEUE.append(404)
+        c = make_client(model="gpt-4-turbo")
+        try:
+            self.assertEqual(c.context_window, 128_000)
+            self.assertEqual(c.context_window, 128_000)
+            # only ONE request: the 404 (permanent) was cached
+            self.assertEqual(fake_openai_server.MODELS_CALLS, 1)
+        finally:
+            c.close()
 
 
 if __name__ == "__main__":

@@ -200,8 +200,6 @@ class MCPManager:
 
     def disconnect(self, name: str) -> None:
         """Disconnect one server and drop its discovered tools."""
-        import contextlib
-
         client = self._clients.pop(name, None)
         if client is None:
             return
