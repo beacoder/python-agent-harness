@@ -33,7 +33,8 @@ class FakeClient:
     def context_window(self) -> int:
         from python_agent_harness.token_estimator import context_window_for
 
-        return context_window_for(self.model)
+        # explicit nonexistent path: never read the user's real config
+        return context_window_for(self.model, config_path="/no/such/config.json")
 
     def set_timeout(self, timeout):
         self.timeout = timeout

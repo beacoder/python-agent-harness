@@ -180,6 +180,118 @@ class TestConfigFile(unittest.TestCase):
         self.assertIn("reasoning_effort", config.CONFIG_TEMPLATE)
         self.assertIn('"stream"', config.CONFIG_TEMPLATE)
         self.assertIn('"subagent_llm"', config.CONFIG_TEMPLATE)
+        self.assertIn('"context_windows"', config.CONFIG_TEMPLATE)
+
+
+class TestContextWindowsConfig(unittest.TestCase):
+    """Config-file context-window overrides: loaded from the
+    ``context_windows`` object, matched before the built-in table."""
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in ENV_KEYS}
+        for k in ENV_KEYS:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(config.load_context_windows_config("/no/such/file.json"), [])
+
+    def test_empty_section_returns_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"llm": {"model": "m"}}', encoding="utf-8")
+            self.assertEqual(config.load_context_windows_config(p), [])
+
+    def test_bad_json_returns_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text("not {valid json", encoding="utf-8")
+            self.assertEqual(config.load_context_windows_config(p), [])
+
+    def test_overrides_loaded_in_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"context_windows": {"deepseek-v4*": 1000000, "gpt-5*": 400000}}',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                config.load_context_windows_config(p),
+                [("deepseek-v4*", 1000000), ("gpt-5*", 400000)],
+            )
+
+    def test_comment_keys_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"context_windows": {"_comment": "hi", "kimi*": 256000}}',
+                encoding="utf-8",
+            )
+            self.assertEqual(config.load_context_windows_config(p), [("kimi*", 256000)])
+
+    def test_section_must_be_object(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"context_windows": "nope"}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                config.load_context_windows_config(p)
+
+    def test_size_must_be_integer(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"context_windows": {"m*": "big"}}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                config.load_context_windows_config(p)
+
+    def test_bool_size_rejected(self):
+        """True is an int subclass but not a valid token count."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"context_windows": {"m*": true}}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                config.load_context_windows_config(p)
+
+    def test_get_context_window_precedence(self):
+        """Config-file override -> CONTEXT_WINDOWS -> default."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"context_windows": {"deepseek-v4*": 1000000, "gpt-4-turbo": 300000}}',
+                encoding="utf-8",
+            )
+            self.assertEqual(config.get_context_window_for_model("deepseek-v4-flash", p), 1000000)
+            # config-file match beats the built-in table
+            self.assertEqual(config.get_context_window_for_model("gpt-4-turbo", p), 300000)
+            # built-in table still applies when no override matches
+            self.assertEqual(config.get_context_window_for_model("gpt-5-mini", p), 128000)
+            self.assertEqual(config.get_context_window_for_model("kimi-k2.7-0613", p), 256000)
+            # unknown model -> default
+            self.assertEqual(
+                config.get_context_window_for_model("unknown-model", p),
+                config.DEFAULT_CONTEXT_WINDOW,
+            )
+
+    def test_get_context_window_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"context_windows": {"DeepSeek-V4*": 1000000}}', encoding="utf-8")
+            self.assertEqual(config.get_context_window_for_model("deepseek-v4-flash", p), 1000000)
+
+    def test_get_context_window_no_file(self):
+        self.assertEqual(
+            config.get_context_window_for_model("deepseek-v4", "/no/such/file.json"),
+            1_000_000,
+        )
+        self.assertEqual(
+            config.get_context_window_for_model("totally-unknown", "/no/such/file.json"),
+            config.DEFAULT_CONTEXT_WINDOW,
+        )
 
 
 class TestSubagentLlmConfig(unittest.TestCase):

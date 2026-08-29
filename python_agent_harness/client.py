@@ -22,7 +22,6 @@ from typing import Any
 import httpx
 
 from . import config
-from .model_capabilities import ModelDiscoveryError
 from .models import Message, ToolCall, ToolSpec, Usage
 
 # serializes appends to the shared LLM log file: concurrent sub-agents
@@ -232,31 +231,20 @@ class Client:
     def context_window(self) -> int:
         """Get the context window for this model.
 
-        Resolution order: provider /models discovery (via
-        ``config.get_context_window_for_model``) -> CONTEXT_WINDOWS
-        pattern match -> DEFAULT_CONTEXT_WINDOW.  A successful
-        resolution — including permanent "provider has no info" — is
-        cached, so the API call happens at most once per client.  A
-        TRANSIENT discovery failure is NOT cached: the next access
-        retries the API (the property is read once per agent round, so
-        this is event-driven, not time-driven).
+        Resolution order: config-file ``context_windows`` overrides
+        (via ``config.get_context_window_for_model``) -> CONTEXT_WINDOWS
+        pattern match -> DEFAULT_CONTEXT_WINDOW.  The resolved value is
+        cached for the life of the client.
         """
         if self._context_window is None:
             try:
                 self._context_window = config.get_context_window_for_model(
-                    self.base_url, self.api_key or "", self.model
+                    self.model, config_path=self._config_path
                 )
-            except ModelDiscoveryError:
-                # Transient: leave the cache empty so the next access
-                # retries discovery.
-                pass
             except Exception:
-                # Unexpected bug inside discovery: cache the default so
-                # a broken path is not hammered on every access.
+                # a malformed context_windows section must not break
+                # the loop: cache the safe default
                 self._context_window = config.DEFAULT_CONTEXT_WINDOW
-        if self._context_window is None:
-            matched = config._match_context_window(self.model)
-            return matched if matched else config.DEFAULT_CONTEXT_WINDOW
         return self._context_window
 
     def close(self) -> None:

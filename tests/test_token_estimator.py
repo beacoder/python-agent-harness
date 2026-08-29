@@ -1,4 +1,7 @@
+import os
+import tempfile
 import unittest
+from pathlib import Path
 
 from python_agent_harness.token_estimator import (
     TokenCalibrator,
@@ -11,6 +14,18 @@ from python_agent_harness.token_estimator import (
 
 
 class TestTokenizer(unittest.TestCase):
+    def setUp(self):
+        # pin the default config path to a nonexistent file so the
+        # tests never read the user's real config.json
+        self._saved_cfg = os.environ.get("PYTHON_AGENT_HARNESS_CONFIG")
+        os.environ["PYTHON_AGENT_HARNESS_CONFIG"] = "/no/such/harness-config.json"
+
+    def tearDown(self):
+        if self._saved_cfg is None:
+            os.environ.pop("PYTHON_AGENT_HARNESS_CONFIG", None)
+        else:
+            os.environ["PYTHON_AGENT_HARNESS_CONFIG"] = self._saved_cfg
+
     def test_empty_text_zero_tokens(self):
         self.assertEqual(estimate_tokens(""), 0)
 
@@ -34,6 +49,17 @@ class TestTokenizer(unittest.TestCase):
         self.assertEqual(context_window_for("qwen3.5-32b"), 131_072)
         self.assertEqual(context_window_for("kimi-k2.7-0613"), 256_000)
         self.assertEqual(context_window_for("unknown-model"), 128_000)
+
+    def test_context_window_config_file_override(self):
+        """A context_windows section in the config file overrides the
+        built-in table (matched before CONTEXT_WINDOWS)."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"context_windows": {"deepseek-v4*": 2000000}}', encoding="utf-8")
+            self.assertEqual(context_window_for("deepseek-v4-flash", str(p)), 2_000_000)
+            # models the override doesn't cover still use the table
+            self.assertEqual(context_window_for("gpt-5-mini", str(p)), 128_000)
+            self.assertEqual(context_window_for("unknown-model", str(p)), 128_000)
 
     def test_calibrator(self):
         c = TokenCalibrator()

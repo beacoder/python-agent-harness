@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import httpx
@@ -1692,89 +1693,81 @@ class TestAuthRefreshOn401(unittest.TestCase):
 
 
 class TestContextWindow(unittest.TestCase):
-    """Client.context_window: /models discovery -> pattern match -> default.
+    """Client.context_window: config-file overrides -> CONTEXT_WINDOWS
+    patterns -> DEFAULT_CONTEXT_WINDOW.  The resolved value is cached
+    for the life of the client."""
 
-    The result is cached: the API call happens at most once per client.
-    """
+    def _client(self, model: str, config_path: str | None = None) -> Client:
+        c = Client(base_url="http://x/v1", api_key="k", model=model, config_path=config_path)
+        self.addCleanup(c.close)
+        return c
 
-    def setUp(self):
-        fake_openai_server.reset_state()
-
-    def tearDown(self):
-        fake_openai_server.reset_state()
-
-    def test_api_discovery_and_cache(self):
-        """A provider-reported context window wins, and the resolved
-        value is cached for the life of the client."""
-        fake_openai_server.MODELS_RESPONSE = {"data": [{"id": "fake", "context_window": 999_999}]}
-        c = make_client()
-        try:
+    def test_config_file_override_wins(self):
+        """A context_windows entry in the config file beats the
+        built-in table, and the resolved value is cached."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"context_windows": {"fake*": 999999}}', encoding="utf-8")
+            c = self._client(model="fake", config_path=str(p))
             self.assertEqual(c.context_window, 999_999)
-            # cached: a later provider change must not affect the window
-            fake_openai_server.MODELS_RESPONSE = {
-                "data": [{"id": "fake", "context_window": 111_111}]
-            }
+            # cached: a later config change must not affect the window
+            p.write_text('{"context_windows": {"fake*": 111111}}', encoding="utf-8")
             self.assertEqual(c.context_window, 999_999)
-        finally:
-            c.close()
+
+    def test_config_file_wildcard_matching(self):
+        """Config-file patterns support fnmatch wildcards, first match
+        wins in file order."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"context_windows": {"gpt-4*": 500000, "gpt-4-turbo": 300000}}',
+                encoding="utf-8",
+            )
+            # "gpt-4-turbo" hits the FIRST entry ("gpt-4*")
+            self.assertEqual(self._client("gpt-4-turbo", str(p)).context_window, 500_000)
+            self.assertEqual(self._client("gpt-4o", str(p)).context_window, 500_000)
+
+    def test_unknown_model_in_config_file_falls_to_table(self):
+        """Config-file overrides that don't match fall through to the
+        built-in CONTEXT_WINDOWS table."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"context_windows": {"deepseek-v4*": 1000000}}', encoding="utf-8")
+            self.assertEqual(self._client("gpt-5-mini", str(p)).context_window, 128_000)
+            self.assertEqual(self._client("deepseek-v4-flash", str(p)).context_window, 1_000_000)
 
     def test_fallback_to_pattern_match(self):
-        """No discovery info for the model -> CONTEXT_WINDOWS wildcard."""
-        fake_openai_server.MODELS_RESPONSE = {"data": []}
-        c = make_client(model="gpt-4-turbo")
-        try:
-            self.assertEqual(c.context_window, 128_000)
-        finally:
-            c.close()
+        """No config-file overrides -> CONTEXT_WINDOWS wildcard."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"llm": {"model": "x"}}', encoding="utf-8")
+            self.assertEqual(self._client("gpt-4-turbo", str(p)).context_window, 128_000)
 
     def test_fallback_to_default(self):
-        """No discovery info and no pattern match -> DEFAULT_CONTEXT_WINDOW."""
-        fake_openai_server.MODELS_RESPONSE = {"data": []}
-        c = make_client(model="totally-unknown-model")
-        try:
-            self.assertEqual(c.context_window, config.DEFAULT_CONTEXT_WINDOW)
-        finally:
-            c.close()
+        """No config-file overrides and no pattern match ->
+        DEFAULT_CONTEXT_WINDOW."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"llm": {"model": "x"}}', encoding="utf-8")
+            self.assertEqual(
+                self._client("totally-unknown-model", str(p)).context_window,
+                config.DEFAULT_CONTEXT_WINDOW,
+            )
 
-    def test_discovery_error_falls_back(self):
-        """A transient /models failure must not raise: it falls back to
-        pattern matching / default for THIS access."""
-        fake_openai_server.MODELS_STATUS_QUEUE.append(500)
-        c = make_client(model="gpt-4-turbo")
-        try:
-            self.assertEqual(c.context_window, 128_000)
-        finally:
-            c.close()
+    def test_missing_config_file_uses_table(self):
+        """No config file at all -> CONTEXT_WINDOWS patterns."""
+        self.assertEqual(
+            self._client("deepseek-v4-flash", "/no/such/config.json").context_window,
+            1_000_000,
+        )
 
-    def test_transient_failure_retries_next_access(self):
-        """A transient /models failure is NOT cached: the next access
-        re-queries the API and picks up the recovered value (event-
-        driven retry, no timers)."""
-        fake_openai_server.MODELS_STATUS_QUEUE.append(500)
-        fake_openai_server.MODELS_RESPONSE = {"data": [{"id": "fake", "context_window": 999_999}]}
-        c = make_client()
-        try:
-            # first access: transient failure -> fallback, not cached
-            self.assertEqual(c.context_window, config.DEFAULT_CONTEXT_WINDOW)
-            # provider recovered -> the very next access re-queries
-            self.assertEqual(c.context_window, 999_999)
-            # and now it is cached: no third request
-            self.assertEqual(fake_openai_server.MODELS_CALLS, 2)
-        finally:
-            c.close()
-
-    def test_permanent_no_info_is_cached(self):
-        """Permanent absence of info (provider has no usable /models
-        endpoint) IS cached: no repeated requests on every access."""
-        fake_openai_server.MODELS_STATUS_QUEUE.append(404)
-        c = make_client(model="gpt-4-turbo")
-        try:
-            self.assertEqual(c.context_window, 128_000)
-            self.assertEqual(c.context_window, 128_000)
-            # only ONE request: the 404 (permanent) was cached
-            self.assertEqual(fake_openai_server.MODELS_CALLS, 1)
-        finally:
-            c.close()
+    def test_malformed_config_file_falls_back_to_default(self):
+        """A broken context_windows section must not break the loop:
+        the client caches DEFAULT_CONTEXT_WINDOW."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"context_windows": {"fake": "not-a-number"}}', encoding="utf-8")
+            self.assertEqual(self._client("fake", str(p)).context_window, 128_000)
 
 
 if __name__ == "__main__":

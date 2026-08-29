@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 
 from .mcp.config import MCPConfig
-from .model_capabilities import fetch_model_info
 
 # ---- context management -------------------------------------------------
 CONTEXT_TRIGGER = 0.70
@@ -232,6 +231,10 @@ CONFIG_TEMPLATE = """\
       "base_url": "https://api.openai.com/v1",
       "model": "gpt-5-mini"
     }}
+  }},
+  "context_windows": {{
+    "_comment": "Optional per-model context-window overrides (tokens). Keys are model names or fnmatch patterns (e.g. deepseek-v4* = 1000000); matched in file order, first match wins. Overrides the built-in CONTEXT_WINDOWS table in config.py. Remove this section to use the built-in table.",
+    "deepseek-v4*": 1000000
   }},
   "subagent_llm": {{
     "_comment": "Optional overrides for sub-agent (Agent tool) requests, e.g. a cheaper model. Every key is optional; unset keys inherit the main llm settings above. Set 'profile' to a name from the 'models' section to reuse a model profile (profile settings win over explicit keys below).",
@@ -488,40 +491,62 @@ def _match_context_window(model: str) -> int | None:
     return None
 
 
+def load_context_windows_config(
+    path: str | os.PathLike | None = None,
+) -> list[tuple[str, int]]:
+    """Load per-model context-window overrides from the config file.
+
+    Reads the ``context_windows`` object: a mapping of model names or
+    fnmatch patterns (matched in file order, first match wins) to token
+    counts.  Keys starting with ``_`` are comments and skipped.  A
+    missing file, missing section, or unreadable JSON yields ``[]``
+    (callers fall back to the built-in table); a malformed section or
+    non-integer size raises ValueError so config errors surface.
+    """
+    try:
+        data = _read_config(path)
+    except ValueError:
+        return []
+    section = data.get("context_windows") or {}
+    if not isinstance(section, dict):
+        raise ValueError(f"config file {_config_path(path)}: context_windows must be an object")
+    entries: list[tuple[str, int]] = []
+    for pattern, size in section.items():
+        if pattern.startswith("_"):
+            continue
+        if isinstance(size, bool) or not isinstance(size, int):
+            raise ValueError(
+                f"config file {_config_path(path)}: context_windows.{pattern} must be an integer"
+            )
+        entries.append((pattern, size))
+    return entries
+
+
 def get_context_window_for_model(
-    base_url: str,
-    api_key: str,
     model: str,
+    config_path: str | os.PathLike | None = None,
 ) -> int:
-    """Get context window for a model, trying API first then falling back to config.
+    """Get the context window for MODEL: config-file overrides, then
+    the built-in table, then the default.
 
-    Tries to fetch context window from the provider's /models endpoint
-    (blocking).  Permanent absence of information falls back to pattern
-    matching in CONTEXT_WINDOWS, then finally DEFAULT_CONTEXT_WINDOW.
-
-    Raises:
-        ModelDiscoveryError: the /models endpoint is TRANSIENTLY
-            unreachable (network, timeout, 429, 5xx) — the caller must
-            NOT cache the fallback and should retry later.
+    The config file's ``context_windows`` object (user overrides) is
+    consulted first (fnmatch over its patterns, first match wins,
+    case-insensitive); then the CONTEXT_WINDOWS table in config.py;
+    then DEFAULT_CONTEXT_WINDOW.
 
     Args:
-        base_url: The LLM API base URL
-        api_key: The API key for authentication
-        model: The model ID to query
+        model: The model ID to look up (e.g. "deepseek-v4-flash")
+        config_path: Optional path to the config file; defaults to the
+            standard config location (config.json).
 
     Returns:
-        The context window size as an integer
+        The context window size as an integer.
     """
-    # API discovery: raises ModelDiscoveryError on transient failure so
-    # the caller can retry; permanent no-info falls through below.
-    info = fetch_model_info(base_url, api_key, model, timeout=10.0)
-    if info.context_window is not None:
-        return info.context_window
-
-    # Try pattern matching in CONTEXT_WINDOWS
+    lowered = model.lower()
+    for pattern, size in load_context_windows_config(config_path):
+        if fnmatch.fnmatch(lowered, pattern.lower()):
+            return size
     matched = _match_context_window(model)
     if matched is not None:
         return matched
-
-    # Final fallback to default
     return DEFAULT_CONTEXT_WINDOW

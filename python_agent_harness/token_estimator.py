@@ -8,6 +8,7 @@ to reduce drift.
 from __future__ import annotations
 
 import json
+import os
 import re
 
 from . import config
@@ -39,17 +40,20 @@ def estimate_tokens(text: str) -> int:
     return round(latin / 4.0 + cjk / 2.0)
 
 
-def context_window_for(model: str) -> int:
+def context_window_for(model: str, config_path: str | os.PathLike | None = None) -> int:
     """Return the context window for MODEL, or a safe fallback.
 
-    Delegates to ``config._match_context_window`` (fnmatch over
-    CONTEXT_WINDOWS, first match wins, case-insensitive); unknown
-    models get DEFAULT_CONTEXT_WINDOW.
+    Delegates to ``config.get_context_window_for_model``: config-file
+    ``context_windows`` overrides (config.json) first, then fnmatch
+    over CONTEXT_WINDOWS (first match wins, case-insensitive), then
+    DEFAULT_CONTEXT_WINDOW.
+
+    Args:
+        model: The model ID to look up.
+        config_path: Optional config file path; defaults to the
+            standard config location (config.json).
     """
-    matched = config._match_context_window(model)
-    if matched is not None:
-        return matched
-    return config.DEFAULT_CONTEXT_WINDOW
+    return config.get_context_window_for_model(model, config_path=config_path)
 
 
 class TokenCalibrator:

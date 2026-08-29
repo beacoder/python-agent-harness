@@ -221,6 +221,14 @@ def cmd_config(args: argparse.Namespace) -> int:
             print(f"  {name}: model={model_name}, base_url={base_url}")
     else:
         print("models: (none configured — add a 'models' section to use /model)")
+    # Show context-window overrides
+    context_windows = config.load_context_windows_config(args.path)
+    if context_windows:
+        print("context_windows:")
+        for pattern, size in context_windows:
+            print(f"  {pattern}: {size}")
+    else:
+        print("context_windows: (none configured — built-in table in config.py applies)")
     return 0
 
 
