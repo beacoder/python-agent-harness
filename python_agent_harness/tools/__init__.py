@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+
 from .agent_tool import AgentTool
 from .base import PendingToolResult, Registry, Tool, ToolContext
 from .bash import Bash
-from .filesystem import Edit, GlobTool, Grep, Insert, Mkdir, Read, Write
+from .edit import Edit
+from .edit_mac import EditMac
+from .filesystem import GlobTool, Grep, Insert, Mkdir, Read, Write
 from .mcp import MCPTool, mcp_tools_from_manager, normalize_mcp_result
 from .planexit import PlanExit
 from .question import Question
@@ -20,6 +24,7 @@ __all__ = [
     "AgentTool",
     "Bash",
     "Edit",
+    "EditMac",
     "GlobTool",
     "Grep",
     "Insert",
@@ -38,6 +43,10 @@ __all__ = [
 
 def default_registry() -> Registry:
     reg = Registry()
+    # macOS's BSD patch rejects well-formed hunks that GNU patch accepts,
+    # so macOS uses EditMac (pure-Python diff applier); Linux keeps the
+    # patch-binary Edit.  Both register under the name "Edit".
+    edit_tool = EditMac() if sys.platform == "darwin" else Edit()
     for tool in (
         AgentTool(),
         TodoWrite(),
@@ -45,7 +54,7 @@ def default_registry() -> Registry:
         Grep(),
         Read(),
         Insert(),
-        Edit(),
+        edit_tool,
         Write(),
         Mkdir(),
         Bash(),

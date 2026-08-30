@@ -6,11 +6,13 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
 from python_agent_harness.tools.base import ToolContext
+from python_agent_harness.tools.edit_mac import EditMac
 from python_agent_harness.tools.filesystem import (
     Edit,
     GlobTool,
@@ -22,6 +24,13 @@ from python_agent_harness.tools.filesystem import (
     _fix_patch_headers,
     _strip_diff_fence,
 )
+
+
+def edit_tool() -> Edit:
+    """The Edit tool active on this platform: Linux uses the patch
+    binary, macOS the built-in Python diff applier (Apple's BSD patch
+    rejects well-formed hunks that GNU patch accepts)."""
+    return EditMac() if sys.platform == "darwin" else Edit()
 
 
 def _big_output(lines: int = 6000, width: int = 80) -> str:
@@ -625,7 +634,7 @@ class TestEditTool(unittest.TestCase):
                 f.write("line1\nline2\nline3\n")
             ctx, sess = make_ctx()
             diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+lineTWO\n line3\n"
-            result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            result = edit_tool().run({"path": path, "new_str": diff, "diff": True}, ctx)
             self.assertIn("Diff successfully applied", result)
             with open(path) as f:
                 self.assertEqual(f.read(), "line1\nlineTWO\nline3\n")
@@ -639,7 +648,7 @@ class TestEditTool(unittest.TestCase):
                 f.write(original)
             ctx, sess = make_ctx()
             bad_diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n line1\n-NOPE\n+lineTWO\n"
-            result = Edit().run({"path": path, "new_str": bad_diff, "diff": True}, ctx)
+            result = edit_tool().run({"path": path, "new_str": bad_diff, "diff": True}, ctx)
             self.assertTrue(result.startswith("Error:"))
             with open(path) as f:
                 self.assertEqual(f.read(), original)  # unchanged on failure
@@ -1155,7 +1164,7 @@ class TestEditDiffModePatch(unittest.TestCase):
                 f.write("a\nb\nc\n")
             ctx, _ = make_ctx()
             diff = "```diff\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n```\n"
-            result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            result = edit_tool().run({"path": path, "new_str": diff, "diff": True}, ctx)
             self.assertIn("Diff successfully applied", result)
             with open(path) as f:
                 self.assertEqual(f.read(), "a\nB\nc\n")
@@ -1169,7 +1178,7 @@ class TestEditDiffModePatch(unittest.TestCase):
                 f.write("a\nb\nc\n")
             ctx, _ = make_ctx()
             diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,9 +1,9 @@\n a\n-b\n+B\n c\n"
-            result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            result = edit_tool().run({"path": path, "new_str": diff, "diff": True}, ctx)
             self.assertIn("Diff successfully applied", result)
             with open(path) as f:
                 self.assertEqual(f.read(), "a\nB\nc\n")
@@ -1184,7 +1193,7 @@ class TestEditDiffModePatch(unittest.TestCase):
                 f.write("a\n--removed\nzzz\nc\n")
             ctx, _ = make_ctx()
             diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,9 +1,9 @@\n a\n---removed\n+++added\n c\n"
-            result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            result = edit_tool().run({"path": path, "new_str": diff, "diff": True}, ctx)
             self.assertIn("Diff successfully applied", result)
             with open(path) as f:
                 self.assertEqual(f.read(), "a\n++added\nzzz\nc\n")
@@ -1203,7 +1212,7 @@ class TestEditDiffModePatch(unittest.TestCase):
                 "@@ -2,3 +2,2 @@\n   id INT\n );\n--- old comment\n"
                 "@@ -6,1 +6,1 @@\n--- tail\n+-- new tail\n"
             )
-            result = Edit().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            result = edit_tool().run({"path": path, "new_str": diff, "diff": True}, ctx)
             self.assertIn("Diff successfully applied", result)
             with open(path) as f:
                 self.assertEqual(
@@ -1225,12 +1234,148 @@ class TestEditDiffModePatch(unittest.TestCase):
                 "--- a/f2.txt\n+++ b/f2.txt\n@@ -1 +1 @@\n-two\n+TWO\n"
             )
             # Trailing slash -> patch runs inside the directory.
-            result = Edit().run({"path": d + os.sep, "new_str": diff, "diff": True}, ctx)
+            result = edit_tool().run({"path": d + os.sep, "new_str": diff, "diff": True}, ctx)
             self.assertIn("Diff successfully applied", result)
             with open(os.path.join(d, "f1.txt")) as f:
                 self.assertEqual(f.read(), "ONE\n")
             with open(os.path.join(d, "f2.txt")) as f:
                 self.assertEqual(f.read(), "TWO\n")
+
+
+class TestEditMac(unittest.TestCase):
+    """The macOS Edit backend (pure-Python diff applier) must accept the
+    same model diffs that GNU patch accepts on Linux.  Run on every
+    platform so the macOS path is covered by Linux CI too."""
+
+    def _file(self, d: str, name: str, content: str) -> str:
+        path = os.path.join(d, name)
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def test_dashed_content_line_ending_a_hunk_applies(self):
+        """The macOS CI failure: a removed line starting with -- as the
+        LAST body line of a hunk, followed by a second hunk.  Apple's
+        BSD patch rejects it; the Python applier must apply it."""
+        with tempfile.TemporaryDirectory() as d:
+            path = self._file(
+                d,
+                "schema.sql",
+                "CREATE TABLE t (\n  id INT\n);\n-- old comment\nSELECT 1;\n-- tail\n",
+            )
+            ctx, sess = make_ctx()
+            diff = (
+                "--- a/schema.sql\n+++ b/schema.sql\n"
+                "@@ -2,3 +2,2 @@\n   id INT\n );\n--- old comment\n"
+                "@@ -6,1 +6,1 @@\n--- tail\n+-- new tail\n"
+            )
+            result = EditMac().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(
+                    f.read(), "CREATE TABLE t (\n  id INT\n);\nSELECT 1;\n-- new tail\n"
+                )
+            self.assertEqual(len(sess.recorded_diffs), 1)
+
+    def test_simple_replace_applies(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._file(d, "f.txt", "line1\nline2\nline3\n")
+            ctx, sess = make_ctx()
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+lineTWO\n line3\n"
+            result = EditMac().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "line1\nlineTWO\nline3\n")
+            self.assertEqual(len(sess.recorded_diffs), 1)
+
+    def test_wrong_hunk_counts_recounted(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._file(d, "f.txt", "a\nb\nc\n")
+            ctx, _ = make_ctx()
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,9 +1,9 @@\n a\n-b\n+B\n c\n"
+            result = EditMac().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "a\nB\nc\n")
+
+    def test_fenced_diff_applies(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._file(d, "f.txt", "a\nb\nc\n")
+            ctx, _ = make_ctx()
+            diff = "```diff\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n```\n"
+            result = EditMac().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "a\nB\nc\n")
+
+    def test_dashed_content_lines_apply(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._file(d, "f.txt", "a\n--removed\nzzz\nc\n")
+            ctx, _ = make_ctx()
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,9 +1,9 @@\n a\n---removed\n+++added\n c\n"
+            result = EditMac().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "a\n++added\nzzz\nc\n")
+
+    def test_mismatch_errors_and_leaves_file_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._file(d, "f.txt", "line1\nline2\nline3\n")
+            ctx, sess = make_ctx()
+            bad_diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n line1\n-NOPE\n+lineTWO\n"
+            result = EditMac().run({"path": path, "new_str": bad_diff, "diff": True}, ctx)
+            self.assertTrue(result.startswith("Error:"))
+            with open(path) as f:
+                self.assertEqual(f.read(), "line1\nline2\nline3\n")
+            self.assertEqual(sess.recorded_diffs, [])
+
+    def test_directory_multifile_diff_applies(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._file(d, "f1.txt", "one\n")
+            self._file(d, "f2.txt", "two\n")
+            ctx, _ = make_ctx()
+            diff = (
+                "--- a/f1.txt\n+++ b/f1.txt\n@@ -1 +1 @@\n-one\n+ONE\n"
+                "--- a/f2.txt\n+++ b/f2.txt\n@@ -1 +1 @@\n-two\n+TWO\n"
+            )
+            result = EditMac().run({"path": d + os.sep, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(os.path.join(d, "f1.txt")) as f:
+                self.assertEqual(f.read(), "ONE\n")
+            with open(os.path.join(d, "f2.txt")) as f:
+                self.assertEqual(f.read(), "TWO\n")
+
+    def test_insert_only_hunk(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._file(d, "f.txt", "a\nc\n")
+            ctx, _ = make_ctx()
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,1 +1,2 @@\n a\n+b\n c\n"
+            result = EditMac().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "a\nb\nc\n")
+
+    def test_fuzz_matches_context_one_line_off(self):
+        """A context line that does not match (model drift) still
+        applies when the removed lines match, up to the fuzz limit."""
+        with tempfile.TemporaryDirectory() as d:
+            path = self._file(d, "f.txt", "x\na\nzzz\nc\n")
+            ctx, _ = make_ctx()
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n a\n-zzz\n+c\n"
+            result = EditMac().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "x\na\nc\nc\n")
+
+    def test_no_newline_at_eof_handled(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._file(d, "f.txt", "a\nb")
+            ctx, _ = make_ctx()
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n a\n-b\n+b\n\\ No newline at end of file\n"
+            result = EditMac().run({"path": path, "new_str": diff, "diff": True}, ctx)
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "a\nb")
 
 
 if __name__ == "__main__":
