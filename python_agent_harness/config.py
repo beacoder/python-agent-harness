@@ -486,7 +486,7 @@ def _match_context_window(model: str) -> int | None:
     """
     lowered = model.lower()
     for pattern, size in CONTEXT_WINDOWS:
-        if fnmatch.fnmatch(lowered, pattern):
+        if fnmatch.fnmatch(lowered, pattern.lower()):
             return size
     return None
 
