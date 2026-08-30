@@ -163,13 +163,13 @@ All LLM settings live in a single JSON configuration file. Environment variables
 
 ### Configuration options
 
-- **`llm`** — main LLM configuration. Optional keys include `backend`, `temperature`, `max_tokens`, `timeout`, `reasoning_effort`, and `stream`. Values such as `reasoning_effort` are passed to the API as-is when set. `run --no-stream` overrides `stream`.
+- **`llm`** — main LLM configuration. Optional keys include `temperature`, `max_tokens`, `timeout`, `reasoning_effort`, and `stream`. Values such as `reasoning_effort` are passed to the API as-is when set. `run --no-stream` overrides `stream`.
 - **`models`** — named LLM profiles for runtime switching with `/model`. A profile is a partial settings dictionary; unset keys inherit from the main `llm`. `default` restores the main LLM configuration.
 - **`context_windows`** — optional per-model context-window overrides (tokens). Keys are model names or substrings (e.g., `deepseek-v4`); matched in file order, first match wins. Overrides the built-in `CONTEXT_WINDOWS` table in `config.py`.
 - **`subagent_llm`** — LLM configuration for `Agent` tool requests. Unset values inherit from the main `llm`. Set `profile` to reuse a profile from `models`. Precedence is: profile settings > explicit `subagent_llm` settings > main `llm` > environment variables.
 - **`paths.context_path` / `paths.skill_path`** — locations from which to load context files and skills. When unset, the project-local `<project>/contexts` and `<project>/skills` directories are used.
 - **`mcp.servers`** — MCP server configuration. Requires the `[mcp]` extra. Each server supports `transport`, `command`, `args`, `env`, `url`, `headers`, `parallel`, `timeout`, and `enabled`.
-- **Configuration precedence** — code defaults < config file < `OPENAI_*` environment variables. Sub-agent settings also support `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`, `_BACKEND`).
+- **Configuration precedence** — code defaults < config file < `OPENAI_*` environment variables. Sub-agent settings also support `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`).
 - **Custom config** — use `--config PATH` or `PYTHON_AGENT_HARNESS_CONFIG`.
 - **LLM logging** — request and response bodies are logged as JSON to `/tmp/python-agent-harness-<date>-<id>.json`. Set `LLM_LOG_DIR` to change the directory. The log path is printed at startup.
 
