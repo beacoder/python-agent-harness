@@ -77,6 +77,19 @@ class TestTokenizer(unittest.TestCase):
         c2.update(500)
         self.assertEqual(c2.factor, 1.0)
 
+    def test_calibrator_reset(self):
+        """reset() drops the factor and raw estimate: after a model
+        switch the next estimate is uncalibrated (identity), and the
+        stale factor tuned to the old tokenizer is gone."""
+        c = TokenCalibrator()
+        c.last_raw_estimate = 1000
+        c.update(3000)
+        self.assertEqual(c.factor, 3.0)
+        c.reset()
+        self.assertEqual(c.factor, 1.0)
+        self.assertIsNone(c.last_raw_estimate)
+        self.assertEqual(c.calibrate(1000), 1000)
+
     def test_payload_tokens(self):
         msgs = [
             {"role": "user", "content": "hello"},

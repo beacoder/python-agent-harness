@@ -200,7 +200,7 @@ class Client:
     ) -> None:
         self.base_url = (base_url or config.DEFAULT_BASE_URL).rstrip("/")
         self.api_key = api_key or _default_api_key()
-        self.model = model or config.DEFAULT_MODEL
+        self.model: str = model or config.DEFAULT_MODEL
         self.timeout = timeout
         self.verify = verify if verify is not None else _resolve_ca_bundle()
         self.retry_max = config.API_RETRY_MAX if retry_max is None else retry_max
@@ -212,8 +212,6 @@ class Client:
         )
         self._config_path = config_path
         self._http = httpx.Client(timeout=timeout, verify=self.verify)
-        # Resolve context window for this model (API discovery + fallbacks)
-        self._context_window = None  # lazy-loaded
         # True while the in-flight request was aborted (Ctrl-C): a
         # connection error on an aborted request must NOT be retried —
         # the user asked to stop.  Cleared at the start of each chat()
@@ -233,19 +231,19 @@ class Client:
 
         Resolution order: config-file ``context_windows`` overrides
         (via ``config.get_context_window_for_model``) -> CONTEXT_WINDOWS
-        pattern match -> DEFAULT_CONTEXT_WINDOW.  The resolved value is
-        cached for the life of the client.
+        pattern match -> DEFAULT_CONTEXT_WINDOW.  Resolved on every
+        access (no caching), so a runtime model switch or config-file
+        edit takes effect immediately; a malformed config falls back to
+        the default for that access and recovers once the file is fixed.
         """
-        if self._context_window is None:
-            try:
-                self._context_window = config.get_context_window_for_model(
-                    self.model, config_path=self._config_path
-                )
-            except Exception:
-                # a malformed context_windows section must not break
-                # the loop: cache the safe default
-                self._context_window = config.DEFAULT_CONTEXT_WINDOW
-        return self._context_window
+        try:
+            return config.get_context_window_for_model(
+                self.model, config_path=self._config_path
+            )
+        except Exception:
+            # a malformed context_windows section must not break the
+            # loop: use the safe default, retry on the next access
+            return config.DEFAULT_CONTEXT_WINDOW
 
     def close(self) -> None:
         self._http.close()

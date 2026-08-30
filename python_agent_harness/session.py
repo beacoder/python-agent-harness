@@ -687,6 +687,9 @@ class Session:
         self.client.model = merged["model"]
         self.model = merged["model"]
         self.store.model = merged["model"]
+        # the calibration factor is tokenizer-specific: a factor tuned
+        # to the previous model must not skew estimates for the new one
+        self.calibrator.reset()
         self.backend = merged["backend"]
         self.store.backend = merged["backend"]
         self.temperature = merged["temperature"]

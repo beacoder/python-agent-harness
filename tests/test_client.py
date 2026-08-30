@@ -1694,25 +1694,38 @@ class TestAuthRefreshOn401(unittest.TestCase):
 
 class TestContextWindow(unittest.TestCase):
     """Client.context_window: config-file overrides -> CONTEXT_WINDOWS
-    patterns -> DEFAULT_CONTEXT_WINDOW.  The resolved value is cached
-    for the life of the client."""
+    patterns -> DEFAULT_CONTEXT_WINDOW.  Resolved on every access (no
+    caching), so model switches and config edits take effect at once."""
 
     def _client(self, model: str, config_path: str | None = None) -> Client:
         c = Client(base_url="http://x/v1", api_key="k", model=model, config_path=config_path)
         self.addCleanup(c.close)
         return c
 
-    def test_config_file_override_wins(self):
-        """A context_windows entry in the config file beats the
-        built-in table, and the resolved value is cached."""
+    def test_model_change_re_resolves_window(self):
+        """Changing client.model (runtime /model switch) resolves the
+        new model's window on the next access."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
             p.write_text('{"context_windows": {"fake*": 999999}}', encoding="utf-8")
             c = self._client(model="fake", config_path=str(p))
             self.assertEqual(c.context_window, 999_999)
-            # cached: a later config change must not affect the window
-            p.write_text('{"context_windows": {"fake*": 111111}}', encoding="utf-8")
+            c.model = "gpt-5-mini"
+            self.assertEqual(c.context_window, 128_000)
+            c.model = "deepseek-v4-flash"
+            self.assertEqual(c.context_window, 1_000_000)
+
+    def test_config_file_override_wins(self):
+        """A context_windows entry in the config file beats the
+        built-in table, and edits are picked up on the next access."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"context_windows": {"fake*": 999999}}', encoding="utf-8")
+            c = self._client(model="fake", config_path=str(p))
             self.assertEqual(c.context_window, 999_999)
+            # no caching: a later config change takes effect immediately
+            p.write_text('{"context_windows": {"fake*": 111111}}', encoding="utf-8")
+            self.assertEqual(c.context_window, 111_111)
 
     def test_config_file_wildcard_matching(self):
         """Config-file patterns support fnmatch wildcards, first match
@@ -1763,11 +1776,16 @@ class TestContextWindow(unittest.TestCase):
 
     def test_malformed_config_file_falls_back_to_default(self):
         """A broken context_windows section must not break the loop:
-        the client caches DEFAULT_CONTEXT_WINDOW."""
+        the client uses DEFAULT_CONTEXT_WINDOW for that access, and
+        recovers once the file is fixed (failures are not cached)."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
             p.write_text('{"context_windows": {"fake": "not-a-number"}}', encoding="utf-8")
-            self.assertEqual(self._client("fake", str(p)).context_window, 128_000)
+            c = self._client("fake", str(p))
+            self.assertEqual(c.context_window, 128_000)
+            # no caching of the failure: a fixed file is picked up
+            p.write_text('{"context_windows": {"fake*": 999999}}', encoding="utf-8")
+            self.assertEqual(c.context_window, 999_999)
 
 
 if __name__ == "__main__":

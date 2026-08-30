@@ -68,6 +68,12 @@ class TokenCalibrator:
         self.factor = 1.0
         self.last_raw_estimate: int | None = None
 
+    def reset(self) -> None:
+        """Drop the calibration factor (model switch: the old factor
+        was tuned to the previous model's tokenizer)."""
+        self.factor = 1.0
+        self.last_raw_estimate = None
+
     def update(self, actual_input: int | None) -> None:
         raw = self.last_raw_estimate
         if actual_input is None or actual_input <= 0 or raw is None or raw <= 0:

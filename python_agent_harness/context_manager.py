@@ -21,9 +21,9 @@ class ContextManager:
     from the loop's delegate so the call site keeps resolving them
     through the ``agent`` module namespace (tests patch
     ``python_agent_harness.agent.estimate_payload_tokens``).  The
-    context window comes from the session's client (cached, config-
-    file aware); ``context_window_for`` is only the fallback for
-    clients without the property.
+    context window comes from the session's client (config-file aware,
+    resolved per access); ``context_window_for`` is only the fallback
+    for clients without the property.
     """
 
     def __init__(self, loop: Any) -> None:
@@ -42,9 +42,9 @@ class ContextManager:
         )
         loop.session.calibrator.last_raw_estimate = raw
         calibrated = loop.session.calibrator.calibrate(raw)
-        # Prefer the client's cached window (config overrides ->
-        # patterns -> default); fall back to the static resolver for
-        # clients without the property (test doubles).
+        # Prefer the client's window (config overrides -> patterns ->
+        # default, resolved per access); fall back to the static
+        # resolver for clients without the property (test doubles).
         client = loop.session.client
         window = getattr(client, "context_window", None)
         if window is None:

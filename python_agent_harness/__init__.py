@@ -5,7 +5,7 @@ from .mcp.manager import MCPManager
 from .models import AgentMode, Message, ToolCall, ToolSpec
 from .session import Session
 
-__version__ = "1.5.4.1"
+__version__ = "1.5.4.2"
 
 __all__ = [
     "Session",

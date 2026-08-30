@@ -808,6 +808,43 @@ class TestModelSwitching(unittest.TestCase):
         self.assertIn("deepseek", msg)
         self.assertIn("glm", msg)
 
+    def test_switch_model_re_resolves_context_window(self):
+        """Switching models must make the next context-window access
+        resolve for the NEW model: the ratio computation divides by
+        the new model's window, not the old one."""
+        from python_agent_harness.client import Client
+
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "config.json")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write('{"context_windows": {"deepseek-v4*": 1000000}}')
+            client = Client(
+                base_url="http://x/v1", api_key="k", model="gpt-5-mini", config_path=p
+            )
+            self.addCleanup(client.close)
+            session = RecordingSession(
+                model_profiles={"deepseek": {"model": "deepseek-v4-flash"}}
+            )
+            session.client = client
+            self.assertEqual(client.context_window, 128_000)
+            success, _ = session.switch_model("deepseek")
+            self.assertTrue(success)
+            self.assertEqual(client.context_window, 1_000_000)
+
+    def test_switch_model_resets_calibrator(self):
+        """Switching models must drop the token-calibration factor: it
+        was tuned to the previous model's tokenizer and would skew the
+        first context estimates for the new model."""
+        session = RecordingSession(
+            model_profiles={"deepseek": {"model": "deepseek-v4-flash"}}
+        )
+        session.calibrator.factor = 2.5
+        session.calibrator.last_raw_estimate = 1234
+        success, _ = session.switch_model("deepseek")
+        self.assertTrue(success)
+        self.assertEqual(session.calibrator.factor, 1.0)
+        self.assertIsNone(session.calibrator.last_raw_estimate)
+
     def test_switch_model_preserves_conversation_history(self):
         """Switching models does not clear conversation history."""
         from python_agent_harness.models import Message
