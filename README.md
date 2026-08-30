@@ -2,7 +2,7 @@
 
 # python-agent-harness
 
-**A lightweight, hackable mini-OpenCode written in Python.**
+**A lightweight, hackable mini-OpenCode written in Python.**  
 FSM-driven execution · OpenAI-compatible · built for daily use and easy customization
 
 [![CI](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml)
