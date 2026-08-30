@@ -237,9 +237,7 @@ class Client:
         the default for that access and recovers once the file is fixed.
         """
         try:
-            return config.get_context_window_for_model(
-                self.model, config_path=self._config_path
-            )
+            return config.get_context_window_for_model(self.model, config_path=self._config_path)
         except Exception:
             # a malformed context_windows section must not break the
             # loop: use the safe default, retry on the next access

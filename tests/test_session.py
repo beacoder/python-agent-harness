@@ -818,13 +818,9 @@ class TestModelSwitching(unittest.TestCase):
             p = os.path.join(d, "config.json")
             with open(p, "w", encoding="utf-8") as f:
                 f.write('{"context_windows": {"deepseek-v4*": 1000000}}')
-            client = Client(
-                base_url="http://x/v1", api_key="k", model="gpt-5-mini", config_path=p
-            )
+            client = Client(base_url="http://x/v1", api_key="k", model="gpt-5-mini", config_path=p)
             self.addCleanup(client.close)
-            session = RecordingSession(
-                model_profiles={"deepseek": {"model": "deepseek-v4-flash"}}
-            )
+            session = RecordingSession(model_profiles={"deepseek": {"model": "deepseek-v4-flash"}})
             session.client = client
             self.assertEqual(client.context_window, 128_000)
             success, _ = session.switch_model("deepseek")
@@ -835,9 +831,7 @@ class TestModelSwitching(unittest.TestCase):
         """Switching models must drop the token-calibration factor: it
         was tuned to the previous model's tokenizer and would skew the
         first context estimates for the new model."""
-        session = RecordingSession(
-            model_profiles={"deepseek": {"model": "deepseek-v4-flash"}}
-        )
+        session = RecordingSession(model_profiles={"deepseek": {"model": "deepseek-v4-flash"}})
         session.calibrator.factor = 2.5
         session.calibrator.last_raw_estimate = 1234
         success, _ = session.switch_model("deepseek")
