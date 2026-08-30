@@ -7,7 +7,7 @@ FSM-driven execution · OpenAI-compatible · built for daily use and easy custom
 
 [![CI](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/beacoder/python-agent-harness/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/python-agent-harness.svg)](https://pypi.org/project/python-agent-harness/)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 </div>
@@ -225,7 +225,7 @@ python_agent_harness/
 
 ## Development
 
-Requires Python ≥ 3.10. CI runs against Python 3.10, 3.11, 3.12, and 3.13 on Linux and macOS.
+Requires Python ≥ 3.11. CI runs against Python 3.11, 3.12, and 3.13 on Linux and macOS.
 
 ```sh
 make test                           # unit tests
