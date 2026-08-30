@@ -23,6 +23,7 @@ SDK/connection errors that the tool adapter turns into error strings.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import threading
 import time
@@ -102,7 +103,10 @@ class _LoopThread:
         while True:
             try:
                 exc = future.exception(timeout=0.1)
-            except TimeoutError:
+            # concurrent.futures.TimeoutError is the builtin TimeoutError on
+            # 3.11+ but a distinct class on 3.10 — catch the futures one so
+            # the poll-timeout branch works on every supported Python.
+            except concurrent.futures.TimeoutError:
                 # future still running: enforce deadline / cancellation
                 if deadline is not None and time.monotonic() >= deadline:
                     future.cancel()
