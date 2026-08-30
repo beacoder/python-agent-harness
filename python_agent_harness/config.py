@@ -168,7 +168,6 @@ DEFAULT_LLM: dict = {
     "base_url": "https://api.openai.com/v1",
     "api_key": None,
     "model": "gpt-5-mini",
-    "backend": "OpenAI-compatible",
     "temperature": TEMPERATURE,
     "max_tokens": MAX_TOKENS,
     "timeout": 600.0,
@@ -182,8 +181,7 @@ DEFAULT_PATHS: dict = {
 }
 
 # Sub-agent LLM overrides: every key defaults to None, meaning "inherit
-# the main LLM setting" (mirrors gptel-agent-harness-subagent-model /
-# -backend).  Only the keys the user actually sets differ from the main
+# the main LLM setting" (mirrors gptel-agent-harness-subagent-model).
 # agent's LLM.  ``profile`` references a named profile from the
 # ``models`` section: its settings are applied on top of any explicit
 # subagent_llm keys (profile wins), and unset keys still inherit the
@@ -193,7 +191,6 @@ DEFAULT_SUBAGENT_LLM: dict = {
     "base_url": None,
     "api_key": None,
     "model": None,
-    "backend": None,
     "temperature": None,
     "max_tokens": None,
     "timeout": None,
@@ -264,14 +261,12 @@ _ENV_OVERRIDES = {
     "base_url": "OPENAI_BASE_URL",
     "api_key": "OPENAI_API_KEY",
     "model": "OPENAI_MODEL",
-    "backend": "OPENAI_BACKEND",
 }
 
 _SUBAGENT_ENV_OVERRIDES = {
     "base_url": "OPENAI_SUBAGENT_BASE_URL",
     "api_key": "OPENAI_SUBAGENT_API_KEY",
     "model": "OPENAI_SUBAGENT_MODEL",
-    "backend": "OPENAI_SUBAGENT_BACKEND",
 }
 
 
@@ -320,7 +315,6 @@ def load_llm_config(path: str | os.PathLike | None = None) -> dict:
         "base_url",
         "api_key",
         "model",
-        "backend",
         "temperature",
         "max_tokens",
         "timeout",
@@ -342,7 +336,7 @@ def load_subagent_llm_config(
 ) -> dict:
     """Resolve sub-agent LLM settings; unset keys inherit ``main``.
 
-    Mirrors gptel-agent-harness-subagent-model/-backend: sub-agents
+    Mirrors gptel-agent-harness-subagent-model: sub-agents
     (the Agent tool) use their own LLM when configured, otherwise the
     main agent's.  Precedence: ``main`` settings < config file
     ``subagent_llm`` object < referenced ``models`` profile (when
@@ -379,7 +373,6 @@ def load_subagent_llm_config(
             "base_url",
             "api_key",
             "model",
-            "backend",
             "temperature",
             "max_tokens",
             "timeout",

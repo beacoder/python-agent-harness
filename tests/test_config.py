@@ -11,12 +11,10 @@ ENV_KEYS = [
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
     "OPENAI_MODEL",
-    "OPENAI_BACKEND",
     "PYTHON_AGENT_HARNESS_CONFIG",
     "OPENAI_SUBAGENT_BASE_URL",
     "OPENAI_SUBAGENT_API_KEY",
     "OPENAI_SUBAGENT_MODEL",
-    "OPENAI_SUBAGENT_BACKEND",
 ]
 
 
@@ -49,7 +47,6 @@ class TestConfigFile(unittest.TestCase):
                 '"base_url": "https://api.example.com/v1", '
                 '"api_key": "sk-test", '
                 '"model": "custom-model", '
-                '"backend": "Example", '
                 '"temperature": 0.2, '
                 '"max_tokens": 2048, '
                 '"timeout": 30.0, '
@@ -60,7 +57,6 @@ class TestConfigFile(unittest.TestCase):
             self.assertEqual(settings["base_url"], "https://api.example.com/v1")
             self.assertEqual(settings["api_key"], "sk-test")
             self.assertEqual(settings["model"], "custom-model")
-            self.assertEqual(settings["backend"], "Example")
             self.assertEqual(settings["temperature"], 0.2)
             self.assertEqual(settings["max_tokens"], 2048)
             self.assertEqual(settings["timeout"], 30.0)
@@ -327,7 +323,7 @@ class TestContextWindowsConfig(unittest.TestCase):
 
 class TestSubagentLlmConfig(unittest.TestCase):
     """Sub-agent LLM settings: unset keys inherit the main settings
-    (mirrors gptel-agent-harness-subagent-model/-backend)."""
+    (mirrors gptel-agent-harness-subagent-model)."""
 
     def setUp(self):
         self._saved = {k: os.environ.get(k) for k in ENV_KEYS}
@@ -345,7 +341,6 @@ class TestSubagentLlmConfig(unittest.TestCase):
         "base_url": "https://api.main.example/v1",
         "api_key": "sk-main",
         "model": "big-model",
-        "backend": "Main",
         "temperature": 0.0,
         "max_tokens": None,
         "timeout": 600.0,

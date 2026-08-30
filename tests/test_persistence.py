@@ -28,7 +28,6 @@ class TestSession(unittest.TestCase):
         store = SessionPersistence(
             project_dir="/tmp/proj",
             model="deepseek-v4",
-            backend="DeepSeek",
             system_prompt="be helpful",
             temperature=0.7,
             max_tokens=8192,
@@ -47,7 +46,6 @@ class TestSession(unittest.TestCase):
         store = SessionPersistence(
             project_dir="/tmp/proj",
             model="deepseek-v4",
-            backend="DeepSeek",
             round_times=[1700000000.0, 1700000100.5],
         )
         meta = store.metadata_block()
@@ -59,7 +57,7 @@ class TestSession(unittest.TestCase):
         self.assertEqual(times, [1700000000.0, 1700000100.5])
 
     def test_round_times_absent_when_empty(self):
-        store = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+        store = SessionPersistence(project_dir="/tmp/proj", model="m")
         self.assertNotIn("round-times", store.metadata_block())
 
     def test_save_and_restore_flow(self):
@@ -70,7 +68,6 @@ class TestSession(unittest.TestCase):
             store = SessionPersistence(
                 project_dir=d,
                 model="m",
-                backend="b",
             )
             path = store.save("hello world")
             self.assertTrue(path)
@@ -88,7 +85,7 @@ class TestSession(unittest.TestCase):
             old_dir = config.SESSION_DIR
             config.SESSION_DIR = __import__("pathlib").Path(d)
             try:
-                store = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+                store = SessionPersistence(project_dir="/tmp/proj", model="m")
                 store.save("x")
                 store.apply_title("My Great Session")
                 self.assertTrue(os.path.exists(store.file_path))
@@ -110,9 +107,9 @@ class TestSession(unittest.TestCase):
             old_dir = config.SESSION_DIR
             config.SESSION_DIR = __import__("pathlib").Path(d)
             try:
-                s1 = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+                s1 = SessionPersistence(project_dir="/tmp/proj", model="m")
                 p1 = s1.save("one")
-                s2 = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+                s2 = SessionPersistence(project_dir="/tmp/proj", model="m")
                 p2 = s2.save("two")
                 self.assertNotEqual(p1, p2)
                 self.assertTrue(os.path.exists(p1))
@@ -136,11 +133,11 @@ class TestSession(unittest.TestCase):
             old_dir = config.SESSION_DIR
             config.SESSION_DIR = __import__("pathlib").Path(d)
             try:
-                s1 = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+                s1 = SessionPersistence(project_dir="/tmp/proj", model="m")
                 s1.save("one")
                 s1.apply_title("Same Title")
                 t1 = s1.file_path
-                s2 = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+                s2 = SessionPersistence(project_dir="/tmp/proj", model="m")
                 s2.save("two")
                 s2.apply_title("Same Title")
                 t2 = s2.file_path
@@ -155,14 +152,14 @@ class TestSession(unittest.TestCase):
         must return None instead of writing anywhere."""
         import unittest.mock as mock
 
-        store = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+        store = SessionPersistence(project_dir="/tmp/proj", model="m")
         with mock.patch.object(SessionPersistence, "session_file", return_value=None):
             self.assertIsNone(store.save("hello"))
 
     def test_apply_title_requires_nonempty_sanitized_title(self):
         """A title that sanitizes to '' must not rename anything and must
         not be recorded."""
-        store = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+        store = SessionPersistence(project_dir="/tmp/proj", model="m")
         store.apply_title("   ---   ")  # sanitizes to ""
         self.assertIsNone(store.title)
         self.assertIsNone(store.file_path)
@@ -180,7 +177,7 @@ class TestSession(unittest.TestCase):
             old_dir = config.SESSION_DIR
             config.SESSION_DIR = __import__("pathlib").Path(d)
             try:
-                store = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+                store = SessionPersistence(project_dir="/tmp/proj", model="m")
                 store.save("x")
                 before = store.file_path
                 with mock.patch(
@@ -211,7 +208,7 @@ class TestSession(unittest.TestCase):
             old_dir = config.SESSION_DIR
             config.SESSION_DIR = __import__("pathlib").Path(d)
             try:
-                store = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+                store = SessionPersistence(project_dir="/tmp/proj", model="m")
                 store.save("old content")
                 before = store.file_path
 
@@ -298,9 +295,9 @@ class TestSession(unittest.TestCase):
             old_dir = config.SESSION_DIR
             config.SESSION_DIR = Path(d)
             try:
-                s1 = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+                s1 = SessionPersistence(project_dir="/tmp/proj", model="m")
                 p1 = s1.save("one")
-                s2 = SessionPersistence(project_dir="/tmp/proj", model="m", backend="b")
+                s2 = SessionPersistence(project_dir="/tmp/proj", model="m")
                 p2 = s2.save("two")
                 os.utime(p1, (1_000_000, 1_000_000))  # make p1 the older file
                 sessions = SessionPersistence.list_sessions()

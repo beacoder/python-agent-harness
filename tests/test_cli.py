@@ -20,11 +20,9 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
         "OPENAI_MODEL",
-        "OPENAI_BACKEND",
         "OPENAI_SUBAGENT_BASE_URL",
         "OPENAI_SUBAGENT_API_KEY",
         "OPENAI_SUBAGENT_MODEL",
-        "OPENAI_SUBAGENT_BACKEND",
     ]
 
     def setUp(self):
@@ -178,7 +176,7 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
 
     def test_subagent_llm_inherits_main_client_by_default(self):
         """Without subagent_llm overrides, the sub-agent shares the
-        main client (mirrors gptel-agent-harness: nil backend/model
+        main client (mirrors gptel-agent-harness: nil model overrides
         inherit the main agent's)."""
         session = cli.make_session(self._tmp.name, config_path=self._config_path)
         try:

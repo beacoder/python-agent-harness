@@ -63,7 +63,6 @@ def make_session(system_prompt, subagent_system_prompt, session_dir):
     session.store = SessionPersistence(
         project_dir="/tmp/fakeproj",
         model=session.model,
-        backend=session.backend,
         system_prompt=session.system_prompt,
         temperature=session.temperature,
         max_tokens=session.max_tokens,

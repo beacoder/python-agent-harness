@@ -6,7 +6,7 @@ sub-agent loop, delivering the result string when it finishes — a
 long-running sub-agent never blocks the parent's sequential tool loop.
 
 Sub-agents run the same agent loop with a fresh loop instance; their
-backend/model can be overridden (see config).  Results flow back to the
+model can be overridden (see config).  Results flow back to the
 parent as a single tool result string.  Errors are contained: an
 unexpected sub-agent response becomes an error string fed to the parent,
 never a crash.

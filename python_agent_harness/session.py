@@ -71,7 +71,6 @@ class Session:
         project_dir: str,
         client: Client,
         model: str,
-        backend: str = "OpenAI-compatible",
         system_prompt: str | None = None,
         subagent_system_prompt: str | None = None,
         temperature: float = config.TEMPERATURE,
@@ -96,7 +95,6 @@ class Session:
         self.project_dir = project_dir
         self.client = client
         self.model = model
-        self.backend = backend
         self.system_prompt = system_prompt
         self.subagent_system_prompt = subagent_system_prompt
         self.temperature = temperature
@@ -113,7 +111,7 @@ class Session:
         # Sub-agent LLM: a dedicated client (base_url/api_key/model/
         # timeout) and per-request options when a different LLM is
         # configured for sub-agents (mirrors gptel-agent-harness-
-        # subagent-model/-backend); every unset option inherits the
+        # subagent-model); every unset option inherits the
         # main agent's value.  The sub-agent loop never uses this
         # client directly — each Agent tool invocation clones it
         # (see run_subagent) so concurrent sub-agents never share a
@@ -161,7 +159,6 @@ class Session:
         self.store = SessionPersistence(
             project_dir=project_dir,
             model=model,
-            backend=backend,
             system_prompt=system_prompt,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -659,7 +656,6 @@ class Session:
             "base_url": self.client.base_url,
             "api_key": self.client.api_key,
             "model": self.model,
-            "backend": self.backend,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "timeout": self.client.timeout,
@@ -673,7 +669,6 @@ class Session:
                 "base_url",
                 "api_key",
                 "model",
-                "backend",
                 "temperature",
                 "max_tokens",
                 "timeout",
@@ -690,8 +685,6 @@ class Session:
         # the calibration factor is tokenizer-specific: a factor tuned
         # to the previous model must not skew estimates for the new one
         self.calibrator.reset()
-        self.backend = merged["backend"]
-        self.store.backend = merged["backend"]
         self.temperature = merged["temperature"]
         self.max_tokens = merged["max_tokens"]
         if hasattr(self.client, "set_timeout"):

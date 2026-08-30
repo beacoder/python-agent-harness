@@ -54,8 +54,8 @@ def make_session(
         config_path=config_path,
     )
     # A separate client for sub-agent requests only when a different
-    # LLM is configured (mirrors gptel-agent-harness-subagent-model /
-    # -backend); otherwise the sub-agent shares the main client.
+    # LLM is configured (mirrors gptel-agent-harness-subagent-model);
+    # otherwise the sub-agent shares the main client.
     subagent_client = None
     if any(
         subagent_settings[k] != settings[k] for k in ("base_url", "api_key", "model", "timeout")
@@ -101,7 +101,6 @@ def make_session(
         project_dir=abs_project,
         client=client,
         model=model,
-        backend=settings["backend"],
         system_prompt=system_prompt,
         subagent_system_prompt=subagent_system_prompt,
         temperature=settings["temperature"],
@@ -176,7 +175,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     print(f"config file: {path}")
     if not path.exists():
         print("(file does not exist yet — run `python-agent-harness config --init` to create it)")
-    for key in ("base_url", "model", "backend"):
+    for key in ("base_url", "model"):
         print(f"{key}: {settings[key]}")
     print(f"api_key: {config.mask_secret(settings['api_key'])}")
     print(f"temperature: {settings['temperature']}")

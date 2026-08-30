@@ -127,7 +127,6 @@ class ScenarioSession(Session):
         self.store = SessionPersistence(
             project_dir=project_dir,
             model=self.model,
-            backend=self.backend,
             system_prompt=self.system_prompt,
             temperature=self.temperature,
             max_tokens=self.max_tokens,

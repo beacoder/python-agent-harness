@@ -131,7 +131,7 @@ class TestSubagentIsolation(unittest.TestCase):
         """A session with a dedicated sub-agent client (subagent_llm in
         the config) routes sub-agent requests through it with its own
         per-request options; the parent's client only serves parent
-        turns (mirrors gptel-agent-harness-subagent-model/-backend)."""
+        turns (mirrors gptel-agent-harness-subagent-model)."""
         parent_client = RecClient(
             [
                 ("", [ToolCall(id="p1", name="Agent", arguments=AGENT_CALL)]),

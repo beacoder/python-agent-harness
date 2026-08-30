@@ -452,7 +452,7 @@ class AgentLoop:
             )
             # sub-agent runs use their own LLM when one is configured
             # (a per-invocation clone of session.subagent_client,
-            # mirroring gptel-agent-harness-subagent-model/-backend);
+            # mirroring gptel-agent-harness-subagent-model);
             # everything unset inherits the main agent's settings, so
             # the sub-agent path is identical when no separate LLM is
             # configured

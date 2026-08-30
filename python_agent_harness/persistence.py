@@ -107,7 +107,6 @@ class SessionPersistence:
         self,
         project_dir: str,
         model: str,
-        backend: str,
         system_prompt: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -116,7 +115,6 @@ class SessionPersistence:
     ) -> None:
         self.project_dir = project_dir
         self.model = model
-        self.backend = backend
         self.system_prompt = system_prompt
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -173,7 +171,6 @@ class SessionPersistence:
         pairs = [
             ("python-agent-harness--project-dir", self.project_dir),
             ("gptel-model", self.model),
-            ("gptel--backend-name", self.backend),
             ("gptel-system-prompt", self.system_prompt),
             ("gptel-temperature", self.temperature),
             ("gptel-max-tokens", self.max_tokens),
