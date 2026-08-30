@@ -512,11 +512,11 @@ class TestGlobGrepTools(unittest.TestCase):
         self._mkdir("proj", "sub")
         open(os.path.join(d, "sub", "b.py"), "w").close()
         out = GlobTool().run({"pattern": "*.py", "path": d}, self.ctx)
-        self.assertIn(os.path.join(d, "a.py"), out)
-        self.assertIn(os.path.join(d, "sub", "b.py"), out)
+        self.assertIn(os.path.realpath(os.path.join(d, "a.py")), out)
+        self.assertIn(os.path.realpath(os.path.join(d, "sub", "b.py")), out)
         out1 = GlobTool().run({"pattern": "*.py", "path": d, "depth": 1}, self.ctx)
-        self.assertIn(os.path.join(d, "a.py"), out1)
-        self.assertNotIn(os.path.join(d, "sub", "b.py"), out1)
+        self.assertIn(os.path.realpath(os.path.join(d, "a.py")), out1)
+        self.assertNotIn(os.path.realpath(os.path.join(d, "sub", "b.py")), out1)
 
     @unittest.skipUnless(shutil.which("git"), "git not available")
     def test_glob_and_grep_use_git_backend_in_repo(self):
@@ -527,13 +527,34 @@ class TestGlobGrepTools(unittest.TestCase):
                 f.write(content)
         subprocess.run(["git", "add", "."], cwd=repo, check=True)
         out = GlobTool().run({"pattern": "*", "path": repo}, self.ctx)
-        self.assertIn(os.path.join(repo, "a.py"), out)
-        self.assertIn(os.path.join(repo, "b.txt"), out)
+        self.assertIn(os.path.realpath(os.path.join(repo, "a.py")), out)
+        self.assertIn(os.path.realpath(os.path.join(repo, "b.txt")), out)
         out = Grep().run({"regex": "hello", "path": repo}, self.ctx)
         self.assertIn("a.py", out)
         self.assertIn("hello", out)
         self.assertNotIn("b.txt", out)
         out = Grep().run({"regex": "hello", "path": repo, "context_lines": 2}, self.ctx)
+        self.assertIn("a.py", out)
+        self.assertIn("hello", out)
+
+    @unittest.skipUnless(shutil.which("git"), "git not available")
+    def test_glob_and_grep_work_through_symlinked_path(self):
+        """Regression: a search path that goes through a symlink (macOS
+        /var -> /private/var) must be resolved before the git backend
+        computes relpaths, or git rejects the pathspec as outside the
+        repository."""
+        real = self._mkdir("real")
+        link = os.path.join(self.tmp.name, "link")
+        os.symlink(real, link)
+        subprocess.run(["git", "init", "-q", real], check=True)
+        with open(os.path.join(real, "a.py"), "w") as f:
+            f.write("hello world\n")
+        subprocess.run(["git", "add", "."], cwd=real, check=True)
+        out = GlobTool().run({"pattern": "*", "path": link}, self.ctx)
+        self.assertNotIn("outside repository", out)
+        self.assertNotIn("Glob failed", out)
+        self.assertIn(os.path.realpath(os.path.join(real, "a.py")), out)
+        out = Grep().run({"regex": "hello", "path": link}, self.ctx)
         self.assertIn("a.py", out)
         self.assertIn("hello", out)
 

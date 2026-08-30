@@ -46,7 +46,7 @@ class TestFindAgentsMdFiles(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "AGENTS.md").write_text("# Rules\n", encoding="utf-8")
             result = find_agents_md_files(d)
-            self.assertEqual([Path(p) for p in result], [Path(d) / "AGENTS.md"])
+            self.assertEqual([Path(p) for p in result], [(Path(d) / "AGENTS.md").resolve()])
 
     @unittest.skipUnless(shutil.which("git"), "git not available")
     def test_finds_agents_md_in_ancestor(self):
@@ -57,7 +57,7 @@ class TestFindAgentsMdFiles(unittest.TestCase):
             sub.mkdir(parents=True)
             (Path(d) / "AGENTS.md").write_text("# Root rules\n", encoding="utf-8")
             result = find_agents_md_files(str(sub))
-            self.assertEqual([Path(p) for p in result], [Path(d) / "AGENTS.md"])
+            self.assertEqual([Path(p) for p in result], [(Path(d) / "AGENTS.md").resolve()])
 
     @unittest.skipUnless(shutil.which("git"), "git not available")
     def test_stacks_every_ancestor_nearest_first(self):
@@ -76,7 +76,7 @@ class TestFindAgentsMdFiles(unittest.TestCase):
             result = find_agents_md_files(str(sub))
             self.assertEqual(
                 [Path(p) for p in result],
-                [pkg / "AGENTS.md", Path(d) / "AGENTS.md"],
+                [(pkg / "AGENTS.md").resolve(), (Path(d) / "AGENTS.md").resolve()],
             )
 
     @unittest.skipUnless(shutil.which("git"), "git not available")
@@ -92,7 +92,7 @@ class TestFindAgentsMdFiles(unittest.TestCase):
             # above the git root: must NOT be picked up
             (Path(outer) / "AGENTS.md").write_text("# Outer rules\n", encoding="utf-8")
             result = find_agents_md_files(str(sub))
-            self.assertEqual([Path(p) for p in result], [repo / "AGENTS.md"])
+            self.assertEqual([Path(p) for p in result], [(repo / "AGENTS.md").resolve()])
 
     def test_non_git_dir_is_its_own_bound(self):
         """Outside a repo the search is bounded by the project dir."""
@@ -147,7 +147,7 @@ class TestAgentsMdAsContextFiles(unittest.TestCase):
             result = load_context_files(None, extra_files=find_agents_md_files(d))
             self.assertEqual(
                 result,
-                f"Request context:\n\nIn file `{agents}`:\n\n# Project Rules\nUse 4 spaces.",
+                f"Request context:\n\nIn file `{agents.resolve()}`:\n\n# Project Rules\nUse 4 spaces.",
             )
 
     def test_empty_file_yields_no_context(self):

@@ -152,7 +152,10 @@ class TestFindSkill(unittest.TestCase):
             with open(os.path.join(sub, "SKILL.md"), "w") as f:
                 f.write("---\nname: my-rules\ndescription: rules\n---\n# Rules")
             session._skill_dir = d
-            self.assertEqual(session.find_skill("my-rules"), os.path.join(sub, "SKILL.md"))
+            self.assertEqual(
+                session.find_skill("my-rules"),
+                os.path.realpath(os.path.join(sub, "SKILL.md")),
+            )
 
     def test_frontmatter_name_differs_from_directory_name(self):
         """Regression test: the advertised name (frontmatter) must
@@ -165,7 +168,10 @@ class TestFindSkill(unittest.TestCase):
             with open(os.path.join(sub, "SKILL.md"), "w") as f:
                 f.write("---\nname: 天气预报助手\n---\n# body")
             session._skill_dir = d
-            self.assertEqual(session.find_skill("天气预报助手"), os.path.join(sub, "SKILL.md"))
+            self.assertEqual(
+                session.find_skill("天气预报助手"),
+                os.path.realpath(os.path.join(sub, "SKILL.md")),
+            )
 
     def test_nested_skill_dir_discovered(self):
         session = RecordingSession()
@@ -175,7 +181,10 @@ class TestFindSkill(unittest.TestCase):
             with open(os.path.join(nested, "SKILL.md"), "w") as f:
                 f.write("---\nname: deep-skill\n---\nbody")
             session._skill_dir = d
-            self.assertEqual(session.find_skill("deep-skill"), os.path.join(nested, "SKILL.md"))
+            self.assertEqual(
+                session.find_skill("deep-skill"),
+                os.path.realpath(os.path.join(nested, "SKILL.md")),
+            )
 
     def test_flat_file_without_frontmatter_returns_none(self):
         """Flat files (skills/style.md) are no longer resolvable: only
@@ -210,7 +219,10 @@ class TestFindSkill(unittest.TestCase):
                 f.write("---\nname: linked-skill\n---\n# Linked")
             os.symlink(sub, os.path.join(d, "linked"))
             session._skill_dir = d
-            self.assertEqual(session.find_skill("linked-skill"), os.path.join(sub, "SKILL.md"))
+            self.assertEqual(
+                session.find_skill("linked-skill"),
+                os.path.realpath(os.path.join(sub, "SKILL.md")),
+            )
 
     def test_traversal_skill_returns_none(self):
         """Path-traversal inputs are inert: lookup only matches names in

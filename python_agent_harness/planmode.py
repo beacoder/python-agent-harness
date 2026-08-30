@@ -64,8 +64,11 @@ class PlanMode:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if not os.path.exists(path):
             Path(path).write_text("", encoding="utf-8")
-        self.plan_file = path
-        return path
+        # Store the canonical path so the plan-mode write guard (which
+        # compares against realpath'd tool targets) matches — on macOS
+        # TMPDIR (/var) is a symlink to /private/var.
+        self.plan_file = os.path.realpath(path)
+        return self.plan_file
 
     def cleanup_plan_file(self) -> None:
         if not self.plan_file:

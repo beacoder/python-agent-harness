@@ -70,7 +70,10 @@ class GlobTool(Tool):
                 return f"Error: path {path} is not readable"
         else:
             path = ctx.cwd
-        base = os.path.abspath(path)  # directory-file-name + expand-file-name
+        # realpath (not abspath): _git_root resolves symlinks (macOS /var ->
+        # /private/var), so the base must be canonical or relpath produces a
+        # pathspec git rejects as "outside repository".
+        base = os.path.realpath(path)
         depth = args.get("depth")
 
         git_root = _git_root(base)

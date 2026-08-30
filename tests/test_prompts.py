@@ -200,7 +200,7 @@ class TestIndexSkills(unittest.TestCase):
                 encoding="utf-8",
             )
             index = index_skills(d)
-            self.assertEqual(index, {"天气预报助手": (str(skill), "does things")})
+            self.assertEqual(index, {"天气预报助手": (os.path.realpath(skill), "does things")})
 
     def test_no_frontmatter_name_skipped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -219,7 +219,7 @@ class TestIndexSkills(unittest.TestCase):
             skill = sub / "SKILL.md"
             skill.write_text("---\nname: linked-skill\n---\nbody", encoding="utf-8")
             os.symlink(sub, Path(d) / "linked")
-            self.assertEqual(index_skills(d)["linked-skill"][0], str(skill))
+            self.assertEqual(index_skills(d)["linked-skill"][0], os.path.realpath(skill))
 
 
 class TestLoadContextFiles(unittest.TestCase):

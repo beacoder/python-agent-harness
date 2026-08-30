@@ -780,6 +780,32 @@ class TestPlanModeWriteGuard(unittest.TestCase):
             with open(plan_file) as f:
                 self.assertEqual(f.read(), "via link")
 
+    def test_plan_file_writable_when_temp_dir_is_symlinked(self):
+        """Regression: when the plan dir goes through a symlink (macOS
+        TMPDIR /var -> /private/var), the plan file must still be
+        recognized as the plan file and stay writable in plan mode."""
+        with tempfile.TemporaryDirectory(prefix="pah-prop-plan-") as tmpdir:
+            real = os.path.join(tmpdir, "real")
+            os.makedirs(real)
+            link = os.path.join(tmpdir, "link")
+            os.symlink(real, link)
+            with mock.patch(
+                "python_agent_harness.planmode._plan_temp_dir",
+                return_value=link,
+            ):
+                session = self.make_plan_session(tmpdir)
+            plan_file = session.plan_mode.plan_file
+            self.assertTrue(os.path.isfile(plan_file))
+            dirname, basename = os.path.split(plan_file)
+            r = session.execute_tool(
+                "Write",
+                {"path": dirname, "filename": basename, "content": "# plan\n"},
+                call_id="w1",
+            )
+            self.assertNotIn("blocked by plan mode", r)
+            with open(plan_file) as f:
+                self.assertEqual(f.read(), "# plan\n")
+
     def test_read_only_tools_pass_through_plan_mode(self):
         with tempfile.TemporaryDirectory(prefix="pah-prop-plan-") as tmpdir:
             session = self.make_plan_session(tmpdir)

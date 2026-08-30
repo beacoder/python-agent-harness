@@ -41,7 +41,7 @@ class Grep(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         regex = args["regex"]
-        path = os.path.abspath(args["path"])
+        path = os.path.realpath(args["path"])
         if not os.path.isdir(path) and not os.path.isfile(path):
             return f"Error: path {args['path']} is not readable"
         glob = args.get("glob")
