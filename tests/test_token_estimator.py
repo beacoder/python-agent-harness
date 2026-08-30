@@ -55,7 +55,7 @@ class TestTokenizer(unittest.TestCase):
         built-in table (matched before CONTEXT_WINDOWS)."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"deepseek-v4*": 2000000}}', encoding="utf-8")
+            p.write_text('{"context_windows": {"deepseek-v4": 2000000}}', encoding="utf-8")
             self.assertEqual(context_window_for("deepseek-v4-flash", str(p)), 2_000_000)
             # models the override doesn't cover still use the table
             self.assertEqual(context_window_for("gpt-5-mini", str(p)), 128_000)

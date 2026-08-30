@@ -817,7 +817,7 @@ class TestModelSwitching(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "config.json")
             with open(p, "w", encoding="utf-8") as f:
-                f.write('{"context_windows": {"deepseek-v4*": 1000000}}')
+                f.write('{"context_windows": {"deepseek-v4": 1000000}}')
             client = Client(base_url="http://x/v1", api_key="k", model="gpt-5-mini", config_path=p)
             self.addCleanup(client.close)
             session = RecordingSession(model_profiles={"deepseek": {"model": "deepseek-v4-flash"}})

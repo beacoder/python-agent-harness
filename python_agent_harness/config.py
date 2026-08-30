@@ -5,7 +5,6 @@ Mirrors the defcustom defaults of the Emacs gptel-agent-harness.
 
 from __future__ import annotations
 
-import fnmatch
 import json
 import os
 from pathlib import Path
@@ -16,32 +15,22 @@ from .mcp.config import MCPConfig
 CONTEXT_TRIGGER = 0.70
 
 # Entries are matched in order (first match wins): put more specific
-# patterns before general ones. Supports wildcards (*).  Trailing `*`
-# on explicit entries preserves prefix matching for suffixed model
-# names (e.g. "deepseek-v4-flash" -> deepseek-v4*), matching the
-# legacy substring behavior.
+# patterns before general ones.
 CONTEXT_WINDOWS: list[tuple[str, int]] = [
-    ("gpt-5-mini*", 128_000),
-    ("gpt-5*", 400_000),
-    ("gpt-oss-120b*", 128_000),
-    ("claude*", 200_000),
-    ("deepseek-v3*", 128_000),
-    ("deepseek-v4*", 1_000_000),
-    ("qwen3.5*", 131_072),
-    ("qwen3.6*", 262_144),
-    ("qwen3.8*", 262_144),
-    ("qwen3*", 131_072),
-    ("glm-5.2*", 1_000_000),
-    ("glm-5.1*", 128_000),
-    ("kimi-k2.7*", 256_000),
-    ("kimi*", 128_000),
-    # Wildcard fallbacks for unknown models
-    ("gpt-*", 128_000),
-    ("claude-*", 200_000),
-    ("deepseek-*", 128_000),
-    ("qwen-*", 128_000),
-    ("glm-*", 128_000),
-    ("kimi-*", 128_000),
+    ("gpt-5-mini", 128_000),
+    ("gpt-5", 400_000),
+    ("gpt-oss-120b", 128_000),
+    ("claude", 200_000),
+    ("deepseek-v3", 128_000),
+    ("deepseek-v4", 1_000_000),
+    ("qwen3.5", 131_072),
+    ("qwen3.6", 262_144),
+    ("qwen3.8", 262_144),
+    ("qwen3", 131_072),
+    ("glm-5.2", 1_000_000),
+    ("glm-5.1", 128_000),
+    ("kimi-k2.7", 256_000),
+    ("kimi", 128_000),
 ]
 DEFAULT_CONTEXT_WINDOW = 128_000
 
@@ -233,8 +222,8 @@ CONFIG_TEMPLATE = """\
     }}
   }},
   "context_windows": {{
-    "_comment": "Optional per-model context-window overrides (tokens). Keys are model names or fnmatch patterns (e.g. deepseek-v4* = 1000000); matched in file order, first match wins. Overrides the built-in CONTEXT_WINDOWS table in config.py. Remove this section to use the built-in table.",
-    "deepseek-v4*": 1000000
+    "_comment": "Optional per-model context-window overrides (tokens). Keys are model names or substrings (e.g. deepseek-v4 = 1000000); matched in file order, first match wins. Overrides the built-in CONTEXT_WINDOWS table in config.py. Remove this section to use the built-in table.",
+    "deepseek-v4": 1000000
   }},
   "subagent_llm": {{
     "_comment": "Optional overrides for sub-agent (Agent tool) requests, e.g. a cheaper model. Every key is optional; unset keys inherit the main llm settings above. Set 'profile' to a name from the 'models' section to reuse a model profile (profile settings win over explicit keys below).",
@@ -476,7 +465,7 @@ def mask_secret(value: str | None) -> str:
 
 
 def _match_context_window(model: str) -> int | None:
-    """Match model name against CONTEXT_WINDOWS patterns (supports wildcards).
+    """Match model name against CONTEXT_WINDOWS entries (substring match).
 
     Args:
         model: The model ID to match (e.g., "gpt-5-mini", "claude-3-opus")
@@ -486,7 +475,7 @@ def _match_context_window(model: str) -> int | None:
     """
     lowered = model.lower()
     for pattern, size in CONTEXT_WINDOWS:
-        if fnmatch.fnmatch(lowered, pattern.lower()):
+        if pattern.lower() in lowered:
             return size
     return None
 
@@ -497,7 +486,7 @@ def load_context_windows_config(
     """Load per-model context-window overrides from the config file.
 
     Reads the ``context_windows`` object: a mapping of model names or
-    fnmatch patterns (matched in file order, first match wins) to token
+    substrings (matched in file order, first match wins) to token
     counts.  Keys starting with ``_`` are comments and skipped.  A
     missing file, missing section, or unreadable JSON yields ``[]``
     (callers fall back to the built-in table); a malformed section or
@@ -530,7 +519,7 @@ def get_context_window_for_model(
     the built-in table, then the default.
 
     The config file's ``context_windows`` object (user overrides) is
-    consulted first (fnmatch over its patterns, first match wins,
+    consulted first (substring match over its keys, first match wins,
     case-insensitive); then the CONTEXT_WINDOWS table in config.py;
     then DEFAULT_CONTEXT_WINDOW.
 
@@ -544,7 +533,7 @@ def get_context_window_for_model(
     """
     lowered = model.lower()
     for pattern, size in load_context_windows_config(config_path):
-        if fnmatch.fnmatch(lowered, pattern.lower()):
+        if pattern.lower() in lowered:
             return size
     matched = _match_context_window(model)
     if matched is not None:

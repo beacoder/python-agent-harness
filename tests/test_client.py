@@ -1707,7 +1707,7 @@ class TestContextWindow(unittest.TestCase):
         new model's window on the next access."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"fake*": 999999}}', encoding="utf-8")
+            p.write_text('{"context_windows": {"fake": 999999}}', encoding="utf-8")
             c = self._client(model="fake", config_path=str(p))
             self.assertEqual(c.context_window, 999_999)
             c.model = "gpt-5-mini"
@@ -1720,23 +1720,23 @@ class TestContextWindow(unittest.TestCase):
         built-in table, and edits are picked up on the next access."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"fake*": 999999}}', encoding="utf-8")
+            p.write_text('{"context_windows": {"fake": 999999}}', encoding="utf-8")
             c = self._client(model="fake", config_path=str(p))
             self.assertEqual(c.context_window, 999_999)
             # no caching: a later config change takes effect immediately
-            p.write_text('{"context_windows": {"fake*": 111111}}', encoding="utf-8")
+            p.write_text('{"context_windows": {"fake": 111111}}', encoding="utf-8")
             self.assertEqual(c.context_window, 111_111)
 
-    def test_config_file_wildcard_matching(self):
-        """Config-file patterns support fnmatch wildcards, first match
+    def test_config_file_substring_matching(self):
+        """Config-file keys are matched as substrings, first match
         wins in file order."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
             p.write_text(
-                '{"context_windows": {"gpt-4*": 500000, "gpt-4-turbo": 300000}}',
+                '{"context_windows": {"gpt-4": 500000, "gpt-4-turbo": 300000}}',
                 encoding="utf-8",
             )
-            # "gpt-4-turbo" hits the FIRST entry ("gpt-4*")
+            # "gpt-4-turbo" hits the FIRST entry ("gpt-4")
             self.assertEqual(self._client("gpt-4-turbo", str(p)).context_window, 500_000)
             self.assertEqual(self._client("gpt-4o", str(p)).context_window, 500_000)
 
@@ -1745,19 +1745,19 @@ class TestContextWindow(unittest.TestCase):
         built-in CONTEXT_WINDOWS table."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"deepseek-v4*": 1000000}}', encoding="utf-8")
+            p.write_text('{"context_windows": {"deepseek-v4": 1000000}}', encoding="utf-8")
             self.assertEqual(self._client("gpt-5-mini", str(p)).context_window, 128_000)
             self.assertEqual(self._client("deepseek-v4-flash", str(p)).context_window, 1_000_000)
 
     def test_fallback_to_pattern_match(self):
-        """No config-file overrides -> CONTEXT_WINDOWS wildcard."""
+        """No config-file overrides -> CONTEXT_WINDOWS substring match."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
             p.write_text('{"llm": {"model": "x"}}', encoding="utf-8")
             self.assertEqual(self._client("gpt-4-turbo", str(p)).context_window, 128_000)
 
     def test_fallback_to_default(self):
-        """No config-file overrides and no pattern match ->
+        """No config-file overrides and no table match ->
         DEFAULT_CONTEXT_WINDOW."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
@@ -1768,10 +1768,22 @@ class TestContextWindow(unittest.TestCase):
             )
 
     def test_missing_config_file_uses_table(self):
-        """No config file at all -> CONTEXT_WINDOWS patterns."""
+        """No config file at all -> CONTEXT_WINDOWS table."""
         self.assertEqual(
             self._client("deepseek-v4-flash", "/no/such/config.json").context_window,
             1_000_000,
+        )
+
+    def test_provider_prefixed_model_name(self):
+        """Provider-prefixed names (e.g. ZhipuAI/GLM-5.2) resolve the
+        right window via case-insensitive substring match."""
+        self.assertEqual(
+            self._client("ZhipuAI/GLM-5.2", "/no/such/config.json").context_window,
+            1_000_000,
+        )
+        self.assertEqual(
+            self._client("ZhipuAI/GLM-5.1", "/no/such/config.json").context_window,
+            128_000,
         )
 
     def test_malformed_config_file_falls_back_to_default(self):
@@ -1784,7 +1796,7 @@ class TestContextWindow(unittest.TestCase):
             c = self._client("fake", str(p))
             self.assertEqual(c.context_window, 128_000)
             # no caching of the failure: a fixed file is picked up
-            p.write_text('{"context_windows": {"fake*": 999999}}', encoding="utf-8")
+            p.write_text('{"context_windows": {"fake": 999999}}', encoding="utf-8")
             self.assertEqual(c.context_window, 999_999)
 
 

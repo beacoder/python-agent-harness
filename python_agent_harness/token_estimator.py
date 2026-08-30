@@ -44,9 +44,9 @@ def context_window_for(model: str, config_path: str | os.PathLike | None = None)
     """Return the context window for MODEL, or a safe fallback.
 
     Delegates to ``config.get_context_window_for_model``: config-file
-    ``context_windows`` overrides (config.json) first, then fnmatch
-    over CONTEXT_WINDOWS (first match wins, case-insensitive), then
-    DEFAULT_CONTEXT_WINDOW.
+    ``context_windows`` overrides (config.json) first, then substring
+    match over CONTEXT_WINDOWS (first match wins, case-insensitive),
+    then DEFAULT_CONTEXT_WINDOW.
 
     Args:
         model: The model ID to look up.

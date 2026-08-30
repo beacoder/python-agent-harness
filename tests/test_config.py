@@ -218,22 +218,22 @@ class TestContextWindowsConfig(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
             p.write_text(
-                '{"context_windows": {"deepseek-v4*": 1000000, "gpt-5*": 400000}}',
+                '{"context_windows": {"deepseek-v4": 1000000, "gpt-5": 400000}}',
                 encoding="utf-8",
             )
             self.assertEqual(
                 config.load_context_windows_config(p),
-                [("deepseek-v4*", 1000000), ("gpt-5*", 400000)],
+                [("deepseek-v4", 1000000), ("gpt-5", 400000)],
             )
 
     def test_comment_keys_skipped(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
             p.write_text(
-                '{"context_windows": {"_comment": "hi", "kimi*": 256000}}',
+                '{"context_windows": {"_comment": "hi", "kimi": 256000}}',
                 encoding="utf-8",
             )
-            self.assertEqual(config.load_context_windows_config(p), [("kimi*", 256000)])
+            self.assertEqual(config.load_context_windows_config(p), [("kimi", 256000)])
 
     def test_section_must_be_object(self):
         with tempfile.TemporaryDirectory() as d:
@@ -245,7 +245,7 @@ class TestContextWindowsConfig(unittest.TestCase):
     def test_size_must_be_integer(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"m*": "big"}}', encoding="utf-8")
+            p.write_text('{"context_windows": {"m": "big"}}', encoding="utf-8")
             with self.assertRaises(ValueError):
                 config.load_context_windows_config(p)
 
@@ -253,7 +253,7 @@ class TestContextWindowsConfig(unittest.TestCase):
         """True is an int subclass but not a valid token count."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"m*": true}}', encoding="utf-8")
+            p.write_text('{"context_windows": {"m": true}}', encoding="utf-8")
             with self.assertRaises(ValueError):
                 config.load_context_windows_config(p)
 
@@ -262,7 +262,7 @@ class TestContextWindowsConfig(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
             p.write_text(
-                '{"context_windows": {"deepseek-v4*": 1000000, "gpt-4-turbo": 300000}}',
+                '{"context_windows": {"deepseek-v4": 1000000, "gpt-4-turbo": 300000}}',
                 encoding="utf-8",
             )
             self.assertEqual(config.get_context_window_for_model("deepseek-v4-flash", p), 1000000)
@@ -280,8 +280,39 @@ class TestContextWindowsConfig(unittest.TestCase):
     def test_get_context_window_case_insensitive(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"DeepSeek-V4*": 1000000}}', encoding="utf-8")
+            p.write_text('{"context_windows": {"DeepSeek-V4": 1000000}}', encoding="utf-8")
             self.assertEqual(config.get_context_window_for_model("deepseek-v4-flash", p), 1000000)
+
+    def test_get_context_window_provider_prefixed_name(self):
+        """Provider-prefixed model names (e.g. "ZhipuAI/GLM-5.2") match
+        their table entry via case-insensitive substring match."""
+        # provider prefix + uppercase org, model name in the middle
+        self.assertEqual(
+            config.get_context_window_for_model("ZhipuAI/GLM-5.2", "/no/such/config.json"),
+            1_000_000,
+        )
+        # lowercased provider prefix matches too
+        self.assertEqual(
+            config.get_context_window_for_model("zhipuai/glm-5.2", "/no/such/config.json"),
+            1_000_000,
+        )
+        # plain model name still matches
+        self.assertEqual(
+            config.get_context_window_for_model("glm-5.2", "/no/such/config.json"),
+            1_000_000,
+        )
+        # a different minor version must NOT hit the glm-5.2 entry
+        self.assertEqual(
+            config.get_context_window_for_model("ZhipuAI/GLM-5.3", "/no/such/config.json"),
+            config.DEFAULT_CONTEXT_WINDOW,
+        )
+        # provider prefix must not break other families either
+        self.assertEqual(
+            config.get_context_window_for_model(
+                "DeepSeek/deepseek-v4-flash", "/no/such/config.json"
+            ),
+            1_000_000,
+        )
 
     def test_get_context_window_no_file(self):
         self.assertEqual(
