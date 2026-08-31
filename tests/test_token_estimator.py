@@ -51,15 +51,15 @@ class TestTokenizer(unittest.TestCase):
         self.assertEqual(context_window_for("unknown-model"), 128_000)
 
     def test_context_window_config_file_override(self):
-        """A context_windows section in the config file overrides the
-        built-in table (matched before CONTEXT_WINDOWS)."""
+        """A llm.context_window in the config file overrides the
+        built-in table."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"deepseek-v4": 2000000}}', encoding="utf-8")
+            p.write_text('{"llm": {"context_window": 2000000}}', encoding="utf-8")
             self.assertEqual(context_window_for("deepseek-v4-flash", str(p)), 2_000_000)
-            # models the override doesn't cover still use the table
-            self.assertEqual(context_window_for("gpt-5-mini", str(p)), 128_000)
-            self.assertEqual(context_window_for("unknown-model", str(p)), 128_000)
+            # all models hit the llm.context_window when set
+            self.assertEqual(context_window_for("gpt-5-mini", str(p)), 2_000_000)
+            self.assertEqual(context_window_for("unknown-model", str(p)), 2_000_000)
 
     def test_calibrator(self):
         c = TokenCalibrator()
