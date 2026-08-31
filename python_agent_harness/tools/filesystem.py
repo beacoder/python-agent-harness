@@ -148,7 +148,9 @@ def _git_root(path: str) -> str | None:
 # isort: off
 from .edit import Edit, _fix_patch_headers, _strip_diff_fence  # noqa: E402
 from .glob import GlobTool, _git_glob_results  # noqa: E402
+from .glob_mac import GlobMac  # noqa: E402
 from .grep import Grep, _grep_out  # noqa: E402
+from .grep_mac import GrepMac  # noqa: E402
 from .insert import Insert  # noqa: E402
 from .mkdir import Mkdir  # noqa: E402
 from .read import Read  # noqa: E402
@@ -157,8 +159,10 @@ from .write import Write  # noqa: E402
 
 __all__ = [
     "Edit",
+    "GlobMac",
     "GlobTool",
     "Grep",
+    "GrepMac",
     "Insert",
     "Mkdir",
     "Read",
