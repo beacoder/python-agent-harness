@@ -1380,3 +1380,260 @@ class TestEditMac(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGlobMac(unittest.TestCase):
+    """GlobMac: pure-Python non-git fallback (pathlib) and git delegation.
+
+    Run on every platform so the macOS path is covered by Linux CI too
+    (same approach as TestEditMac).
+    """
+
+    def setUp(self):
+        self.ctx = ToolContext()
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _mkdir(self, *parts) -> str:
+        p = os.path.join(self.tmp.name, *parts)
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    def _file(self, *parts, content: str = "") -> str:
+        p = os.path.join(self.tmp.name, *parts)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write(content)
+        return p
+
+    def test_pathlib_fallback_lists_files(self):
+        """Non-git directory: GlobMac uses pathlib instead of tree."""
+        from python_agent_harness.tools.glob_mac import GlobMac
+
+        d = self._mkdir("proj")
+        self._file("proj", "a.py")
+        self._file("proj", "b.txt")
+        out = GlobMac().run({"pattern": "*.py", "path": d}, self.ctx)
+        self.assertIn(os.path.realpath(os.path.join(d, "a.py")), out)
+        self.assertNotIn("b.txt", out)
+
+    def test_pathlib_fallback_depth_limiting(self):
+        """depth=1 excludes files in subdirectories."""
+        from python_agent_harness.tools.glob_mac import GlobMac
+
+        d = self._mkdir("proj")
+        self._file("proj", "top.py")
+        self._file("proj", "sub", "deep.py")
+        out = GlobMac().run({"pattern": "*.py", "path": d, "depth": 1}, self.ctx)
+        self.assertIn(os.path.realpath(os.path.join(d, "top.py")), out)
+        self.assertNotIn("deep.py", out)
+
+    def test_pathlib_fallback_unlimited_depth(self):
+        """Without depth, files at any level are returned."""
+        from python_agent_harness.tools.glob_mac import GlobMac
+
+        d = self._mkdir("proj")
+        self._file("proj", "top.py")
+        self._file("proj", "sub", "deep.py")
+        out = GlobMac().run({"pattern": "*.py", "path": d}, self.ctx)
+        self.assertIn(os.path.realpath(os.path.join(d, "top.py")), out)
+        self.assertIn(os.path.realpath(os.path.join(d, "sub", "deep.py")), out)
+
+    def test_pathlib_fallback_skips_hidden_dirs(self):
+        """Dotfiles/directories (e.g. .git) are excluded from results."""
+        from python_agent_harness.tools.glob_mac import GlobMac
+
+        d = self._mkdir("proj")
+        self._file("proj", "visible.py")
+        self._file("proj", ".hidden", "secret.py")
+        out = GlobMac().run({"pattern": "*.py", "path": d}, self.ctx)
+        self.assertIn("visible.py", out)
+        self.assertNotIn("secret.py", out)
+
+    def test_pathlib_fallback_case_insensitive(self):
+        """Glob matching is case-insensitive (mirrors tree --ignore-case)."""
+        from python_agent_harness.tools.glob_mac import GlobMac
+
+        d = self._mkdir("proj")
+        self._file("proj", "README.PY")
+        out = GlobMac().run({"pattern": "*.py", "path": d}, self.ctx)
+        self.assertIn("README.PY", out)
+
+    def test_pathlib_fallback_no_matches_returns_empty(self):
+        """No matching files returns empty string."""
+        from python_agent_harness.tools.glob_mac import GlobMac
+
+        d = self._mkdir("proj")
+        self._file("proj", "a.txt")
+        out = GlobMac().run({"pattern": "*.rs", "path": d}, self.ctx)
+        self.assertEqual(out, "")
+
+    @unittest.skipUnless(shutil.which("git"), "git not available")
+    def test_git_delegation(self):
+        """Inside a git repo, GlobMac delegates to the parent (git ls-files)."""
+        from python_agent_harness.tools.glob_mac import GlobMac
+
+        repo = self._mkdir("repo")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        self._file("repo", "a.py", content="hello\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        out = GlobMac().run({"pattern": "*", "path": repo}, self.ctx)
+        self.assertIn(os.path.realpath(os.path.join(repo, "a.py")), out)
+
+    def test_empty_pattern_errors(self):
+        from python_agent_harness.tools.glob_mac import GlobMac
+
+        out = GlobMac().run({"pattern": "", "path": self.tmp.name}, self.ctx)
+        self.assertIn("Error", out)
+
+    def test_nonexistent_path_errors(self):
+        from python_agent_harness.tools.glob_mac import GlobMac
+
+        out = GlobMac().run({"pattern": "*", "path": os.path.join(self.tmp.name, "nope")}, self.ctx)
+        self.assertIn("Error", out)
+
+    def test_pathlib_fallback_sorted_by_mtime(self):
+        """Results are sorted by mtime, newest first."""
+        import time
+
+        from python_agent_harness.tools.glob_mac import GlobMac
+
+        d = self._mkdir("proj")
+        older = self._file("proj", "older.py")
+        time.sleep(0.05)
+        newer = self._file("proj", "newer.py")
+        out = GlobMac().run({"pattern": "*.py", "path": d}, self.ctx)
+        older_pos = out.index(os.path.realpath(older))
+        newer_pos = out.index(os.path.realpath(newer))
+        self.assertLess(newer_pos, older_pos, "newer file should appear first")
+
+
+class TestGrepMac(unittest.TestCase):
+    """GrepMac: git grep -E instead of -P, plus fallback delegation.
+
+    Run on every platform so the macOS path is covered by Linux CI too.
+    """
+
+    def setUp(self):
+        self.ctx = ToolContext()
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _mkdir(self, *parts) -> str:
+        p = os.path.join(self.tmp.name, *parts)
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    @unittest.skipUnless(shutil.which("git"), "git not available")
+    def test_git_grep_uses_extended_regex(self):
+        """GrepMac uses git grep -E (not -P), which works on stock macOS."""
+        from python_agent_harness.tools.grep_mac import GrepMac
+
+        repo = self._mkdir("repo")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        with open(os.path.join(repo, "a.py"), "w") as f:
+            f.write("hello world\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        out = GrepMac().run({"regex": "hello", "path": repo}, self.ctx)
+        self.assertIn("a.py", out)
+        self.assertIn("hello", out)
+
+    @unittest.skipUnless(shutil.which("git"), "git not available")
+    def test_git_grep_e_flag_in_command(self):
+        """Verify the actual command uses -E, not -P."""
+        from python_agent_harness.tools.grep_mac import GrepMac
+
+        repo = self._mkdir("repo")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        with open(os.path.join(repo, "a.py"), "w") as f:
+            f.write("hello\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        with mock.patch(
+            "python_agent_harness.tools.grep_mac.subprocess.run",
+            wraps=subprocess.run,
+        ) as spy:
+            GrepMac().run({"regex": "hello", "path": repo}, self.ctx)
+            cmd = spy.call_args_list[0][0][0]
+            self.assertIn("-E", cmd)
+            self.assertNotIn("-P", cmd)
+
+    @unittest.skipUnless(shutil.which("git"), "git not available")
+    def test_git_grep_with_context_lines(self):
+        from python_agent_harness.tools.grep_mac import GrepMac
+
+        repo = self._mkdir("repo")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        with open(os.path.join(repo, "a.py"), "w") as f:
+            f.write("line1\nline2\nhello\nline4\nline5\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        out = GrepMac().run({"regex": "hello", "path": repo, "context_lines": 1}, self.ctx)
+        self.assertIn("hello", out)
+
+    @unittest.skipUnless(shutil.which("git"), "git not available")
+    def test_git_grep_with_glob_filter(self):
+        from python_agent_harness.tools.grep_mac import GrepMac
+
+        repo = self._mkdir("repo")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        with open(os.path.join(repo, "a.py"), "w") as f:
+            f.write("needle\n")
+        with open(os.path.join(repo, "b.md"), "w") as f:
+            f.write("needle\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        out = GrepMac().run({"regex": "needle", "path": repo, "glob": "*.py"}, self.ctx)
+        self.assertIn("a.py", out)
+        self.assertNotIn("b.md", out)
+
+    def test_nonexistent_path_errors(self):
+        from python_agent_harness.tools.grep_mac import GrepMac
+
+        out = GrepMac().run({"regex": "x", "path": os.path.join(self.tmp.name, "nope")}, self.ctx)
+        self.assertIn("Error", out)
+
+    def test_fallback_to_parent_on_non_git(self):
+        """Outside a git repo, GrepMac delegates to the parent's
+        rg/grep fallback chain."""
+        from python_agent_harness.tools.grep_mac import GrepMac
+
+        d = self._mkdir("plain")
+        with open(os.path.join(d, "f.txt"), "w") as f:
+            f.write("needle here\n")
+        proc = subprocess.CompletedProcess([], returncode=0, stdout="f.txt:1:needle here\n")
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/rg"),
+            mock.patch(
+                "python_agent_harness.tools.grep_mac.subprocess.run",
+                return_value=proc,
+            ),
+        ):
+            out = GrepMac().run({"regex": "needle", "path": d}, self.ctx)
+        self.assertIn("needle", out)
+
+    @unittest.skipUnless(shutil.which("git"), "git not available")
+    def test_git_grep_failure_falls_to_parent(self):
+        """When git grep fails (e.g. OSError), GrepMac falls through to
+        the parent's rg/grep chain."""
+        from python_agent_harness.tools.grep_mac import GrepMac
+
+        repo = self._mkdir("repo")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        with open(os.path.join(repo, "a.py"), "w") as f:
+            f.write("hello\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        with (
+            mock.patch(
+                "python_agent_harness.tools.grep_mac.subprocess.run",
+                side_effect=OSError("git broke"),
+            ),
+            mock.patch("shutil.which", return_value=None),
+        ):
+            out = GrepMac().run({"regex": "hello", "path": repo}, self.ctx)
+        self.assertIn("ripgrep/grep/git-grep not available", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
