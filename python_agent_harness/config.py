@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from pathlib import Path
 
 from .mcp.config import MCPConfig
@@ -173,6 +174,7 @@ DEFAULT_LLM: dict = {
     "timeout": 600.0,
     "reasoning_effort": None,
     "stream": True,
+    "context_window": None,
 }
 
 DEFAULT_PATHS: dict = {
@@ -196,6 +198,7 @@ DEFAULT_SUBAGENT_LLM: dict = {
     "timeout": None,
     "reasoning_effort": None,
     "stream": None,
+    "context_window": None,
 }
 
 CONFIG_TEMPLATE = """\
@@ -208,19 +211,17 @@ CONFIG_TEMPLATE = """\
     "stream": true
   }},
   "models": {{
-    "_comment": "Named LLM profiles for /model switching. Each entry is a full set of LLM settings (base_url, api_key, model, etc.). Use /model in the TUI to switch at runtime.",
+    "_comment": "Named LLM profiles for /model switching. Each entry is a full set of LLM settings (base_url, api_key, model, context_window, etc.). Use /model in the TUI to switch at runtime. Unset keys inherit the main llm settings.",
     "deepseek": {{
       "base_url": "https://api.deepseek.com/v1",
-      "model": "deepseek-chat"
+      "model": "deepseek-chat",
+      "context_window": 128000
     }},
     "openai": {{
       "base_url": "https://api.openai.com/v1",
-      "model": "gpt-5-mini"
+      "model": "gpt-5-mini",
+      "context_window": 128000
     }}
-  }},
-  "context_windows": {{
-    "_comment": "Optional per-model context-window overrides (tokens). Keys are model names or substrings (e.g. deepseek-v4 = 1000000); matched in file order, first match wins. Overrides the built-in CONTEXT_WINDOWS table in config.py. Remove this section to use the built-in table.",
-    "deepseek-v4": 1000000
   }},
   "subagent_llm": {{
     "_comment": "Optional overrides for sub-agent (Agent tool) requests, e.g. a cheaper model. Every key is optional; unset keys inherit the main llm settings above. Set 'profile' to a name from the 'models' section to reuse a model profile (profile settings win over explicit keys below).",
@@ -232,7 +233,8 @@ CONFIG_TEMPLATE = """\
     "max_tokens": null,
     "timeout": null,
     "reasoning_effort": null,
-    "stream": null
+    "stream": null,
+    "context_window": null
   }},
   "paths": {{
     "_comment": "Optional overrides for context and skill directories. Absolute paths or ~ expansion supported.",
@@ -270,6 +272,22 @@ _SUBAGENT_ENV_OVERRIDES = {
 }
 
 
+def _validate_context_window(
+    value: object, section: str, path: str | os.PathLike | None = None
+) -> None:
+    """Raise ValueError if *value* is set but not a positive integer."""
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"config file {_config_path(path)}: {section}.context_window must be an integer"
+        )
+    if value <= 0:
+        raise ValueError(
+            f"config file {_config_path(path)}: {section}.context_window must be positive"
+        )
+
+
 def _config_path(path: str | os.PathLike | None = None) -> Path:
     """Resolve the config file path: explicit arg > $PYTHON_AGENT_HARNESS_CONFIG > default."""
     if path:
@@ -305,6 +323,9 @@ def load_llm_config(path: str | os.PathLike | None = None) -> dict:
 
     The config file is JSON with an ``llm`` object (see `CONFIG_TEMPLATE`).
     Environment variables still win if set, so existing setups keep working.
+    ``context_window`` is an optional integer (tokens); when unset it
+    defaults to None, meaning "resolve from the built-in table at
+    runtime".
     """
     settings = dict(DEFAULT_LLM)
     data = _read_config(path)
@@ -320,9 +341,19 @@ def load_llm_config(path: str | os.PathLike | None = None) -> dict:
         "timeout",
         "reasoning_effort",
         "stream",
+        "context_window",
     ):
         if key in llm and llm[key] is not None:
             settings[key] = llm[key]
+    _validate_context_window(settings.get("context_window"), "llm", path)
+    # Warn if the old top-level context_windows section is still present.
+    if data.get("context_windows"):
+        warnings.warn(
+            "The top-level 'context_windows' section in config.json is deprecated and ignored. "
+            "Set 'context_window' inside 'llm' or each model profile in 'models' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     for key, env in _ENV_OVERRIDES.items():
         val = os.environ.get(env)
         if val:
@@ -378,6 +409,7 @@ def load_subagent_llm_config(
             "timeout",
             "reasoning_effort",
             "stream",
+            "context_window",
         ):
             if key in profile and profile[key] is not None:
                 overrides[key] = profile[key]
@@ -473,65 +505,62 @@ def _match_context_window(model: str) -> int | None:
     return None
 
 
-def load_context_windows_config(
-    path: str | os.PathLike | None = None,
-) -> list[tuple[str, int]]:
-    """Load per-model context-window overrides from the config file.
-
-    Reads the ``context_windows`` object: a mapping of model names or
-    substrings (matched in file order, first match wins) to token
-    counts.  Keys starting with ``_`` are comments and skipped.  A
-    missing file, missing section, or unreadable JSON yields ``[]``
-    (callers fall back to the built-in table); a malformed section or
-    non-integer size raises ValueError so config errors surface.
-    """
-    try:
-        data = _read_config(path)
-    except ValueError:
-        return []
-    section = data.get("context_windows") or {}
-    if not isinstance(section, dict):
-        raise ValueError(f"config file {_config_path(path)}: context_windows must be an object")
-    entries: list[tuple[str, int]] = []
-    for pattern, size in section.items():
-        if pattern.startswith("_"):
-            continue
-        if isinstance(size, bool) or not isinstance(size, int):
-            raise ValueError(
-                f"config file {_config_path(path)}: context_windows.{pattern} must be an integer"
-            )
-        if size <= 0:
-            raise ValueError(
-                f"config file {_config_path(path)}: context_windows.{pattern} must be positive"
-            )
-        entries.append((pattern, size))
-    return entries
-
-
 def get_context_window_for_model(
     model: str,
     config_path: str | os.PathLike | None = None,
 ) -> int:
-    """Get the context window for MODEL: config-file overrides, then
-    the built-in table, then the default.
+    """Get the context window for MODEL.
 
-    The config file's ``context_windows`` object (user overrides) is
-    consulted first (substring match over its keys, first match wins,
-    case-insensitive); then the CONTEXT_WINDOWS table in config.py;
-    then DEFAULT_CONTEXT_WINDOW.
+    Resolution order:
+    1. ``llm.context_window`` from the config file (when the active
+       model matches — this is already baked into the settings dict
+       returned by ``load_llm_config``; callers that use a resolved
+       settings dict should prefer ``resolve_context_window`` instead).
+    2. Built-in CONTEXT_WINDOWS table (substring match, first wins).
+    3. DEFAULT_CONTEXT_WINDOW.
+
+    This function is the fallback for callers that only have a model
+    name and no resolved settings dict (e.g. ``token_estimator``
+    or ``FakeClient``).
+    """
+    # Try the llm.context_window from the config file first.
+    try:
+        data = _read_config(config_path)
+    except ValueError:
+        data = {}
+    llm = data.get("llm") or {}
+    if isinstance(llm, dict):
+        cw = llm.get("context_window")
+        if cw is not None and isinstance(cw, int) and not isinstance(cw, bool) and cw > 0:
+            return cw
+    # Fall back to the built-in table, then the default.
+    matched = _match_context_window(model)
+    if matched is not None:
+        return matched
+    return DEFAULT_CONTEXT_WINDOW
+
+
+def resolve_context_window(settings: dict, model: str | None = None) -> int:
+    """Resolve the context window from a fully-merged settings dict.
+
+    Precedence:
+    1. ``settings["context_window"]`` — set by the active profile,
+       ``llm`` section, or ``subagent_llm`` section (already merged
+       by the load functions).
+    2. Built-in CONTEXT_WINDOWS table (substring match on *model*).
+    3. DEFAULT_CONTEXT_WINDOW.
 
     Args:
-        model: The model ID to look up (e.g. "deepseek-v4-flash")
-        config_path: Optional path to the config file; defaults to the
-            standard config location (config.json).
-
-    Returns:
-        The context window size as an integer.
+        settings: A resolved LLM settings dict (from ``load_llm_config``,
+            ``load_subagent_llm_config``, or a merged profile).
+        model: The model ID to match against the built-in table when
+            ``context_window`` is not set.  Defaults to
+            ``settings["model"]`` when omitted.
     """
-    lowered = model.lower()
-    for pattern, size in load_context_windows_config(config_path):
-        if pattern.lower() in lowered:
-            return size
+    cw = settings.get("context_window")
+    if cw is not None and isinstance(cw, int) and not isinstance(cw, bool) and cw > 0:
+        return cw
+    model = model or settings.get("model") or ""
     matched = _match_context_window(model)
     if matched is not None:
         return matched
