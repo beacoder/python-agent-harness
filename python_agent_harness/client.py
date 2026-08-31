@@ -217,6 +217,10 @@ class Client:
         # the user asked to stop.  Cleared at the start of each chat()
         # so a fresh turn may retry normally.
         self._aborted = False
+        # Per-model context-window override: set by the session when
+        # switching to a model profile that carries its own
+        # context_window.  None means "resolve from config / table".
+        self._context_window: int | None = None
         # an explicit log file is inherited by clones so every request
         # of one session (main + all sub-agents) lands in a single log
         self.log_path = (
@@ -229,18 +233,21 @@ class Client:
     def context_window(self) -> int:
         """Get the context window for this model.
 
-        Resolution order: config-file ``context_windows`` overrides
-        (via ``config.get_context_window_for_model``) -> CONTEXT_WINDOWS
-        pattern match -> DEFAULT_CONTEXT_WINDOW.  Resolved on every
-        access (no caching), so a runtime model switch or config-file
-        edit takes effect immediately; a malformed config falls back to
-        the default for that access and recovers once the file is fixed.
+        Resolution order: explicit ``_context_window`` override (set by
+        the session on model switch) → ``llm.context_window`` from the
+        config file → built-in CONTEXT_WINDOWS table (substring match)
+        → DEFAULT_CONTEXT_WINDOW.  Resolved on every access (no
+        caching), so a runtime model switch or config-file edit takes
+        effect immediately; a malformed config falls back to the default
+        for that access and recovers once the file is fixed.
         """
+        if self._context_window is not None:
+            return self._context_window
         try:
             return config.get_context_window_for_model(self.model, config_path=self._config_path)
         except Exception:
-            # a malformed context_windows section must not break the
-            # loop: use the safe default, retry on the next access
+            # a malformed config must not break the loop: use the safe
+            # default, retry on the next access
             return config.DEFAULT_CONTEXT_WINDOW
 
     def close(self) -> None:
@@ -259,7 +266,7 @@ class Client:
         flag strictly per-request.  The log file is shared so one
         session's LLM interactions stay in one log.
         """
-        return Client(
+        c = Client(
             base_url=self.base_url,
             api_key=self.api_key,
             model=self.model,
@@ -271,6 +278,8 @@ class Client:
             config_path=self._config_path,
             log_path=self.log_path,
         )
+        c._context_window = self._context_window
+        return c
 
     def abort(self) -> None:
         """Abort the in-flight request (called on cancel).
