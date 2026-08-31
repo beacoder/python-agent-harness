@@ -1693,72 +1693,55 @@ class TestAuthRefreshOn401(unittest.TestCase):
 
 
 class TestContextWindow(unittest.TestCase):
-    """Client.context_window: config-file overrides -> CONTEXT_WINDOWS
-    patterns -> DEFAULT_CONTEXT_WINDOW.  Resolved on every access (no
-    caching), so model switches and config edits take effect at once."""
+    """Client.context_window: _context_window override -> llm.context_window
+    in config -> CONTEXT_WINDOWS patterns -> DEFAULT_CONTEXT_WINDOW.
+    Resolved on every access (no caching), so model switches and
+    config edits take effect at once."""
 
     def _client(self, model: str, config_path: str | None = None) -> Client:
         c = Client(base_url="http://x/v1", api_key="k", model=model, config_path=config_path)
         self.addCleanup(c.close)
         return c
 
-    def test_model_change_re_resolves_window(self):
-        """Changing client.model (runtime /model switch) resolves the
-        new model's window on the next access."""
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"fake": 999999}}', encoding="utf-8")
-            c = self._client(model="fake", config_path=str(p))
-            self.assertEqual(c.context_window, 999_999)
-            c.model = "gpt-5-mini"
-            self.assertEqual(c.context_window, 128_000)
-            c.model = "deepseek-v4-flash"
-            self.assertEqual(c.context_window, 1_000_000)
+    def test_explicit_context_window_override(self):
+        """_context_window set on the client (by session.switch_model)
+        takes top priority."""
+        c = self._client(model="gpt-5-mini", config_path="/no/such/config.json")
+        self.assertEqual(c.context_window, 128_000)  # table match
+        c._context_window = 500_000
+        self.assertEqual(c.context_window, 500_000)
+        c._context_window = None  # clear -> falls back
+        self.assertEqual(c.context_window, 128_000)
 
-    def test_config_file_override_wins(self):
-        """A context_windows entry in the config file beats the
-        built-in table, and edits are picked up on the next access."""
+    def test_llm_context_window_from_config(self):
+        """llm.context_window in the config file wins when no
+        _context_window override is set."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"fake": 999999}}', encoding="utf-8")
-            c = self._client(model="fake", config_path=str(p))
+            p.write_text('{"llm": {"context_window": 999999}}', encoding="utf-8")
+            c = self._client(model="fake-model", config_path=str(p))
             self.assertEqual(c.context_window, 999_999)
             # no caching: a later config change takes effect immediately
-            p.write_text('{"context_windows": {"fake": 111111}}', encoding="utf-8")
+            p.write_text('{"llm": {"context_window": 111111}}', encoding="utf-8")
             self.assertEqual(c.context_window, 111_111)
 
-    def test_config_file_substring_matching(self):
-        """Config-file keys are matched as substrings, first match
-        wins in file order."""
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text(
-                '{"context_windows": {"gpt-4": 500000, "gpt-4-turbo": 300000}}',
-                encoding="utf-8",
-            )
-            # "gpt-4-turbo" hits the FIRST entry ("gpt-4")
-            self.assertEqual(self._client("gpt-4-turbo", str(p)).context_window, 500_000)
-            self.assertEqual(self._client("gpt-4o", str(p)).context_window, 500_000)
-
-    def test_unknown_model_in_config_file_falls_to_table(self):
-        """Config-file overrides that don't match fall through to the
-        built-in CONTEXT_WINDOWS table."""
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"deepseek-v4": 1000000}}', encoding="utf-8")
-            self.assertEqual(self._client("gpt-5-mini", str(p)).context_window, 128_000)
-            self.assertEqual(self._client("deepseek-v4-flash", str(p)).context_window, 1_000_000)
+    def test_model_change_re_resolves_window(self):
+        """Changing client.model (runtime /model switch) resolves the
+        new model's window on the next access from the built-in table."""
+        c = self._client(model="gpt-5-mini", config_path="/no/such/config.json")
+        self.assertEqual(c.context_window, 128_000)
+        c.model = "deepseek-v4-flash"
+        self.assertEqual(c.context_window, 1_000_000)
 
     def test_fallback_to_pattern_match(self):
-        """No config-file overrides -> CONTEXT_WINDOWS substring match."""
+        """No llm.context_window -> CONTEXT_WINDOWS substring match."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
             p.write_text('{"llm": {"model": "x"}}', encoding="utf-8")
-            self.assertEqual(self._client("gpt-4-turbo", str(p)).context_window, 128_000)
+            self.assertEqual(self._client("gpt-5-mini", str(p)).context_window, 128_000)
 
     def test_fallback_to_default(self):
-        """No config-file overrides and no table match ->
-        DEFAULT_CONTEXT_WINDOW."""
+        """No config and no table match -> DEFAULT_CONTEXT_WINDOW."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
             p.write_text('{"llm": {"model": "x"}}', encoding="utf-8")
@@ -1787,17 +1770,25 @@ class TestContextWindow(unittest.TestCase):
         )
 
     def test_malformed_config_file_falls_back_to_default(self):
-        """A broken context_windows section must not break the loop:
-        the client uses DEFAULT_CONTEXT_WINDOW for that access, and
-        recovers once the file is fixed (failures are not cached)."""
+        """A broken config must not break the loop: the client uses
+        DEFAULT_CONTEXT_WINDOW for that access, and recovers once the
+        file is fixed (failures are not cached)."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"fake": "not-a-number"}}', encoding="utf-8")
+            p.write_text('{"llm": {"context_window": "not-a-number"}}', encoding="utf-8")
             c = self._client("fake", str(p))
             self.assertEqual(c.context_window, 128_000)
             # no caching of the failure: a fixed file is picked up
-            p.write_text('{"context_windows": {"fake": 999999}}', encoding="utf-8")
+            p.write_text('{"llm": {"context_window": 999999}}', encoding="utf-8")
             self.assertEqual(c.context_window, 999_999)
+
+    def test_clone_copies_context_window(self):
+        """clone() preserves the _context_window override."""
+        c = self._client(model="gpt-5-mini", config_path="/no/such/config.json")
+        c._context_window = 500_000
+        c2 = c.clone()
+        self.addCleanup(c2.close)
+        self.assertEqual(c2.context_window, 500_000)
 
 
 if __name__ == "__main__":
