@@ -176,12 +176,12 @@ class TestConfigFile(unittest.TestCase):
         self.assertIn("reasoning_effort", config.CONFIG_TEMPLATE)
         self.assertIn('"stream"', config.CONFIG_TEMPLATE)
         self.assertIn('"subagent_llm"', config.CONFIG_TEMPLATE)
-        self.assertIn('"context_windows"', config.CONFIG_TEMPLATE)
+        self.assertIn('"context_window"', config.CONFIG_TEMPLATE)
 
 
-class TestContextWindowsConfig(unittest.TestCase):
-    """Config-file context-window overrides: loaded from the
-    ``context_windows`` object, matched before the built-in table."""
+class TestContextWindowConfig(unittest.TestCase):
+    """Context-window resolution: ``llm.context_window`` in the config
+    file, then built-in CONTEXT_WINDOWS table, then default."""
 
     def setUp(self):
         self._saved = {k: os.environ.get(k) for k in ENV_KEYS}
@@ -195,119 +195,91 @@ class TestContextWindowsConfig(unittest.TestCase):
             else:
                 os.environ[k] = v
 
-    def test_missing_file_returns_empty(self):
-        self.assertEqual(config.load_context_windows_config("/no/such/file.json"), [])
-
-    def test_empty_section_returns_empty(self):
+    def test_llm_context_window_loaded(self):
+        """llm.context_window in the config file is read by load_llm_config."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"llm": {"model": "m"}}', encoding="utf-8")
-            self.assertEqual(config.load_context_windows_config(p), [])
+            p.write_text('{"llm": {"context_window": 256000}}', encoding="utf-8")
+            settings = config.load_llm_config(p)
+            self.assertEqual(settings["context_window"], 256000)
 
-    def test_bad_json_returns_empty(self):
+    def test_llm_context_window_none_by_default(self):
+        """When unset, context_window defaults to None (resolve at runtime)."""
+        settings = config.load_llm_config("/no/such/file.json")
+        self.assertIsNone(settings["context_window"])
+
+    def test_context_window_bool_rejected(self):
+        """True is an int subclass but not a valid context window."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text("not {valid json", encoding="utf-8")
-            self.assertEqual(config.load_context_windows_config(p), [])
-
-    def test_overrides_loaded_in_order(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text(
-                '{"context_windows": {"deepseek-v4": 1000000, "gpt-5": 400000}}',
-                encoding="utf-8",
-            )
-            self.assertEqual(
-                config.load_context_windows_config(p),
-                [("deepseek-v4", 1000000), ("gpt-5", 400000)],
-            )
-
-    def test_comment_keys_skipped(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text(
-                '{"context_windows": {"_comment": "hi", "kimi": 256000}}',
-                encoding="utf-8",
-            )
-            self.assertEqual(config.load_context_windows_config(p), [("kimi", 256000)])
-
-    def test_section_must_be_object(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"context_windows": "nope"}', encoding="utf-8")
+            p.write_text('{"llm": {"context_window": true}}', encoding="utf-8")
             with self.assertRaises(ValueError):
-                config.load_context_windows_config(p)
+                config.load_llm_config(p)
 
-    def test_size_must_be_integer(self):
+    def test_context_window_zero_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"m": "big"}}', encoding="utf-8")
+            p.write_text('{"llm": {"context_window": 0}}', encoding="utf-8")
             with self.assertRaises(ValueError):
-                config.load_context_windows_config(p)
+                config.load_llm_config(p)
 
-    def test_bool_size_rejected(self):
-        """True is an int subclass but not a valid token count."""
+    def test_context_window_negative_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"m": true}}', encoding="utf-8")
+            p.write_text('{"llm": {"context_window": -1}}', encoding="utf-8")
             with self.assertRaises(ValueError):
-                config.load_context_windows_config(p)
+                config.load_llm_config(p)
 
-    def test_context_windows_zero_rejected(self):
-        """A zero context window would cause a division-by-zero at runtime."""
+    def test_context_window_string_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"m": 0}}', encoding="utf-8")
+            p.write_text('{"llm": {"context_window": "big"}}', encoding="utf-8")
             with self.assertRaises(ValueError):
-                config.load_context_windows_config(p)
+                config.load_llm_config(p)
 
-    def test_context_windows_negative_rejected(self):
+    def test_get_context_window_llm_setting_wins(self):
+        """llm.context_window beats the built-in table."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"m": -1}}', encoding="utf-8")
-            with self.assertRaises(ValueError):
-                config.load_context_windows_config(p)
+            p.write_text('{"llm": {"context_window": 999999}}', encoding="utf-8")
+            self.assertEqual(config.get_context_window_for_model("gpt-5-mini", p), 999999)
 
-    def test_get_context_window_precedence(self):
-        """Config-file override -> CONTEXT_WINDOWS -> default."""
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text(
-                '{"context_windows": {"deepseek-v4": 1000000, "gpt-4-turbo": 300000}}',
-                encoding="utf-8",
-            )
-            self.assertEqual(config.get_context_window_for_model("deepseek-v4-flash", p), 1000000)
-            # config-file match beats the built-in table
-            self.assertEqual(config.get_context_window_for_model("gpt-4-turbo", p), 300000)
-            # built-in table still applies when no override matches
-            self.assertEqual(config.get_context_window_for_model("gpt-5-mini", p), 128000)
-            self.assertEqual(config.get_context_window_for_model("kimi-k2.7-0613", p), 256000)
-            # unknown model -> default
-            self.assertEqual(
-                config.get_context_window_for_model("unknown-model", p),
-                config.DEFAULT_CONTEXT_WINDOW,
-            )
+    def test_get_context_window_falls_to_table(self):
+        """No llm.context_window -> built-in CONTEXT_WINDOWS table."""
+        self.assertEqual(
+            config.get_context_window_for_model("deepseek-v4", "/no/such/file.json"),
+            1_000_000,
+        )
+        self.assertEqual(
+            config.get_context_window_for_model("gpt-5-mini", "/no/such/file.json"),
+            128_000,
+        )
+
+    def test_get_context_window_falls_to_default(self):
+        """Unknown model with no config -> DEFAULT_CONTEXT_WINDOW."""
+        self.assertEqual(
+            config.get_context_window_for_model("totally-unknown", "/no/such/file.json"),
+            config.DEFAULT_CONTEXT_WINDOW,
+        )
 
     def test_get_context_window_case_insensitive(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"context_windows": {"DeepSeek-V4": 1000000}}', encoding="utf-8")
-            self.assertEqual(config.get_context_window_for_model("deepseek-v4-flash", p), 1000000)
+        """Built-in table matching is case-insensitive."""
+        self.assertEqual(
+            config.get_context_window_for_model("DeepSeek-V4", "/no/such/file.json"),
+            1_000_000,
+        )
 
     def test_get_context_window_provider_prefixed_name(self):
         """Provider-prefixed model names (e.g. "ZhipuAI/GLM-5.2") match
         their table entry via case-insensitive substring match."""
-        # provider prefix + uppercase org, model name in the middle
         self.assertEqual(
             config.get_context_window_for_model("ZhipuAI/GLM-5.2", "/no/such/config.json"),
             1_000_000,
         )
-        # lowercased provider prefix matches too
         self.assertEqual(
             config.get_context_window_for_model("zhipuai/glm-5.2", "/no/such/config.json"),
             1_000_000,
         )
-        # plain model name still matches
         self.assertEqual(
             config.get_context_window_for_model("glm-5.2", "/no/such/config.json"),
             1_000_000,
@@ -317,7 +289,6 @@ class TestContextWindowsConfig(unittest.TestCase):
             config.get_context_window_for_model("ZhipuAI/GLM-5.3", "/no/such/config.json"),
             config.DEFAULT_CONTEXT_WINDOW,
         )
-        # provider prefix must not break other families either
         self.assertEqual(
             config.get_context_window_for_model(
                 "DeepSeek/deepseek-v4-flash", "/no/such/config.json"
@@ -325,15 +296,92 @@ class TestContextWindowsConfig(unittest.TestCase):
             1_000_000,
         )
 
-    def test_get_context_window_no_file(self):
-        self.assertEqual(
-            config.get_context_window_for_model("deepseek-v4", "/no/such/file.json"),
-            1_000_000,
-        )
-        self.assertEqual(
-            config.get_context_window_for_model("totally-unknown", "/no/such/file.json"),
-            config.DEFAULT_CONTEXT_WINDOW,
-        )
+    def test_resolve_context_window_from_settings(self):
+        """resolve_context_window uses settings['context_window'] first."""
+        settings = {"model": "gpt-5-mini", "context_window": 500_000}
+        self.assertEqual(config.resolve_context_window(settings), 500_000)
+
+    def test_resolve_context_window_falls_to_table(self):
+        """resolve_context_window falls to built-in table when context_window is None."""
+        settings = {"model": "deepseek-v4", "context_window": None}
+        self.assertEqual(config.resolve_context_window(settings), 1_000_000)
+
+    def test_resolve_context_window_falls_to_default(self):
+        """resolve_context_window uses DEFAULT_CONTEXT_WINDOW for unknown models."""
+        settings = {"model": "unknown", "context_window": None}
+        self.assertEqual(config.resolve_context_window(settings), config.DEFAULT_CONTEXT_WINDOW)
+
+    def test_context_window_inherits_in_subagent(self):
+        """context_window set in llm inherits to subagent_llm when unset."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"llm": {"model": "m", "context_window": 500000}}',
+                encoding="utf-8",
+            )
+            main = config.load_llm_config(p)
+            sub = config.load_subagent_llm_config(p, main=main)
+        self.assertEqual(sub["context_window"], 500000)
+
+    def test_context_window_subagent_override(self):
+        """subagent_llm.context_window overrides the inherited value."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"llm": {"model": "m", "context_window": 500000},'
+                ' "subagent_llm": {"context_window": 200000}}',
+                encoding="utf-8",
+            )
+            main = config.load_llm_config(p)
+            sub = config.load_subagent_llm_config(p, main=main)
+        self.assertEqual(sub["context_window"], 200000)
+
+    def test_context_window_profile_override(self):
+        """A models profile's context_window overrides the llm value
+        when referenced via subagent_llm.profile."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"llm": {"model": "m", "context_window": 500000},'
+                ' "models": {"cheap": {"model": "cheap-m", "context_window": 300000}},'
+                ' "subagent_llm": {"profile": "cheap"}}',
+                encoding="utf-8",
+            )
+            main = config.load_llm_config(p)
+            sub = config.load_subagent_llm_config(p, main=main)
+        self.assertEqual(sub["context_window"], 300000)
+
+    def test_old_context_windows_section_emits_deprecation(self):
+        """A config file with the old top-level context_windows section
+        triggers a DeprecationWarning on load_llm_config."""
+        import warnings
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"llm": {"model": "m"}, "context_windows": {"deepseek-v4": 1000000}}',
+                encoding="utf-8",
+            )
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                config.load_llm_config(p)
+            dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            self.assertEqual(len(dep_warnings), 1)
+            self.assertIn("context_windows", str(dep_warnings[0].message))
+            self.assertIn("deprecated", str(dep_warnings[0].message))
+
+    def test_no_deprecation_without_old_section(self):
+        """No warning when the config file has no context_windows section."""
+        import warnings
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"llm": {"model": "m", "context_window": 500000}}', encoding="utf-8")
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                config.load_llm_config(p)
+            dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            self.assertEqual(len(dep_warnings), 0)
 
 
 class TestSubagentLlmConfig(unittest.TestCase):
