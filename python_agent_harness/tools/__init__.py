@@ -10,6 +10,8 @@ from .bash import Bash
 from .edit import Edit
 from .edit_mac import EditMac
 from .filesystem import GlobTool, Grep, Insert, Mkdir, Read, Write
+from .glob_mac import GlobMac
+from .grep_mac import GrepMac
 from .mcp import MCPTool, mcp_tools_from_manager, normalize_mcp_result
 from .planexit import PlanExit
 from .question import Question
@@ -25,8 +27,10 @@ __all__ = [
     "Bash",
     "Edit",
     "EditMac",
+    "GlobMac",
     "GlobTool",
     "Grep",
+    "GrepMac",
     "Insert",
     "MCPTool",
     "Mkdir",
@@ -43,15 +47,18 @@ __all__ = [
 
 def default_registry() -> Registry:
     reg = Registry()
-    # macOS's BSD patch rejects well-formed hunks that GNU patch accepts,
-    # so macOS uses EditMac (pure-Python diff applier); Linux keeps the
-    # patch-binary Edit.  Both register under the name "Edit".
-    edit_tool = EditMac() if sys.platform == "darwin" else Edit()
+    # macOS lacks GNU `patch`, `tree`, and PCRE-enabled git — use
+    # pure-Python / POSIX-compatible Mac variants that register under
+    # the same tool names so callers are platform-independent.
+    _mac = sys.platform == "darwin"
+    edit_tool = EditMac() if _mac else Edit()
+    glob_tool = GlobMac() if _mac else GlobTool()
+    grep_tool = GrepMac() if _mac else Grep()
     for tool in (
         AgentTool(),
         TodoWrite(),
-        GlobTool(),
-        Grep(),
+        glob_tool,
+        grep_tool,
         Read(),
         Insert(),
         edit_tool,
