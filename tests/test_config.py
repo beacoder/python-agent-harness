@@ -253,6 +253,21 @@ class TestContextWindowsConfig(unittest.TestCase):
             with self.assertRaises(ValueError):
                 config.load_context_windows_config(p)
 
+    def test_context_windows_zero_rejected(self):
+        """A zero context window would cause a division-by-zero at runtime."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"context_windows": {"m": 0}}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                config.load_context_windows_config(p)
+
+    def test_context_windows_negative_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text('{"context_windows": {"m": -1}}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                config.load_context_windows_config(p)
+
     def test_get_context_window_precedence(self):
         """Config-file override -> CONTEXT_WINDOWS -> default."""
         with tempfile.TemporaryDirectory() as d:
