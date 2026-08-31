@@ -217,17 +217,11 @@ def cmd_config(args: argparse.Namespace) -> int:
         for name, profile in sorted(model_profiles.items()):
             model_name = profile.get("model", "(inherited)")
             base_url = profile.get("base_url", "(inherited)")
-            print(f"  {name}: model={model_name}, base_url={base_url}")
+            cw = profile.get("context_window")
+            cw_str = f", context_window={cw}" if cw is not None else ""
+            print(f"  {name}: model={model_name}, base_url={base_url}{cw_str}")
     else:
         print("models: (none configured — add a 'models' section to use /model)")
-    # Show context-window overrides
-    context_windows = config.load_context_windows_config(args.path)
-    if context_windows:
-        print("context_windows:")
-        for pattern, size in context_windows:
-            print(f"  {pattern}: {size}")
-    else:
-        print("context_windows: (none configured — built-in table in config.py applies)")
     return 0
 
 
