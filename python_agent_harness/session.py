@@ -661,6 +661,7 @@ class Session:
             "timeout": self.client.timeout,
             "reasoning_effort": self.reasoning_effort,
             "stream": self.stream,
+            "context_window": getattr(self.client, "_context_window", None),
         }
         for key, val in current.items():
             merged.setdefault(key, val)
@@ -674,6 +675,7 @@ class Session:
                 "timeout",
                 "reasoning_effort",
                 "stream",
+                "context_window",
             ):
                 if key in profile and profile[key] is not None:
                     merged[key] = profile[key]
@@ -693,6 +695,10 @@ class Session:
             self.client.timeout = merged["timeout"]
         self.reasoning_effort = merged["reasoning_effort"]
         self.stream = merged["stream"]
+        # context_window: set the client override so subsequent
+        # client.context_window accesses use the profile's value
+        # (None means "resolve from config / built-in table").
+        self.client._context_window = merged.get("context_window")
         return True, f"switched to {name} ({self.model})"
 
     # ------------------------------------------------------------------
