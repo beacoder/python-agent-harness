@@ -500,6 +500,10 @@ def load_context_windows_config(
             raise ValueError(
                 f"config file {_config_path(path)}: context_windows.{pattern} must be an integer"
             )
+        if size <= 0:
+            raise ValueError(
+                f"config file {_config_path(path)}: context_windows.{pattern} must be positive"
+            )
         entries.append((pattern, size))
     return entries
 
