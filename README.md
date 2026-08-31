@@ -115,16 +115,14 @@ All LLM settings live in a single JSON configuration file. Environment variables
     "_comment": "Named LLM profiles for /model switching. Partial settings; unset keys inherit the main llm.",
     "deepseek": {
       "base_url": "https://api.deepseek.com/v1",
-      "model": "deepseek-chat"
+      "model": "deepseek-chat",
+      "context_window": 128000
     },
     "qwen": {
       "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "model": "qwen3.5-coder"
+      "model": "qwen3.5-coder",
+      "context_window": 131072
     }
-  },
-  "context_windows": {
-    "_comment": "Optional per-model context-window overrides (tokens). Keys are model names or substrings (e.g. deepseek-v4 = 1000000); matched in file order, first match wins. Overrides the built-in CONTEXT_WINDOWS table in config.py.",
-    "deepseek-v4": 1000000
   },
   "subagent_llm": {
     "profile": null,
@@ -135,7 +133,8 @@ All LLM settings live in a single JSON configuration file. Environment variables
     "max_tokens": null,
     "timeout": null,
     "reasoning_effort": null,
-    "stream": null
+    "stream": null,
+    "context_window": null
   },
   "paths": {
     "context_path": null,
@@ -163,10 +162,9 @@ All LLM settings live in a single JSON configuration file. Environment variables
 
 ### Configuration options
 
-- **`llm`** — main LLM configuration. Optional keys include `temperature`, `max_tokens`, `timeout`, `reasoning_effort`, and `stream`. Values such as `reasoning_effort` are passed to the API as-is when set. `run --no-stream` overrides `stream`.
-- **`models`** — named LLM profiles for runtime switching with `/model`. A profile is a partial settings dictionary; unset keys inherit from the main `llm`. `default` restores the main LLM configuration.
-- **`context_windows`** — optional per-model context-window overrides (tokens). Keys are model names or substrings (e.g., `deepseek-v4`); matched in file order, first match wins. Overrides the built-in `CONTEXT_WINDOWS` table in `config.py`.
-- **`subagent_llm`** — LLM configuration for `Agent` tool requests. Unset values inherit from the main `llm`. Set `profile` to reuse a profile from `models`. Precedence is: profile settings > explicit `subagent_llm` settings > main `llm` > environment variables.
+- **`llm`** — main LLM configuration. Optional keys include `temperature`, `max_tokens`, `timeout`, `reasoning_effort`, `context_window`, and `stream`. Values such as `reasoning_effort` are passed to the API as-is when set. `context_window` (tokens) overrides the built-in table for the active model; when unset, well-known models are matched automatically. `run --no-stream` overrides `stream`.
+- **`models`** — named LLM profiles for runtime switching with `/model`. A profile is a partial settings dictionary; unset keys inherit from the main `llm`. Each profile can include `context_window` to set the context window for that model. `default` restores the main LLM configuration.
+- **`subagent_llm`** — LLM configuration for `Agent` tool requests. Unset values inherit from the main `llm`. Set `profile` to reuse a profile from `models`. `context_window` can also be set here to override the inherited value for sub-agents. Precedence is: profile settings > explicit `subagent_llm` settings > main `llm` > environment variables.
 - **`paths.context_path` / `paths.skill_path`** — locations from which to load context files and skills. When unset, the project-local `<project>/contexts` and `<project>/skills` directories are used.
 - **`mcp.servers`** — MCP server configuration. Requires the `[mcp]` extra. Each server supports `transport`, `command`, `args`, `env`, `url`, `headers`, `parallel`, `timeout`, and `enabled`.
 - **Configuration precedence** — code defaults < config file < `OPENAI_*` environment variables. Sub-agent settings also support `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`).
