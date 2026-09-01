@@ -812,7 +812,7 @@ class TestClientAbort(unittest.TestCase):
 
 class TestAbortInflightSockets(unittest.TestCase):
     """_abort_inflight_sockets wakes live pool sockets via
-    shutdown(SHUT_RDWR) and tolerates broken internals."""
+    shutdown(SHUT_RDWR) + close() and tolerates broken internals."""
 
     def _fake_client_with_stream(self, stream):
         conn = mock.Mock()
@@ -821,7 +821,7 @@ class TestAbortInflightSockets(unittest.TestCase):
         client._transport._pool._connections = [conn]
         return client
 
-    def test_shuts_down_live_socket(self):
+    def test_shuts_down_and_closes_live_socket(self):
         import socket as _socket
 
         from python_agent_harness.client import _abort_inflight_sockets
@@ -830,7 +830,22 @@ class TestAbortInflightSockets(unittest.TestCase):
         stream = mock.Mock()
         stream.get_extra_info.return_value = sock
         _abort_inflight_sockets(self._fake_client_with_stream(stream))
+        # shutdown wakes the recv on Linux; close() is the reliable wake
+        # on macOS/BSD where shutdown alone may leave a parked recv stuck
         sock.shutdown.assert_called_once_with(_socket.SHUT_RDWR)
+        sock.close.assert_called_once_with()
+
+    def test_close_still_runs_when_shutdown_raises(self):
+        """A shutdown OSError must not skip the fd close: on macOS the
+        close is the step that actually wakes the blocked read."""
+        from python_agent_harness.client import _abort_inflight_sockets
+
+        sock = mock.Mock()
+        sock.shutdown.side_effect = OSError("not connected")
+        stream = mock.Mock()
+        stream.get_extra_info.return_value = sock
+        _abort_inflight_sockets(self._fake_client_with_stream(stream))  # no raise
+        sock.close.assert_called_once_with()
 
     def test_empty_pool_is_noop(self):
         from python_agent_harness.client import _abort_inflight_sockets
