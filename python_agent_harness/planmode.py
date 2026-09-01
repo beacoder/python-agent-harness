@@ -112,4 +112,6 @@ class PlanMode:
         return self.mode == AgentMode.PLAN
 
     def plan_reminder(self) -> str:
-        return config.PLAN_MODE_SUBAGENT_REMINDER % (self.plan_file or self.plan_file_path())
+        return config.PLAN_MODE_SUBAGENT_REMINDER.replace(
+            "%s", self.plan_file or self.plan_file_path()
+        )
