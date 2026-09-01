@@ -1606,7 +1606,7 @@ class TestGrepMac(unittest.TestCase):
         with (
             mock.patch("shutil.which", return_value="/usr/bin/rg"),
             mock.patch(
-                "python_agent_harness.tools.grep_mac.subprocess.run",
+                "python_agent_harness.tools.grep.subprocess.run",
                 return_value=proc,
             ),
         ):
