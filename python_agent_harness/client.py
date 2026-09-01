@@ -277,12 +277,16 @@ class Client:
 
         A blocked ``iter_lines()`` read must be interrupted so the agent
         loop can stop promptly.  Closing the pool alone is NOT enough:
-        on Linux, ``close()`` from another thread cannot wake a ``recv``
-        that is already blocked in the kernel.  So we first
-        ``shutdown(SHUT_RDWR)`` every in-flight connection socket (which
-        does wake the blocked read, turning it into a connection error
-        the loop treats as a cancel) and then close the pool.  A fresh
-        client is swapped in for the next request.
+        ``httpx.Client.close()`` from another thread cannot force-close a
+        socket whose fd is parked in a kernel ``recv``.  So we first
+        reach into every in-flight connection socket and both
+        ``shutdown(SHUT_RDWR)`` it (wakes the blocked read on Linux) and
+        ``close()`` the raw fd (the reliable wake on macOS/BSD, where
+        ``shutdown`` alone may not rouse a parked ``recv``); the woken
+        read surfaces as a connection error the loop treats as a cancel.
+        We then close the pool and swap in a fresh client for the next
+        request.  See ``_abort_inflight_sockets`` for the platform
+        details.
         """
         self._aborted = True
         old = self._http
@@ -819,15 +823,31 @@ def _default_api_key() -> str | None:
 
 
 def _abort_inflight_sockets(client: httpx.Client) -> None:
-    """Wake any blocked stream reads by shutting down live pool sockets.
+    """Wake any blocked stream reads on every live pool socket.
 
     Reaches through httpx/httpcore internals (transport -> pool ->
-    connection -> network stream -> raw socket) and calls
-    ``shutdown(SHUT_RDWR)`` on each live connection.  On Linux this is
-    the only reliable way to interrupt a ``recv`` already blocked in the
-    kernel from another thread — ``close()`` cannot do it.  Shutting
-    down an idle socket is harmless (the pool is closed right after
-    anyway); any failure is ignored (best effort).
+    connection -> network stream -> raw socket) and, for each live
+    connection, both ``shutdown(SHUT_RDWR)`` AND ``close()`` the raw
+    socket.
+
+    Both steps are needed for cross-platform reliability when another
+    thread is already blocked in ``recv``:
+
+    - On Linux, ``shutdown(SHUT_RDWR)`` reliably wakes the blocked
+      ``recv`` (turning it into a clean EOF / connection error), while
+      httpx's own ``close()`` cannot — it can't force-close a socket
+      whose fd is parked in a kernel read.
+    - On macOS/BSD (notably CI's macos-latest on py3.11), ``shutdown``
+      from another thread is NOT guaranteed to wake a ``recv`` already
+      parked in the kernel; the read stays blocked until the fd itself
+      is closed.  ``socket.close()`` closes the fd directly and does
+      wake it, so we always follow the shutdown with an explicit
+      close.
+
+    Closing the fd out from under httpcore is safe here: ``abort()``
+    swaps in a fresh pool immediately and closes the old one under
+    ``contextlib.suppress`` right after this call, so a double-close is
+    harmless.  Every step is best-effort; any failure is ignored.
     """
     pool = getattr(getattr(client, "_transport", None), "_pool", None)
     for conn in getattr(pool, "_connections", None) or ():
@@ -837,8 +857,13 @@ def _abort_inflight_sockets(client: httpx.Client) -> None:
         except Exception:  # noqa: BLE001 - best effort
             sock = None
         if sock is not None:
+            # shutdown first (wakes the recv on Linux without touching
+            # the fd), then close the fd (the reliable wake on
+            # macOS/BSD, where shutdown alone may not).
             with contextlib.suppress(OSError):
                 sock.shutdown(_socket.SHUT_RDWR)
+            with contextlib.suppress(OSError):
+                sock.close()
 
 
 def _iter_sse(lines: Iterator[str]) -> Iterator[str]:
