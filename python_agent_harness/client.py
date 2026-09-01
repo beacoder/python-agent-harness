@@ -12,6 +12,7 @@ import json
 import os
 import random
 import socket as _socket
+import sys
 import threading
 import time
 import uuid
@@ -862,8 +863,62 @@ def _abort_inflight_sockets(client: httpx.Client) -> None:
             # macOS/BSD, where shutdown alone may not).
             with contextlib.suppress(OSError):
                 sock.shutdown(_socket.SHUT_RDWR)
+            if sys.platform == "darwin":
+                # macOS: the socket is in non-blocking mode (httpcore
+                # calls settimeout for the read timeout), so a blocked
+                # recv parks in select(); closing the fd before that
+                # select has processed the shutdown wakeup can lose the
+                # wakeup and leave the read parked forever.  Give the
+                # woken thread a moment to observe the EOF first.
+                time.sleep(0.05)
             with contextlib.suppress(OSError):
                 sock.close()
+
+    if sys.platform == "darwin":
+        # macOS only: with proxy env vars (HTTP_PROXY/HTTPS_PROXY) set,
+        # httpx routes requests through proxy transports registered in
+        # client._mounts (pools are httpcore.HTTPProxy), leaving the
+        # base transport pool above empty.  On Linux this never happens
+        # in CI and the code path above is sufficient, so this extra
+        # walk is deliberately restricted to macOS.
+        mounts = getattr(client, "_mounts", None)
+        if isinstance(mounts, dict):
+            for transport in mounts.values():
+                if transport is None:
+                    continue
+                for conn in getattr(getattr(transport, "_pool", None), "_connections", None) or ():
+                    sock = None
+                    try:
+                        # Unwrap proxy connection wrappers
+                        # (ForwardHTTPConnection/TunnelHTTPConnection ->
+                        # HTTPConnection -> HTTP11Connection) down to the
+                        # network stream that owns the raw socket.
+                        stream = None
+                        for _ in range(4):
+                            stream = getattr(conn, "_network_stream", None)
+                            if stream is not None:
+                                break
+                            conn = getattr(conn, "_connection", None)
+                            if conn is None:
+                                break
+                        if stream is not None:
+                            sock = stream.get_extra_info("socket")
+                    except Exception:  # noqa: BLE001 - best effort
+                        sock = None
+                    if sock is not None:
+                        with contextlib.suppress(OSError):
+                            sock.shutdown(_socket.SHUT_RDWR)
+                        # macOS: the socket is in non-blocking mode
+                        # (httpcore calls settimeout for the read
+                        # timeout), so the blocked recv parks in
+                        # select(); freeing the fd with close() before
+                        # that select has processed the shutdown
+                        # wakeup can lose the wakeup and leave the read
+                        # parked forever.  Give the woken thread a
+                        # moment to observe the EOF before closing.
+                        time.sleep(0.05)
+                        with contextlib.suppress(OSError):
+                            sock.close()
 
 
 def _iter_sse(lines: Iterator[str]) -> Iterator[str]:
