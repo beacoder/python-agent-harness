@@ -26,7 +26,9 @@ class Write(Tool):
     def run(self, args: dict, ctx: ToolContext) -> str:
         dir_path = args.get("path") or "."
         filename = args.get("filename") or ""
-        content = args.get("content") or ""
+        content = args.get("content")
+        if content is None:
+            return "Error: Required argument `content' missing"
         # LLM may put the full file path in "filename" or in "path"
         if filename:
             path = os.path.realpath(os.path.abspath(os.path.join(dir_path, filename)))
