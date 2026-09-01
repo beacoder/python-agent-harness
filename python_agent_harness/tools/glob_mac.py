@@ -29,7 +29,7 @@ from .glob import GlobTool
 class GlobMac(GlobTool):
     """Glob with a hybrid ``find`` + Python-sort non-git fallback for macOS."""
 
-    def _tree_fallback(self, pattern: str, base: str, depth: object) -> str:
+    def _find_fallback(self, pattern: str, base: str, depth: object) -> str:
         """Use ``find`` for traversal + matching, Python for mtime sort.
 
         ``find`` (C binary) walks the directory tree and applies pattern
@@ -112,4 +112,4 @@ class GlobMac(GlobTool):
             return super().run(args, ctx)
 
         # Non-git: hybrid find + Python sort fallback instead of `tree`.
-        return self._tree_fallback(pattern, base, depth)
+        return self._find_fallback(pattern, base, depth)
