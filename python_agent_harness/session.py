@@ -444,7 +444,7 @@ class Session:
         )
         if approved:
             self.switch_to_build()
-            msg = config.PLAN_EXIT_APPROVED_MESSAGE % (self.plan_mode.plan_file or "")
+            msg = config.PLAN_EXIT_APPROVED_MESSAGE.replace("%s", self.plan_mode.plan_file or "")
             self.pending_user_prompts.append(msg)
             return (
                 "User approved switching to build agent.  You are now in "
