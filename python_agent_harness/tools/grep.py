@@ -49,7 +49,7 @@ class Grep(Tool):
         if context is not None:
             context = max(0, min(15, int(context)))
 
-        git_root = _git_root(path) if os.path.isdir(path) else None
+        git_root = _git_root(path)
         if git_root:
             rel = os.path.relpath(path, git_root)
             pathspec = rel
@@ -84,6 +84,18 @@ class Grep(Tool):
                 proc = None
             if proc is not None and proc.returncode in (0, 1):
                 return _grep_out(proc, "git")
+        return self._fallback_rg_grep(regex, path, glob, context)
+
+    def _fallback_rg_grep(
+        self, regex: str, path: str, glob: str | None, context: int | None
+    ) -> str:
+        """rg → grep fallback chain (no git grep).
+
+        Shared by :class:`Grep` (after git grep -P fails) and
+        :class:`GrepMac` (after git grep -E fails).  Extracted here so
+        the Mac variant can skip the parent's ``git grep -P`` attempt
+        without duplicating the rg/grep logic.
+        """
         if shutil.which("rg"):
             cmd = [
                 "rg",
