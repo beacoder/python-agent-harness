@@ -107,7 +107,7 @@ class GlobTool(Tool):
                 return f"Error: {e}"
             if proc.returncode != 0:
                 # Failure banner is prepended to whatever git emitted.
-                banner = f"Glob failed with exit code {proc.returncode}\n.STDOUT:\n\n"
+                banner = f"Glob failed with exit code {proc.returncode}\nSTDOUT:\n\n"
                 return _spool(banner + (proc.stdout or "") + (proc.stderr or ""), "glob")
             return _git_glob_results(proc.stdout, git_root, base, depth)
 
@@ -141,7 +141,7 @@ class GlobTool(Tool):
             return f"Error: {e}"
         out = proc.stdout
         if proc.returncode != 0:
-            out = f"Glob failed with exit code {proc.returncode}\n.STDOUT:\n\n" + out
+            out = f"Glob failed with exit code {proc.returncode}\nSTDOUT:\n\n" + out
         return _spool(out, "glob")
 
 
