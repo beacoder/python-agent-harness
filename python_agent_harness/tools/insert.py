@@ -43,6 +43,8 @@ class Insert(Tool):
         new_str = args["new_str"]
         if not new_str.endswith("\n"):
             new_str += "\n"
+        if ln < -1:
+            return f"Error: line_number {ln} is invalid (use 0 for beginning, -1 for end)"
         if ln == -1 or ln >= len(lines):
             lines.append(new_str)
         elif ln == 0:
