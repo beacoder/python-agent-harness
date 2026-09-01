@@ -90,7 +90,7 @@ class Edit(Tool):
         if old is None:
             return "Error: old_str is required for non-diff edits"
         try:
-            with open(path, encoding="utf-8") as f:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 content = f.read()
         except OSError as e:
             return f"Error: cannot read {path}: {e}"
