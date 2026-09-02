@@ -49,9 +49,12 @@ class RetryableApiError(ApiError):
 
 
 class AuthExpiredError(ApiError):
-    """Raised on HTTP 401 — the credential may have expired.
+    """Raised on auth-expired HTTP status codes.
 
-    Handled specially in the retry loop: the API key is re-read from
+    By default HTTP 401, but customizable via
+    ``config.AUTH_REFRESH_STATUS_CODES`` — some API gateways return 502
+    or other codes when the backend auth token has expired.  Handled
+    specially in the retry loop: the API key is re-read from
     config/environment (an external process may have refreshed the
     token) and the request is retried once with the new key.  If the
     key hasn't changed, the error is permanent and propagated as a
@@ -60,7 +63,13 @@ class AuthExpiredError(ApiError):
 
 
 def _retryable_status(status: int) -> bool:
-    """429 and 5xx are transient; every other error is permanent."""
+    """429 and 5xx are transient; every other error is permanent.
+
+    Status codes in ``config.AUTH_REFRESH_STATUS_CODES`` are excluded —
+    they are handled as auth-expired, not retried with backoff.
+    """
+    if status in config.AUTH_REFRESH_STATUS_CODES:
+        return False
     return status == 429 or status >= 500
 
 
@@ -508,12 +517,14 @@ class Client:
                 if self._sleep_backoff(attempt, e.retry_after, cancel_check):
                     raise
             except AuthExpiredError as e:
-                # HTTP 401: the credential (often a JWT with a short
-                # TTL) may have expired.  Re-read the API key from the
-                # config file / environment — an external token-refresh
-                # process may have written a new one.  Poll for up to
-                # 30s waiting for the key to change; retry once if it
-                # does.  Fail immediately if already refreshed once
+                # Auth-expired status code (401, or any code in
+                # config.AUTH_REFRESH_STATUS_CODES): the credential
+                # (often a JWT with a short TTL) may have expired.
+                # Re-read the API key from the config file / environment
+                # — an external token-refresh process may have written a
+                # new one.  Poll for up to 30s waiting for the key to
+                # change; retry once if it does.  Fail immediately if
+                # already refreshed once
                 # (prevents infinite loops).
                 self._reset_http()
                 if auth_refreshed or not self._refresh_api_key(cancel_check):
@@ -635,7 +646,7 @@ class Client:
             if resp.status_code >= 400:
                 body = resp.read().decode("utf-8", "replace")
                 message = f"API error {resp.status_code}: {body[:500]}"
-                if resp.status_code == 401:
+                if resp.status_code in config.AUTH_REFRESH_STATUS_CODES:
                     raise AuthExpiredError(message)
                 if _retryable_status(resp.status_code):
                     raise RetryableApiError(message, resp.headers.get("Retry-After"))
@@ -697,7 +708,7 @@ class Client:
         resp = self._http.post(self._url(), headers=self._headers(stream=False), json=payload)
         if resp.status_code >= 400:
             message = f"API error {resp.status_code}: {resp.text[:500]}"
-            if resp.status_code == 401:
+            if resp.status_code in config.AUTH_REFRESH_STATUS_CODES:
                 raise AuthExpiredError(message)
             if _retryable_status(resp.status_code):
                 raise RetryableApiError(message, resp.headers.get("Retry-After"))
