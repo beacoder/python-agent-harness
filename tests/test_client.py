@@ -1708,6 +1708,134 @@ class TestAuthRefreshOn401(unittest.TestCase):
         c.close()
 
 
+class TestAuthRefreshOnConfigurableStatusCodes(unittest.TestCase):
+    """Status codes in config.AUTH_REFRESH_STATUS_CODES (not just 401)
+    trigger the auth-refresh path — e.g. some gateways return 502 when
+    the backend auth token has expired."""
+
+    def test_502_triggers_auth_refresh_and_retries(self):
+        """A 502 (in AUTH_REFRESH_STATUS_CODES) triggers key re-read;
+        if the key changed, the request is retried and can succeed."""
+        from python_agent_harness.client import AuthExpiredError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+
+        def fake_stream(payload, on_delta, on_tool_call, usage):
+            n = calls["n"]
+            calls["n"] += 1
+            if n == 0:
+                raise AuthExpiredError("API error 502: Bad Gateway")
+            return (["ok"], [], {})
+
+        with (
+            mock.patch.object(c, "_stream_response", side_effect=fake_stream),
+            mock.patch.object(c, "_refresh_api_key", return_value=True),
+        ):
+            msg, _ = c.chat([Message(role="user", content="hi")])
+
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(msg.text(), "ok")
+        c.close()
+
+    def test_502_with_unchanged_key_fails_immediately(self):
+        """A 502 where the key hasn't changed propagates as a permanent
+        ApiError (no backoff retry)."""
+        from python_agent_harness.client import ApiError, AuthExpiredError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+
+        def fake_stream(payload, on_delta, on_tool_call, usage):
+            calls["n"] += 1
+            raise AuthExpiredError("API error 502: Bad Gateway")
+
+        with (
+            mock.patch.object(c, "_stream_response", side_effect=fake_stream),
+            mock.patch.object(c, "_refresh_api_key", return_value=False),
+            self.assertRaises(ApiError) as ctx,
+        ):
+            c.chat([Message(role="user", content="hi")])
+
+        self.assertEqual(calls["n"], 1)
+        self.assertIn("502", str(ctx.exception))
+        c.close()
+
+    def test_custom_status_code_triggers_auth_refresh(self):
+        """A custom status code added to AUTH_REFRESH_STATUS_CODES
+        triggers auth refresh instead of retryable backoff."""
+        from python_agent_harness.client import AuthExpiredError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+
+        def fake_stream(payload, on_delta, on_tool_call, usage):
+            n = calls["n"]
+            calls["n"] += 1
+            if n == 0:
+                raise AuthExpiredError("API error 419: Token Expired")
+            return (["ok"], [], {})
+
+        with (
+            mock.patch("python_agent_harness.config.AUTH_REFRESH_STATUS_CODES", [401, 419]),
+            mock.patch.object(c, "_stream_response", side_effect=fake_stream),
+            mock.patch.object(c, "_refresh_api_key", return_value=True),
+        ):
+            msg, _ = c.chat([Message(role="user", content="hi")])
+
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(msg.text(), "ok")
+        c.close()
+
+    def test_503_not_in_auth_refresh_still_retryable(self):
+        """A 503 (not in AUTH_REFRESH_STATUS_CODES by default) is still
+        treated as a retryable error, not an auth-refresh error."""
+        from python_agent_harness.client import ApiError, RetryableApiError
+
+        c = make_offline_client(retry_max=2, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+
+        def fake_stream(payload, on_delta, on_tool_call, usage):
+            calls["n"] += 1
+            raise RetryableApiError("API error 503: Service Unavailable")
+
+        with (
+            mock.patch.object(c, "_stream_response", side_effect=fake_stream),
+            mock.patch.object(c, "_refresh_api_key") as refresh_mock,
+            self.assertRaises(ApiError),
+        ):
+            c.chat([Message(role="user", content="hi")])
+
+        # retried up to retry_max, never triggered auth refresh
+        self.assertEqual(calls["n"], 2)
+        refresh_mock.assert_not_called()
+        c.close()
+
+    def test_502_on_sync_request_also_triggers_refresh(self):
+        """Non-streaming requests also benefit from 502 auth refresh."""
+        from python_agent_harness.client import AuthExpiredError
+
+        c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
+        calls = {"n": 0}
+
+        def fake_sync(payload, on_delta, on_tool_call, usage):
+            n = calls["n"]
+            calls["n"] += 1
+            if n == 0:
+                raise AuthExpiredError("API error 502: Bad Gateway")
+            return (["title"], [], {})
+
+        with (
+            mock.patch.object(c, "_sync_response", side_effect=fake_sync),
+            mock.patch.object(c, "_refresh_api_key", return_value=True),
+        ):
+            msg, _ = c.chat_sync([Message(role="user", content="hi")])
+
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(msg.text(), "title")
+        c.close()
+
+
 class TestContextWindow(unittest.TestCase):
     """Client.context_window: config-file overrides -> CONTEXT_WINDOWS
     patterns -> DEFAULT_CONTEXT_WINDOW.  Resolved on every access (no
