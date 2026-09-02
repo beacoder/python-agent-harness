@@ -816,6 +816,7 @@ class TestAbortInflightSockets(unittest.TestCase):
 
     def _fake_client_with_stream(self, stream):
         conn = mock.Mock()
+        conn._network_stream = None
         conn._connection._network_stream = stream
         client = mock.Mock()
         client._transport._pool._connections = [conn]
