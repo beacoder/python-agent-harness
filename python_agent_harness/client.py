@@ -823,6 +823,47 @@ def _default_api_key() -> str | None:
     return os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or None
 
 
+def _extract_socket(conn: object) -> _socket.socket | None:
+    """Best-effort extraction of the raw socket from an httpcore connection.
+
+    For direct (non-proxy) connections the socket lives at
+    ``conn._connection._network_stream``.  Proxy connections are wrapped
+    (ForwardHTTPConnection/TunnelHTTPConnection -> HTTPConnection ->
+    HTTP11Connection), so we unwrap up to 4 levels looking for the
+    ``_network_stream`` attribute that owns the raw socket.
+    """
+    try:
+        obj: object = conn
+        stream = None
+        for _ in range(4):
+            stream = getattr(obj, "_network_stream", None)
+            if stream is not None:
+                break
+            obj = getattr(obj, "_connection", None)
+            if obj is None:
+                break
+        return stream.get_extra_info("socket") if stream is not None else None
+    except Exception:  # noqa: BLE001 - best effort
+        return None
+
+
+def _shutdown_and_close(sock: _socket.socket) -> None:
+    """Shutdown then close a socket to wake blocked reads.
+
+    On macOS the socket is in non-blocking mode (httpcore calls
+    settimeout for the read timeout), so a blocked recv parks in
+    select(); closing the fd before that select has processed the
+    shutdown wakeup can lose the wakeup and leave the read parked
+    forever.  Give the woken thread a moment to observe the EOF first.
+    """
+    with contextlib.suppress(OSError):
+        sock.shutdown(_socket.SHUT_RDWR)
+    if sys.platform == "darwin":
+        time.sleep(0.05)
+    with contextlib.suppress(OSError):
+        sock.close()
+
+
 def _abort_inflight_sockets(client: httpx.Client) -> None:
     """Wake any blocked stream reads on every live pool socket.
 
@@ -850,29 +891,10 @@ def _abort_inflight_sockets(client: httpx.Client) -> None:
     ``contextlib.suppress`` right after this call, so a double-close is
     harmless.  Every step is best-effort; any failure is ignored.
     """
-    pool = getattr(getattr(client, "_transport", None), "_pool", None)
-    for conn in getattr(pool, "_connections", None) or ():
-        try:
-            stream = getattr(getattr(conn, "_connection", None), "_network_stream", None)
-            sock = stream.get_extra_info("socket") if stream is not None else None
-        except Exception:  # noqa: BLE001 - best effort
-            sock = None
-        if sock is not None:
-            # shutdown first (wakes the recv on Linux without touching
-            # the fd), then close the fd (the reliable wake on
-            # macOS/BSD, where shutdown alone may not).
-            with contextlib.suppress(OSError):
-                sock.shutdown(_socket.SHUT_RDWR)
-            if sys.platform == "darwin":
-                # macOS: the socket is in non-blocking mode (httpcore
-                # calls settimeout for the read timeout), so a blocked
-                # recv parks in select(); closing the fd before that
-                # select has processed the shutdown wakeup can lose the
-                # wakeup and leave the read parked forever.  Give the
-                # woken thread a moment to observe the EOF first.
-                time.sleep(0.05)
-            with contextlib.suppress(OSError):
-                sock.close()
+    pools: list[object] = []
+    base_pool = getattr(getattr(client, "_transport", None), "_pool", None)
+    if base_pool is not None:
+        pools.append(base_pool)
 
     if sys.platform == "darwin":
         # macOS only: with proxy env vars (HTTP_PROXY/HTTPS_PROXY) set,
@@ -884,41 +906,16 @@ def _abort_inflight_sockets(client: httpx.Client) -> None:
         mounts = getattr(client, "_mounts", None)
         if isinstance(mounts, dict):
             for transport in mounts.values():
-                if transport is None:
-                    continue
-                for conn in getattr(getattr(transport, "_pool", None), "_connections", None) or ():
-                    sock = None
-                    try:
-                        # Unwrap proxy connection wrappers
-                        # (ForwardHTTPConnection/TunnelHTTPConnection ->
-                        # HTTPConnection -> HTTP11Connection) down to the
-                        # network stream that owns the raw socket.
-                        stream = None
-                        for _ in range(4):
-                            stream = getattr(conn, "_network_stream", None)
-                            if stream is not None:
-                                break
-                            conn = getattr(conn, "_connection", None)
-                            if conn is None:
-                                break
-                        if stream is not None:
-                            sock = stream.get_extra_info("socket")
-                    except Exception:  # noqa: BLE001 - best effort
-                        sock = None
-                    if sock is not None:
-                        with contextlib.suppress(OSError):
-                            sock.shutdown(_socket.SHUT_RDWR)
-                        # macOS: the socket is in non-blocking mode
-                        # (httpcore calls settimeout for the read
-                        # timeout), so the blocked recv parks in
-                        # select(); freeing the fd with close() before
-                        # that select has processed the shutdown
-                        # wakeup can lose the wakeup and leave the read
-                        # parked forever.  Give the woken thread a
-                        # moment to observe the EOF before closing.
-                        time.sleep(0.05)
-                        with contextlib.suppress(OSError):
-                            sock.close()
+                if transport is not None:
+                    pool = getattr(transport, "_pool", None)
+                    if pool is not None:
+                        pools.append(pool)
+
+    for pool in pools:
+        for conn in getattr(pool, "_connections", None) or ():
+            sock = _extract_socket(conn)
+            if sock is not None:
+                _shutdown_and_close(sock)
 
 
 def _iter_sse(lines: Iterator[str]) -> Iterator[str]:
