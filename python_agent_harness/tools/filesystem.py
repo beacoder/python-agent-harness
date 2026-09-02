@@ -35,6 +35,7 @@ import os
 import shutil  # noqa: F401  (mock target for tests)
 import subprocess  # noqa: F401  (mock target for tests)
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import TypeGuard
@@ -47,6 +48,8 @@ READ_SIZE_LIMIT = 400 * 1024  # whole-file reads above this are refused
 
 _spooled_files: list[str] = []  # temp files created by _spool, cleaned
 # up by cleanup_spooled_files on session close
+_spooled_files_lock = threading.Lock()  # guards _spooled_files across
+# parallel readonly tool threads (Glob/Grep/Read can _spool concurrently)
 
 
 def _truncate(text: str, label: str = "output") -> str:
@@ -89,7 +92,8 @@ def _spool(text: str, label: str) -> str:
         )
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
-        _spooled_files.append(temp_file)
+        with _spooled_files_lock:
+            _spooled_files.append(temp_file)
     except OSError:
         return _truncate(text, label)
     lines = text.splitlines()
@@ -112,8 +116,9 @@ def cleanup_spooled_files() -> None:
     in the temp dir.  Files already removed (e.g. by a restored
     session) are skipped.
     """
-    paths = _spooled_files[:]
-    _spooled_files.clear()
+    with _spooled_files_lock:
+        paths = _spooled_files[:]
+        _spooled_files.clear()
     for path in paths:
         try:
             if os.path.exists(path):
@@ -179,6 +184,7 @@ __all__ = [
     "_spool",
     "_spool_dir",
     "_spooled_files",
+    "_spooled_files_lock",
     "_strip_diff_fence",
     "_truncate",
 ]
