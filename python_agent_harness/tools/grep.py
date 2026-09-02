@@ -18,6 +18,7 @@ from .filesystem import _git_root, _spool
 
 class Grep(Tool):
     name = "Grep"
+    is_readonly = True
     description = (
         "Search file contents with a regular expression. "
         "Use this for content search; use Glob for filename search. "
