@@ -19,6 +19,7 @@ from .filesystem import _git_root, _natnump, _spool
 
 class GlobTool(Tool):
     name = "Glob"
+    is_readonly = True
     description = (
         "Recursively find files matching a provided glob pattern.\n\n"
         '- Supports glob patterns like "*.md" or "*test*.py".\n'
