@@ -239,3 +239,135 @@ class TestToolRounds(unittest.TestCase):
             ],
         )
         self.assertEqual([m.role for m in loop._salvage_messages()], ["user"])
+
+
+class TestParallelReadonly(unittest.TestCase):
+    """When every call in a round is readonly (Read, Glob, Grep, Skill),
+    the runner dispatches them concurrently via a thread pool: peak
+    concurrency equals the call count, wall time is roughly the slowest
+    tool (not the serial sum), and results are still delivered in
+    original call order."""
+
+    def test_all_readonly_round_runs_in_parallel(self):
+        """Three readonly tools (Read, Grep, Glob) with staggered
+        durations run concurrently: peak concurrency is 3, wall time
+        is ~max(0.5, 0.1, 0.2)=0.5s (not the 0.8s serial sum), and
+        results are delivered in original call order."""
+        session = StaggeredSession({"Read": 0.5, "Grep": 0.1, "Glob": 0.2})
+        session.tools_enabled = False
+        session.client.script = [
+            (
+                "",
+                [
+                    ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                    ToolCall(id="2", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
+                    ToolCall(id="3", name="Glob", arguments='{"pattern": "*.py"}'),
+                ],
+            ),
+            "done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        start = time.monotonic()
+        result = loop.run()
+        elapsed = time.monotonic() - start
+        self.assertEqual(result, "done")
+        self.assertEqual(session.max_active, 3)
+        self.assertLess(elapsed, 0.8)
+        self.assertGreaterEqual(elapsed, 0.45)
+        self.assertEqual(
+            [m.tool_call_id for m in loop.messages if m.role == "tool"],
+            ["1", "2", "3"],
+        )
+        by_id = {m.tool_call_id: m.text() for m in loop.messages if m.role == "tool"}
+        self.assertEqual(by_id["1"], "result of Read")
+        self.assertEqual(by_id["2"], "result of Grep")
+        self.assertEqual(by_id["3"], "result of Glob")
+
+    def test_mixed_round_stays_sequential(self):
+        """A round with any non-readonly tool (Bash) falls back to
+        sequential dispatch: peak concurrency is 1, wall time is the
+        serial sum."""
+        session = StaggeredSession({"Read": 0.3, "Bash": 0.2, "Grep": 0.1})
+        session.tools_enabled = False
+        session.client.script = [
+            (
+                "",
+                [
+                    ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+                    ToolCall(id="2", name="Bash", arguments='{"command": "echo hi"}'),
+                    ToolCall(id="3", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
+                ],
+            ),
+            "done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        start = time.monotonic()
+        result = loop.run()
+        elapsed = time.monotonic() - start
+        self.assertEqual(result, "done")
+        self.assertEqual(session.max_active, 1)
+        self.assertGreaterEqual(elapsed, 0.55)
+
+    def test_single_readonly_tool_runs(self):
+        """A single readonly tool still works (no parallelism needed,
+        but the code path must handle len(calls)==1)."""
+        session = StaggeredSession({"Read": 0.1})
+        session.tools_enabled = False
+        session.client.script = [
+            (
+                "",
+                [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}')],
+            ),
+            "done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        result = loop.run()
+        self.assertEqual(result, "done")
+        self.assertEqual(session.max_active, 1)
+        by_id = {m.tool_call_id: m.text() for m in loop.messages if m.role == "tool"}
+        self.assertEqual(by_id["1"], "result of Read")
+
+    def test_readonly_round_cancel_before_start(self):
+        """Ctrl-C before a readonly round starts must skip all tools."""
+        session = StaggeredSession({"Read": 0.1, "Grep": 0.1})
+        session.tools_enabled = False
+        session.cancel()
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        loop.pending = [
+            ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
+            ToolCall(id="2", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
+        ]
+        loop._run_tool_round()
+        self.assertEqual(session.max_active, 0)
+        self.assertFalse(any(m.role == "tool" for m in loop.messages))
+
+    def test_large_readonly_round_caps_concurrency(self):
+        """A readonly round larger than MAX_PARALLEL_READONLY must not
+        spawn one thread per call: peak concurrency is capped, yet
+        every call still runs and results are delivered in order."""
+        from python_agent_harness.tool_runner import MAX_PARALLEL_READONLY
+
+        n = MAX_PARALLEL_READONLY + 4
+        session = ParallelToolSession(duration=0.1)
+        session.tools_enabled = False
+        session.client.script = [
+            (
+                "",
+                [
+                    ToolCall(id=str(i), name="Read", arguments='{"file_path": "/tmp/a.py"}')
+                    for i in range(n)
+                ],
+            ),
+            "done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="go")])
+        result = loop.run()
+        self.assertEqual(result, "done")
+        # every call ran, but never more than the cap at once
+        self.assertEqual(session.executed_count, n)
+        self.assertEqual(session.max_active, MAX_PARALLEL_READONLY)
+        # results delivered in original call order
+        self.assertEqual(
+            [m.tool_call_id for m in loop.messages if m.role == "tool"],
+            [str(i) for i in range(n)],
+        )
