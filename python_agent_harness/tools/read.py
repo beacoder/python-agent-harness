@@ -18,6 +18,7 @@ from .filesystem import READ_SIZE_LIMIT, _spool
 
 class Read(Tool):
     name = "Read"
+    is_readonly = True
     description = (
         "Read file contents between specified line numbers `start_line` and "
         "`end_line`, with both ends included.\n\n"
