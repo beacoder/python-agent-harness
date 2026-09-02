@@ -101,29 +101,32 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             # (the assistant message is committed to messages and will
             # appear in history once delivered) and show which tools are
             # running, so the display stays alive during long operations.
-            with self.lock:
-                self.stream_text = ""
             names = data if isinstance(data, list) else []
             label = ", ".join(names) if names else "tools"
-            self._current_tool = label
-            self.status = f" ⏳ {label}"
-            self._history_dirty = True
+            with self.lock:
+                self.stream_text = ""
+                self._current_tool = label
+                self.status = f" ⏳ {label}"
+                self._history_dirty = True
         elif kind == "tool_running":
             # Per-tool notification: update the current tool name shown
             # beside the spinner as each sync tool starts executing.
             name = data if isinstance(data, str) else ""
-            self._current_tool = name
-            self.status = f" ⏳ {name}" if name else " ⏳ tools"
+            with self.lock:
+                self._current_tool = name
+                self.status = f" ⏳ {name}" if name else " ⏳ tools"
         elif kind == "tools":
-            self._current_tool = ""
-            self.status = " running tools"
             # tool round finished: session.last_messages now contains the
             # tool-call + result rows — rebuild the cached history so
             # they show up live instead of after the run ends
-            self._history_dirty = True
+            with self.lock:
+                self._current_tool = ""
+                self.status = " running tools"
+                self._history_dirty = True
         elif kind == "compact":
-            self.status = " compacted"
-            self._history_dirty = True
+            with self.lock:
+                self.status = " compacted"
+                self._history_dirty = True
         elif kind == "retry":
             # A connection error mid-stream: the client discarded the
             # partial response and is retrying on a fresh connection —
@@ -131,21 +134,26 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             # doesn't duplicate it on screen.
             with self.lock:
                 self.stream_text = ""
-            self.status = " connection lost — retrying"
+                self.status = " connection lost — retrying"
         elif kind == "todos":
             # TodoWrite updated the task list: the cached history rows
             # (which include the Todos panel) must be rebuilt
-            self._history_dirty = True
+            with self.lock:
+                self._history_dirty = True
         elif kind == "error":
-            self.status = " error"
+            with self.lock:
+                self.status = " error"
         elif kind == "save-error":
-            self.status = " auto-save failed"
+            with self.lock:
+                self.status = " auto-save failed"
         else:
-            self.status = " running"
+            with self.lock:
+                self.status = " running"
         self._data_event.set()
 
     def _on_log(self, msg: str) -> None:
-        self.status = f" {msg}"
+        with self.lock:
+            self.status = f" {msg}"
 
     # ------------------------------------------------------------------
     # main loop
