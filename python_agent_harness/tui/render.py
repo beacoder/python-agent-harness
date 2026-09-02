@@ -329,10 +329,16 @@ class RenderMixin:
         rebuild (and re-parse Markdown for) the whole conversation every
         frame — that cost is what made the scroll lag behind the text.
         """
-        if self._history_dirty or self._history_cache is None:
-            self._history_cache = self._build_history_rows()
-            self._history_dirty = False
-        return list(self._history_cache)
+        with self.lock:
+            dirty = self._history_dirty
+            cache = self._history_cache
+        if dirty or cache is None:
+            built = self._build_history_rows()
+            with self.lock:
+                self._history_cache = built
+                self._history_dirty = False
+            return list(built)
+        return list(cache)
 
     def _stream_row(self) -> Text | None:
         """Live stream row (cheap Text, tail-capped)."""
@@ -499,11 +505,19 @@ class RenderMixin:
         if self.agent_running:
             frame = SPINNER_FRAMES[int(time.time() * 10) % len(SPINNER_FRAMES)]
             t.append(f" {frame}", style="bold cyan")
-            if self._current_tool:
-                t.append(f" {self._current_tool}", style="bold cyan")
+            with self.lock:
+                tool = self._current_tool
+                status = self.status
+            if tool:
+                t.append(f" {tool}", style="bold cyan")
         elif self.question is not None:
             t.append(" ❓", style="yellow")
-        t.append(self._fit_status(cell_len(str(t)), self.status), style=self._status_style())
+            with self.lock:
+                status = self.status
+        else:
+            with self.lock:
+                status = self.status
+        t.append(self._fit_status(cell_len(str(t)), status), style=self._status_style())
         return t
 
     def _fit_status(self, used: int, msg: str) -> str:
@@ -527,7 +541,8 @@ class RenderMixin:
 
     def _status_style(self) -> str:
         """Status-bar color by state: errors red, activity cyan, idle dim."""
-        s = self.status
+        with self.lock:
+            s = self.status
         if "error" in s or "failed" in s:
             return "bold red"
         if " ⏳" in s or " running" in s or "retrying" in s:
