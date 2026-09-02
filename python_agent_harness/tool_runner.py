@@ -6,12 +6,20 @@ state (``messages`` / ``pending`` / ``info``) through the loop
 reference.  Tool calls are always executed and delivered via the
 loop's ``_execute_tool_call`` / ``_deliver_tool_result`` methods so
 subclass or test overrides of those methods keep working.
+
+When every call in a round is readonly (``Tool.is_readonly = True``),
+the round is dispatched concurrently via a thread pool: readonly tools
+only read state, so none can depend on another's side effects, and
+running them in parallel reduces latency for read-heavy rounds (e.g.
+the model reading several files at once).  Mixed rounds (any
+non-readonly tool) fall back to the original sequential dispatch.
 """
 
 from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from . import config
@@ -21,6 +29,13 @@ from .tools.base import PendingToolResult
 NIL_RESULT_PLACEHOLDER = (
     "Error: tool produced no result (it may have been interrupted or failed to return)."
 )
+
+# Upper bound on threads spawned for a parallel readonly round.  The
+# round size is driven by model output (a single response can emit
+# dozens of Read/Grep calls), so cap peak concurrency to avoid a
+# thread explosion; the pool still drains every call, just fewer at a
+# time.
+MAX_PARALLEL_READONLY = 8
 
 
 def sanitize_tool_result(result: object) -> str:
@@ -106,12 +121,22 @@ class ToolRunner:
         afterwards, again in original call order.  Delivery happens
         later, in original tool-call order, by the caller.
 
+        When every call in the round is readonly (``Tool.is_readonly``),
+        the round is dispatched concurrently via a thread pool:
+        readonly tools only read state, so none can depend on
+        another's side effects, and running them in parallel reduces
+        latency for read-heavy rounds (e.g. the model reading several
+        files at once).  Mixed rounds fall back to sequential dispatch.
+
         A cancel landing before a call starts skips it (tools have side
         effects); a call already running — or an async tool already
         dispatched — cannot be stopped, but its result stays local to
         the (dead) run.
         """
         loop = self.loop
+        if calls and self._all_readonly(calls):
+            self._run_parallel(calls, results)
+            return
         async_calls: list[tuple[ToolCall, PendingToolResult]] = []
         for p in calls:
             # A cancel landing while a call is still QUEUED must skip
@@ -150,6 +175,63 @@ class ToolRunner:
             else:
                 p.elapsed = time.monotonic() - start
                 results[p.id] = sanitize_tool_result(result)
+
+    def _all_readonly(self, calls: list[ToolCall]) -> bool:
+        """True when every call's tool is marked ``is_readonly``."""
+        loop = self.loop
+        for p in calls:
+            tool = loop.session.registry.get(p.name)
+            if tool is None or not tool.is_readonly:
+                return False
+        return True
+
+    def _run_parallel(self, calls: list[ToolCall], results: dict[str, str]) -> None:
+        """Dispatch all calls concurrently via a thread pool.
+
+        Used only when every call is readonly.  Each tool runs in its
+        own thread; results are collected in original call order.
+        Cancel is checked before dispatching (a call that has not
+        started yet is skipped); a call already running cannot be
+        stopped, but its result stays local to the (dead) run.
+        """
+        loop = self.loop
+        futures: dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=min(len(calls), MAX_PARALLEL_READONLY)) as pool:
+            for p in calls:
+                if loop._is_cancelled():
+                    results[p.id] = "Error: tool call cancelled (user aborted the run)."
+                    continue
+                if loop.top_level:
+                    loop.session.notify("tool_running", p.name)
+                futures[p.id] = pool.submit(self._exec_one, p)
+            for p in calls:
+                fut = futures.get(p.id)
+                if fut is None:
+                    continue
+                try:
+                    result = fut.result()
+                except Exception as e:  # noqa: BLE001 - containment boundary
+                    results[p.id] = f"Error: tool {p.name!r} crashed during execution — {e}"
+                else:
+                    if isinstance(result, PendingToolResult):
+                        result = result.wait()
+                    results[p.id] = sanitize_tool_result(result)
+
+    def _exec_one(self, p: ToolCall) -> str | PendingToolResult:
+        """Execute one tool call and return its raw result.
+
+        Thin wrapper around ``loop._execute_tool_call`` that records
+        elapsed time on the call object.  Used by ``_run_parallel``.
+        """
+        loop = self.loop
+        start = time.monotonic()
+        try:
+            result = loop._execute_tool_call(p)
+        except Exception as e:  # noqa: BLE001 - containment boundary
+            p.elapsed = time.monotonic() - start
+            return f"Error: tool {p.name!r} crashed during execution — {e}"
+        p.elapsed = time.monotonic() - start
+        return result
 
     def execute_pending(self) -> None:
         """TOOL state: run the round's pending tool calls.
