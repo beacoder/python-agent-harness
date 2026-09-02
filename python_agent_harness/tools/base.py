@@ -91,6 +91,11 @@ class ToolContext:
 class Tool(ABC):
     name: str = ""
     description: str = ""
+    # True for tools that only read state (Read, Glob, Grep, Skill):
+    # when EVERY call in a round is readonly, the runner dispatches
+    # them concurrently via a thread pool instead of one-at-a-time,
+    # since none can depend on another's side effects.
+    is_readonly: bool = False
     # NB: Tool is an ABC, not a dataclass, so this is a plain class-level
     # default (never mutated in place — every concrete tool overrides it
     # with its own schema).  It must be a real dict: a dataclasses.field()
