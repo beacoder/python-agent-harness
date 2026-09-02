@@ -104,7 +104,11 @@ class TestAgentLoop(unittest.TestCase):
         """Sync tools in one round — everything except the async
         Bash/Agent — execute ONE AT A TIME in model-emitted order
         (gptel-style): peak concurrency stays 1 and the round takes
-        ~the sum of the durations, not one duration."""
+        ~the sum of the durations, not one duration.
+
+        Uses a mix of readonly (Read, Grep) and non-readonly
+        (TodoWrite) tools so the round takes the sequential path
+        (a non-readonly tool in the round forces sequential dispatch)."""
         session = ParallelToolSession(duration=0.2)
         session.tools_enabled = False
         session.client.script = [
@@ -112,8 +116,8 @@ class TestAgentLoop(unittest.TestCase):
                 "",
                 [
                     ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}'),
-                    ToolCall(id="2", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
-                    ToolCall(id="3", name="Read", arguments='{"file_path": "/tmp/y.py"}'),
+                    ToolCall(id="2", name="TodoWrite", arguments='{"todos": []}'),
+                    ToolCall(id="3", name="Grep", arguments='{"regex": "x", "path": "/tmp"}'),
                 ],
             ),
             "all done",
@@ -131,7 +135,7 @@ class TestAgentLoop(unittest.TestCase):
         tool_rows = [m.text() for m in loop.messages if m.role == "tool"]
         self.assertEqual(
             tool_rows,
-            ["result of Read", "result of Grep", "result of Read"],
+            ["result of Read", "result of TodoWrite", "result of Grep"],
         )
 
     def test_async_bash_overlaps_with_sequential_sync_tools(self):
@@ -237,7 +241,10 @@ class TestAgentLoop(unittest.TestCase):
         call 1 blocks, the cancel arrives while it runs, and the
         not-yet-started call 2 is skipped by the sequential loop's
         per-call pre-check (deterministic counterpart of the salvage
-        tests' 2-3 range)."""
+        tests' 2-3 range).
+
+        Uses a non-readonly tool (TodoWrite) so the round takes the
+        sequential path (readonly-only rounds dispatch in parallel)."""
         session = ParallelToolSession(duration=None)
         session.tools_enabled = False
         session.client.script = [
@@ -245,7 +252,7 @@ class TestAgentLoop(unittest.TestCase):
                 "",
                 [
                     ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/a.py"}'),
-                    ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/b.py"}'),
+                    ToolCall(id="2", name="TodoWrite", arguments='{"todos": []}'),
                 ],
             ),
         ]
@@ -270,12 +277,14 @@ class TestAgentLoop(unittest.TestCase):
     def test_all_sync_calls_run_sequentially(self):
         """Every sync tool call in a round executes (nothing is
         dropped), one at a time in call order: peak concurrency stays
-        1 and the round takes ~the sum of the durations."""
+        1 and the round takes ~the sum of the durations.
+
+        Uses a non-readonly tool (TodoWrite) so the round takes the
+        sequential path (readonly-only rounds dispatch in parallel)."""
         session = ParallelToolSession(duration=0.15)
         session.tools_enabled = False
         calls = [
-            ToolCall(id=str(i), name="Read", arguments='{"file_path": "/tmp/x.py"}')
-            for i in range(1, 9)
+            ToolCall(id=str(i), name="TodoWrite", arguments='{"todos": []}') for i in range(1, 9)
         ]
         session.client.script = [("", calls), "done"]
         loop = AgentLoop(session, messages=[Message(role="user", content="go")])
