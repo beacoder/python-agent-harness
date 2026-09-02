@@ -1,7 +1,4 @@
-"""Configuration defaults for python-agent-harness.
-
-Mirrors the defcustom defaults of the Emacs gptel-agent-harness.
-"""
+"""Configuration defaults for python-agent-harness."""
 
 from __future__ import annotations
 
@@ -130,6 +127,14 @@ TEMPERATURE = 0.0
 API_RETRY_MAX = 3  # max attempts per request (initial + retries)
 API_RETRY_BASE_DELAY = 1.0  # base backoff (seconds), doubled per attempt
 API_RETRY_MAX_DELAY = 30.0  # per-attempt backoff cap (seconds)
+
+# HTTP status codes that should trigger auth-refresh (key re-read from
+# config/env) instead of being treated as transient retryable errors.
+# 401 is always included (standard "Unauthorized").  Some API gateways
+# return 502 or other 5xx codes when the backend auth token has expired
+# rather than a proper 401 — add those here so the client refreshes the
+# key instead of pointlessly retrying the same expired credential.
+AUTH_REFRESH_STATUS_CODES: list[int] = [401, 502]
 
 # ---- tool execution ----------------------------------------------------------
 SUBAGENT_MAX_ROUNDS = 60
