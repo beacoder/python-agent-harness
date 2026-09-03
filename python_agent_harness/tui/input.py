@@ -36,6 +36,7 @@ SLASH_COMMANDS = [
     "/restore",
     "/clear",
     "/model",
+    "/agent",
     "/exit",
 ]
 
