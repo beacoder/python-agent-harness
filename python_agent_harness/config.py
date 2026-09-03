@@ -239,6 +239,7 @@ CONFIG_TEMPLATE = """\
     "reasoning_effort": null,
     "stream": null
   }},
+  "default_agent": null,
   "paths": {{
     "_comment": "Optional overrides for context and skill directories. Absolute paths or ~ expansion supported.",
     "context_path": null,
@@ -456,6 +457,23 @@ def load_models_config(path: str | os.PathLike | None = None) -> dict[str, dict]
             raise ValueError(f"config file {_config_path(path)}: models.{name} must be an object")
         profiles[name] = val
     return profiles
+
+
+def load_default_agent(path: str | os.PathLike | None = None) -> str | None:
+    """Load the default agent name from the config file's ``default_agent`` key.
+
+    Returns the agent name (str) when set, or None when unset (meaning
+    use the built-in ``default`` agent, i.e. ``prompts/agent.md``).
+    """
+    data = _read_config(path)
+    val = data.get("default_agent")
+    if val is None:
+        return None
+    if not isinstance(val, str) or not val.strip():
+        raise ValueError(
+            f"config file {_config_path(path)}: default_agent must be a non-empty string"
+        )
+    return val.strip()
 
 
 def mask_secret(value: str | None) -> str:
