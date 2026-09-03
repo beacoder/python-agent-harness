@@ -791,7 +791,7 @@ class Session:
             self.last_messages = compacted_messages(summary, user_prompt_texts(messages))
             self.auto_save(self.last_messages, self.system_prompt)
             self.notify("compact")
-            return True, "Buffer compacted successfully."
+            return True, "Session compacted successfully."
         except Exception as e:  # noqa: BLE001 - compaction failure is non-fatal
             self.log(f"compaction failed: {e}")
             return False, f"Compaction failed: {e}"
