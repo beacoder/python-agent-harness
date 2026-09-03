@@ -53,7 +53,6 @@ class TestSessionCommandPrepare(unittest.TestCase):
             name="explain",
             prompt_file="commands/explain.md",
             kickoff="Proceed with the task described in your instructions.\n",
-            buffer_name="*gptel-agent-explain*",
             status=" Running explain...",
         )
         with tempfile.TemporaryDirectory() as d:
