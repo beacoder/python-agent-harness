@@ -70,6 +70,10 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         # wall-clock start of the current run, used to report the total
         # time spent once the run finishes
         self._run_start: float | None = None
+        # Discovered agent profiles (name -> prompt file path) from the
+        # agents/ directory; refreshed on each /agent call so files
+        # added at runtime are picked up.
+        self._discovered_agents: dict[str, str] = {}
         self.prompt_session = _make_prompt_session(
             FileHistory(_history_path()),
             SlashCompleter(lambda: str(self.session.project_dir)),
@@ -163,7 +167,7 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             Panel(
                 Text.from_markup(
                     "[bold]Commands:[/bold] /plan /build /init /review /explain "
-                    "/compact /save /summary /sessions /restore /help /exit\n\n"
+                    "/compact /save /summary /sessions /restore /model /agent /help /exit\n\n"
                     "Ctrl-C cancels the current execution (the app stays open); "
                     "Ctrl-D or /exit quits.\n"
                     "Type a message — Enter for a new line, Esc then Enter "
