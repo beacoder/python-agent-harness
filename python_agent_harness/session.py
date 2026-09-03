@@ -89,6 +89,7 @@ class Session:
         mcp: MCPConfig | None = None,
         mcp_manager: MCPManager | None = None,
         model_profiles: dict[str, dict] | None = None,
+        default_agent: str | None = None,
         llm_settings: dict | None = None,
         config_path: str | None = None,
     ) -> None:
@@ -183,6 +184,13 @@ class Session:
         # model profile's unset keys inherit these values, so switching
         # between profiles never drifts settings from earlier switches.
         self.llm_settings: dict = dict(llm_settings) if llm_settings else {}
+        # Default agent name: when set, the session starts with this
+        # agent's prompt instead of the built-in default (agent.md).
+        # ``/agent default`` restores the built-in, not this setting.
+        self.default_agent = default_agent
+        # Original system prompt assembled at session start — used by
+        # /agent default to restore the original agent.md prompt.
+        self._default_system_prompt = system_prompt
         # Monotonic cancel identity: cancel() bumps this counter, so a
         # worker from a cancelled run can tell it was cancelled even
         # after the next run clears the shared event.
@@ -707,6 +715,38 @@ class Session:
         self.reasoning_effort = merged["reasoning_effort"]
         self.stream = merged["stream"]
         return True, f"switched to {name} ({self.model})"
+
+    def switch_agent(self, name: str) -> tuple[bool, str]:
+        """Switch the main agent's system prompt to a named agent.
+
+        Agent prompt files are discovered from the ``agents/`` package
+        directory (see ``python_agent_harness.agents.discover_agents``).
+        The pseudo-name ``default`` restores the original system prompt
+        saved at session construction.  Returns (success, message).
+        """
+        if name == "default":
+            self.system_prompt = self._default_system_prompt
+            self.store.system_prompt = self._default_system_prompt
+            return True, "switched to default agent"
+        from .agents import discover_agents
+
+        agents = discover_agents()
+        prompt_file = agents.get(name)
+        if prompt_file is None:
+            available = ", ".join(sorted(["default", *agents.keys()]))
+            return False, f"unknown agent: {name} (available: {available})"
+        from .prompts import assemble_agent_prompt, load_agent_prompt
+
+        agent_prompt = load_agent_prompt(prompt_file, skill_dir=self._skill_dir)
+        if agent_prompt is None:
+            return False, f"agent {name}: prompt file not found or empty: {prompt_file}"
+        self.system_prompt = assemble_agent_prompt(
+            self.project_dir,
+            agent_prompt,
+            context_path=self._configured_context_path,
+        )
+        self.store.system_prompt = self.system_prompt
+        return True, f"switched to {name}"
 
     # ------------------------------------------------------------------
     # direct commands: compact / summary (no agent loop)
