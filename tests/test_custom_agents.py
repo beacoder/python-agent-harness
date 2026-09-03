@@ -1,4 +1,4 @@
-"""Tests for the custom agent feature: discovery from agents/ directory,
+"""Tests for the custom agent feature: discovery from prompts/agents/ directory,
 runtime switching via Session.switch_agent, and default_agent config."""
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def _make_session(
 
 
 class TestDiscoverAgents(unittest.TestCase):
-    """Agent discovery from the agents/ directory."""
+    """Agent discovery from the prompts/agents/ directory."""
 
     def test_reviewer_agent_discovered(self):
         """The bundled reviewer.md agent is discovered by name."""
