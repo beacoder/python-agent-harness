@@ -16,7 +16,6 @@ from prompt_toolkit import PromptSession
 from rich.console import Console
 from rich.live import Live
 
-from ..prompts import discover_agents
 from .. import config
 from ..commands import find_command
 from ..models import Message
@@ -27,6 +26,7 @@ from ..persistence import (
     title_from_filename,
     unescape_role_header,
 )
+from ..prompts import discover_agents
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -492,7 +492,7 @@ class CommandMixin:
             self.console.print(msg)
 
     def _refresh_agent_profiles(self) -> None:
-        """Re-discover agent prompt files from the agents/ directory.
+        """Re-discover agent prompt files from the prompts/agents/ directory.
 
         Agent files may be added/removed while the TUI is running;
         this re-scans so new agents show up on the next /agent call.
@@ -501,7 +501,7 @@ class CommandMixin:
 
     def _agent_list_names(self) -> list[str]:
         """Names shown by /agent: ``default`` followed by every
-        discovered agent from the agents/ directory."""
+        discovered agent from the prompts/agents/ directory."""
         return ["default", *sorted(self._discovered_agents.keys())]
 
     def _agent_switch_by_name(self, name: str) -> None:
@@ -521,7 +521,7 @@ class CommandMixin:
             self.console.print("\n[bold cyan]Available agent profiles:[/bold cyan]")
             if not self._discovered_agents:
                 self.console.print(
-                    "[yellow]  (none found — add .md files to the agents/ directory to use /agent)[/yellow]"
+                    "[yellow]  (none found — add .md files to the prompts/agents/ directory to use /agent)[/yellow]"
                 )
             for idx, name in enumerate(all_names, 1):
                 if name == "default":
