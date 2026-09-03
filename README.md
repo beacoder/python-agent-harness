@@ -76,7 +76,7 @@ Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_
 - **Focused TUI** — a Rich-based interface with a pinned status bar, Todos panel, inline red/green diff rendering for `Edit` and `Write`, and a `prompt_toolkit` editor with history and completion. `Esc+Enter` submits, `Ctrl-D` quits, and `Ctrl-C` cancels without leaving the application.
 - **MCP support** — optional MCP integration through the `[mcp]` extra. MCP tools become ordinary agent tools such as `mcp__<server>__<tool>`. Supports `stdio`, `streamable-http`, and `sse` transports.
 - **Slash commands** — built-in `/init`, `/review`, `/explain`, and other commands, plus custom commands loaded from `prompts/commands/*.md`.
-- **Custom agents** — switch the main agent's system prompt at runtime with `/agent`. Agent prompt files live in `agents/*.md` (like custom commands in `prompts/commands/`). Use `default_agent` in the config file to start sessions with a specific agent.
+- **Custom agents** — switch the main agent's system prompt at runtime with `/agent`. Agent prompt files live in `prompts/agents/*.md` (like custom commands in `prompts/commands/`). Use `default_agent` in the config file to start sessions with a specific agent.
 
 ## Inspired by opencode
 
@@ -169,7 +169,7 @@ All LLM settings live in a single JSON configuration file. Environment variables
 - **`models`** — named LLM profiles for runtime switching with `/model`. A profile is a partial settings dictionary; unset keys inherit from the main `llm`. `default` restores the main LLM configuration.
 - **`context_windows`** — optional per-model context-window overrides (tokens). Keys are model names or substrings (e.g., `deepseek-v4`); matched in file order, first match wins. Overrides the built-in `CONTEXT_WINDOWS` table in `config.py`.
 - **`subagent_llm`** — LLM configuration for `Agent` tool requests. Unset values inherit from the main `llm`. Set `profile` to reuse a profile from `models`. Precedence is: profile settings > explicit `subagent_llm` settings > main `llm` > environment variables.
-- **`default_agent`** — name of the agent to use at session start (instead of the built-in `agent.md`). The agent must exist as a `.md` file in the `agents/` directory. When unset or `null`, the built-in default agent is used. Use `/agent default` in the TUI to switch back to the built-in at any time.
+- **`default_agent`** — name of the agent to use at session start (instead of the built-in `agent.md`). The agent must exist as a `.md` file in the `prompts/agents/` directory. When unset or `null`, the built-in default agent is used. Use `/agent default` in the TUI to switch back to the built-in at any time.
 - **`paths.context_path` / `paths.skill_path`** — locations from which to load context files and skills. When unset, the project-local `<project>/contexts` and `<project>/skills` directories are used.
 - **`mcp.servers`** — MCP server configuration. Requires the `[mcp]` extra. Each server supports `transport`, `command`, `args`, `env`, `url`, `headers`, `parallel`, `timeout`, and `enabled`.
 - **Configuration precedence** — code defaults < config file < `OPENAI_*` environment variables. Sub-agent settings also support `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`).
@@ -206,12 +206,12 @@ Custom commands from `prompts/commands/*.md` are registered as slash commands as
 
 ### Custom agents
 
-Agent prompt files are markdown files (`.md`) placed in the `agents/` directory. Each file becomes a switchable agent profile available via the `/agent` TUI command. The file's stem (e.g., `reviewer.md` → `reviewer`) is the agent name; an optional YAML frontmatter block (`name: ...`) can override it. The file body is the agent's system prompt — project context and task-completion rules are still prepended automatically.
+Agent prompt files are markdown files (`.md`) placed in the `prompts/agents/` directory. Each file becomes a switchable agent profile available via the `/agent` TUI command. The file's stem (e.g., `reviewer.md` → `reviewer`) is the agent name; an optional YAML frontmatter block (`name: ...`) can override it. The file body is the agent's system prompt — project context and task-completion rules are still prepended automatically.
 
 ```sh
 # Create a custom agent
 echo 'You are a code reviewer. Focus on bugs, style, and security.' \
-  > python_agent_harness/agents/reviewer.md
+  > python_agent_harness/prompts/agents/reviewer.md
 ```
 
 ```
@@ -253,7 +253,7 @@ python_agent_harness/
 ├── session.py         # Session wiring hub + MCP lifecycle
 ├── subagent.py        # Sub-agent runner + error containment
 ├── commands.py        # Init/review/custom command definitions
-├── agents/            # Custom agent prompt files (*.md)
+├── prompts/agents/    # Custom agent prompt files (*.md)
 ├── cli.py             # CLI entry points
 ├── tui/               # Rich + prompt_toolkit TUI (package)
 ├── diffrender.py      # Unified diff generation + Rich rendering
