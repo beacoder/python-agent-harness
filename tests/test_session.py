@@ -630,7 +630,7 @@ class TestCompactConversation(unittest.TestCase):
         ]
         ok, msg = session.compact_conversation()
         self.assertTrue(ok)
-        self.assertEqual(msg, "Buffer compacted successfully.")
+        self.assertEqual(msg, "Session compacted successfully.")
         self.assertEqual([m.role for m in session.last_messages], ["user", "user", "user", "user"])
         self.assertTrue(session.last_messages[0].text().startswith("**[Compacted Summary]**"))
         self.assertEqual(
