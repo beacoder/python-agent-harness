@@ -720,7 +720,7 @@ class Session:
         """Switch the main agent's system prompt to a named agent.
 
         Agent prompt files are discovered from the ``agents/`` package
-        directory (see ``python_agent_harness.agents.discover_agents``).
+        directory (see ``python_agent_harness.prompts.discover_agents``).
         The pseudo-name ``default`` restores the original system prompt
         saved at session construction.  Returns (success, message).
         """
