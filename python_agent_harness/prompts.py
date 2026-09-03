@@ -22,7 +22,6 @@ from typing import Any
 from . import config
 from .models import Message
 
-
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 AGENTS_DIR = PROMPTS_DIR / "agents"
 
