@@ -146,7 +146,10 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
                 self._history_dirty = True
         elif kind == "error":
             with self.lock:
-                self.status = " error"
+                # the detail (e.g. "Error: 429 no quota") replaces the
+                # old bare "error" so the user sees WHAT failed; the
+                # red styling comes from "error" appearing in the text
+                self.status = f" {data}" if isinstance(data, str) and data else " error"
         elif kind == "save-error":
             with self.lock:
                 self.status = " auto-save failed"

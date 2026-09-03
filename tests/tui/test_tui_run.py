@@ -126,6 +126,20 @@ class TestTuiRun(unittest.TestCase):
         tui._on_notify("save-error")
         self.assertEqual(tui.status, " auto-save failed")
 
+    def test_on_notify_error_with_detail(self):
+        """An API error's detail (e.g. "Error: 429 no quota") is shown
+        in the status bar instead of a bare "error"."""
+        tui, _ = make_tui()
+        tui._on_notify("error", "Error: API error 429: no quota")
+        self.assertEqual(tui.status, " Error: API error 429: no quota")
+
+    def test_on_notify_error_without_detail(self):
+        """A notify("error") without data still shows the bare "error"
+        status (backward compatibility)."""
+        tui, _ = make_tui()
+        tui._on_notify("error")
+        self.assertEqual(tui.status, " error")
+
     def test_on_notify_default_status(self):
         tui, _ = make_tui()
         tui._on_notify("some-other-kind")

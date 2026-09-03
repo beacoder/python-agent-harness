@@ -493,7 +493,10 @@ class AgentLoop:
                 return  # cancelled (Ctrl-C), not an error
             self.error = f"Error: {e}"
             self.info["error"] = self.error
-            session.notify("error")
+            # the detail travels with the notification so the TUI can
+            # show WHAT failed (e.g. "no quota") in the status bar
+            # instead of a bare red "error"
+            session.notify("error", self.error)
             return
 
         if self._is_cancelled():

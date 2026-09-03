@@ -41,6 +41,27 @@ class TestAgentLoop(unittest.TestCase):
         result = loop.run()
         self.assertEqual(result, "hello there")
 
+    def test_api_error_notification_carries_detail(self):
+        """The "error" notification carries the error text so the TUI can
+        show WHAT failed (e.g. "no quota") in the status bar, not a bare
+        "error"."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        notified: list[tuple[str, object]] = []
+        session.notify_fn = lambda kind, data=None: notified.append((kind, data))
+
+        def quota_boom(*args, **kwargs):
+            raise RuntimeError("API error 429: no quota")
+
+        session.client.chat = quota_boom
+        loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
+        result = loop.run()
+        self.assertEqual(result, "Error: API error 429: no quota")
+        error_notifications = [(k, d) for k, d in notified if k == "error"]
+        self.assertEqual(len(error_notifications), 1)
+        kind, data = error_notifications[0]
+        self.assertEqual(data, "Error: API error 429: no quota")
+
     def test_subagent_budget_exhausted_returns_last_real_text(self):
         """Round-budget exhaustion must surface the last real assistant
         text, never a trailing tool result or an empty string."""
