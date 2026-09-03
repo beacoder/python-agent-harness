@@ -22,14 +22,13 @@ from .mcp.manager import MCPManager
 from .models import AgentMode
 from .persistence import SessionPersistence, escape_role_headers
 from .planmode import PlanMode
-from .prompts import index_skills
+from .prompts import discover_agents, index_skills
 from .subagent import run_subagent
 from .token_estimator import TokenCalibrator
 from .tools import Registry, ToolContext
 from .tools.base import PendingToolResult
 from .tools.filesystem import cleanup_spooled_files
 from .tools.mcp import mcp_tools_from_manager
-from .prompts import discover_agents
 
 
 def find_skill_dir(project_dir: str, configured: str | None = None) -> str | None:
