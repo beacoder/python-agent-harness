@@ -16,6 +16,7 @@ from prompt_toolkit import PromptSession
 from rich.console import Console
 from rich.live import Live
 
+from ..prompts import discover_agents
 from .. import config
 from ..commands import find_command
 from ..models import Message
@@ -496,8 +497,6 @@ class CommandMixin:
         Agent files may be added/removed while the TUI is running;
         this re-scans so new agents show up on the next /agent call.
         """
-        from ..agents import discover_agents
-
         self._discovered_agents = discover_agents()
 
     def _agent_list_names(self) -> list[str]:
