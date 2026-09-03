@@ -156,6 +156,11 @@ class Session:
         # active clones are tracked so cancel()/close() can reach them.
         self._subagent_clients_lock = threading.Lock()
         self._active_subagent_clients: list[Client] = []
+        # guards _skill_index_cache: parallel readonly tool threads
+        # (e.g. multiple Skill calls in one round) can hit the lazy
+        # cache build simultaneously — double-checked locking prevents
+        # redundant filesystem scans and the data race on the cache tuple
+        self._skill_index_lock = threading.Lock()
         self.store = SessionPersistence(
             project_dir=project_dir,
             model=model,
@@ -377,10 +382,18 @@ class Session:
         return hit[0] if hit else None
 
     def _skill_index(self) -> dict[str, tuple[str, str]]:
-        """Return the cached name -> (path, description) skill index."""
+        """Return the cached name -> (path, description) skill index.
+
+        Thread-safe via double-checked locking: parallel readonly tool
+        threads (e.g. multiple Skill calls in one round) can reach the
+        lazy cache build simultaneously — the lock ensures only one
+        thread scans the filesystem and writes the cache tuple.
+        """
         key = self._skill_dir
         if self._skill_index_cache is None or self._skill_index_cache[0] != key:
-            self._skill_index_cache = (key, index_skills(key))
+            with self._skill_index_lock:
+                if self._skill_index_cache is None or self._skill_index_cache[0] != key:
+                    self._skill_index_cache = (key, index_skills(key))
         return self._skill_index_cache[1]
 
     def _find_skill_dir(self) -> str | None:
