@@ -1,7 +1,7 @@
 """Prompt loading and assembly.
 
 Ported from gptel-agent-harness.el: loads bundled prompt files
-(agent/subagent/commands), strips YAML frontmatter, discovers skills
+(agent/subagent/commands/custom agents), strips YAML frontmatter, discovers skills
 for the {{SKILLS}} placeholder, assembles the effective system prompt
 from project context files + task-completion rules + agent prompt, and
 provides the compaction flow helpers (summarize the conversation with
