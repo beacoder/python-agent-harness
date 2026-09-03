@@ -206,29 +206,7 @@ Custom commands from `prompts/commands/*.md` are registered as slash commands as
 
 ### Custom agents
 
-Agent prompt files are markdown files (`.md`) placed in the `prompts/agents/` directory. Each file becomes a switchable agent profile available via the `/agent` TUI command. The file's stem (e.g., `reviewer.md` → `reviewer`) is the agent name; an optional YAML frontmatter block (`name: ...`) can override it. The file body is the agent's system prompt — project context and task-completion rules are still prepended automatically.
-
-The name `default` is reserved for the built-in `agent.md` prompt: an agent file claiming it (via stem or frontmatter) is ignored by discovery. If `default_agent` in the config file names an unknown agent, the session starts with the built-in prompt and a warning is shown in the TUI banner at startup.
-
-```sh
-# Create a custom agent
-echo 'You are a code reviewer. Focus on bugs, style, and security.' \
-  > python_agent_harness/prompts/agents/reviewer.md
-```
-
-```
-/agent              # list available agents, pick by number or name
-/agent reviewer     # switch to the reviewer agent
-/agent default      # switch back to the built-in agent.md
-```
-
-Set `default_agent` in the config file to start every session with a specific agent:
-
-```json
-{
-  "default_agent": "reviewer"
-}
-```
+Agent prompt files are markdown files (`.md`) placed in the `prompts/agents/` directory. Each file becomes a switchable agent profile available via the `/agent` TUI command. 
 
 #### Commands vs Agents
 
