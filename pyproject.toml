@@ -49,7 +49,7 @@ python-agent-harness = "python_agent_harness.cli:main"
 include = ["python_agent_harness*"]
 
 [tool.setuptools.package-data]
-python_agent_harness = ["prompts/*.md", "prompts/commands/*.md"]
+python_agent_harness = ["prompts/*.md", "prompts/commands/*.md", "prompts/agents/*.md"]
 
 [tool.ruff]
 line-length = 100
