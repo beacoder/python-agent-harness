@@ -29,6 +29,7 @@ from .tools import Registry, ToolContext
 from .tools.base import PendingToolResult
 from .tools.filesystem import cleanup_spooled_files
 from .tools.mcp import mcp_tools_from_manager
+from .prompts import discover_agents
 
 
 def find_skill_dir(project_dir: str, configured: str | None = None) -> str | None:
@@ -728,7 +729,6 @@ class Session:
             self.system_prompt = self._default_system_prompt
             self.store.system_prompt = self._default_system_prompt
             return True, "switched to default agent"
-        from .agents import discover_agents
 
         agents = discover_agents()
         prompt_file = agents.get(name)
