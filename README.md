@@ -76,7 +76,7 @@ Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_
 - **Focused TUI** — a Rich-based interface with a pinned status bar, Todos panel, inline red/green diff rendering for `Edit` and `Write`, and a `prompt_toolkit` editor with history and completion. `Esc+Enter` submits, `Ctrl-D` quits, and `Ctrl-C` cancels without leaving the application.
 - **MCP support** — optional MCP integration through the `[mcp]` extra. MCP tools become ordinary agent tools such as `mcp__<server>__<tool>`. Supports `stdio`, `streamable-http`, and `sse` transports.
 - **Slash commands** — built-in `/init`, `/review`, `/explain`, and other commands, plus custom commands loaded from `prompts/commands/*.md`.
-- **Custom agents** — switch the main agent's system prompt at runtime with `/agent`. Agent prompt files live in `prompts/agents/*.md` (like custom commands in `prompts/commands/`). Use `default_agent` in the config file to start sessions with a specific agent.
+- **Custom agents** — switch the main agent's system prompt at runtime with `/agent`. Agent prompt files live in `prompts/agents/*.md`. Use `default_agent` in the config file to start sessions with a specific agent.
 
 ## Inspired by opencode
 
@@ -207,6 +207,8 @@ Custom commands from `prompts/commands/*.md` are registered as slash commands as
 ### Custom agents
 
 Agent prompt files are markdown files (`.md`) placed in the `prompts/agents/` directory. Each file becomes a switchable agent profile available via the `/agent` TUI command. The file's stem (e.g., `reviewer.md` → `reviewer`) is the agent name; an optional YAML frontmatter block (`name: ...`) can override it. The file body is the agent's system prompt — project context and task-completion rules are still prepended automatically.
+
+The name `default` is reserved for the built-in `agent.md` prompt: an agent file claiming it (via stem or frontmatter) is ignored by discovery. If `default_agent` in the config file names an unknown agent, the session starts with the built-in prompt and a warning is shown in the TUI banner at startup.
 
 ```sh
 # Create a custom agent

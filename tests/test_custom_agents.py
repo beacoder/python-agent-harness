@@ -60,6 +60,30 @@ class TestDiscoverAgents(unittest.TestCase):
         with mock.patch.object(Path, "is_dir", return_value=False):
             self.assertEqual(discover_agents(), {})
 
+    def test_reserved_default_name_skipped(self):
+        """A file claiming the reserved name ``default`` is not discovered:
+        the built-in agent always wins, so a custom default.md would be
+        unreachable and duplicate the TUI listing."""
+        default_file = AGENTS_DIR / "default.md"
+        default_file.write_text("You are a shadowing agent.", encoding="utf-8")
+        try:
+            agents = discover_agents()
+            self.assertNotIn("default", agents)
+        finally:
+            default_file.unlink(missing_ok=True)
+
+    def test_reserved_default_name_via_frontmatter_skipped(self):
+        """A frontmatter ``name: default`` is reserved the same way."""
+        test_file = AGENTS_DIR / "test-reserved-frontmatter.md"
+        test_file.write_text(
+            "---\nname: default\n---\nYou are a shadowing agent.", encoding="utf-8"
+        )
+        try:
+            agents = discover_agents()
+            self.assertNotIn("default", agents)
+        finally:
+            test_file.unlink(missing_ok=True)
+
     def test_agent_name_from_frontmatter(self):
         """When a file has YAML frontmatter with name:, that name is used."""
         test_file = AGENTS_DIR / "test-frontmatter-agent.md"
@@ -229,6 +253,34 @@ class TestMakeSessionWithDefaultAgent(unittest.TestCase):
             ok, _ = session.switch_agent("default")
             self.assertTrue(ok)
             self.assertNotIn("code reviewer", session.system_prompt)
+
+    def test_unknown_default_agent_records_warning(self):
+        """A typo'd/missing default_agent must not fail silently: the
+        session records a startup warning (rendered by the TUI) and
+        starts with the built-in agent.md prompt."""
+        from python_agent_harness.cli import make_session
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(json.dumps({"default_agent": "no-such-agent"}), encoding="utf-8")
+            session = make_session("/tmp", config_path=str(p))
+            self.assertEqual(session.default_agent, "no-such-agent")
+            # failed switch: session starts with the built-in agent.md prompt
+            self.assertNotIn("code reviewer", session.system_prompt)
+            warnings = session.startup_warnings
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("default_agent", warnings[0])
+        self.assertIn("no-such-agent", warnings[0])
+
+    def test_valid_default_agent_no_warning(self):
+        """A valid default_agent records no startup warning."""
+        from python_agent_harness.cli import make_session
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(json.dumps({"default_agent": "reviewer"}), encoding="utf-8")
+            session = make_session("/tmp", config_path=str(p))
+            self.assertEqual(session.startup_warnings, [])
 
 
 class TestReviewerAgentContent(unittest.TestCase):

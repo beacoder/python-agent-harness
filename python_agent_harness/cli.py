@@ -20,6 +20,7 @@ import sys
 
 from . import config
 from .client import Client
+from .prompts import RESERVED_AGENT_NAME
 from .session import Session
 from .tools import default_registry
 
@@ -122,8 +123,13 @@ def make_session(
         llm_settings=llm_settings,
         config_path=config_path,
     )
-    if default_agent and default_agent != "default":
-        session.switch_agent(default_agent)
+    if default_agent and default_agent != RESERVED_AGENT_NAME:
+        ok, msg = session.switch_agent(default_agent)
+        if not ok:
+            # A typo'd/missing default_agent must not silently start the
+            # session with the built-in prompt — record the config error
+            # so the TUI can surface it (see Tui.run).
+            session.startup_warnings.append(f"default_agent: {msg}")
     return session
 
 

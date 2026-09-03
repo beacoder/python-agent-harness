@@ -381,6 +381,15 @@ class TestTuiRun(unittest.TestCase):
             tui.run()
         self.assertIn("/tmp/llm.log", buf.getvalue())
 
+    def test_run_shows_startup_warnings(self):
+        """Non-fatal startup warnings (e.g. an unknown default_agent)
+        are rendered in the TUI banner so the user actually sees them."""
+        tui, buf = make_tui()
+        tui.session.startup_warnings.append("default_agent: unknown agent: no-such-agent")
+        with mock.patch.object(tui, "_read_multiline", return_value=None):
+            tui.run()
+        self.assertIn("warning: default_agent: unknown agent: no-such-agent", buf.getvalue())
+
     # ------------------------------------------------------------------
     # _start_agent / run loops
     # ------------------------------------------------------------------

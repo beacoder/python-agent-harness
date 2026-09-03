@@ -181,6 +181,8 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         )
         if config.LLM_LOG_ENABLED:
             self.console.print(f"[dim]LLM logs: {self.session.client.log_path}[/dim]")
+        for warning in getattr(self.session, "startup_warnings", ()):
+            self.console.print(f"[yellow]warning: {warning}[/yellow]")
         while True:
             try:
                 if self.question is not None:

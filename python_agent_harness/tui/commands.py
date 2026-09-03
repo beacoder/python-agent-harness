@@ -26,7 +26,7 @@ from ..persistence import (
     title_from_filename,
     unescape_role_header,
 )
-from ..prompts import discover_agents
+from ..prompts import RESERVED_AGENT_NAME, discover_agents
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -502,7 +502,7 @@ class CommandMixin:
     def _agent_list_names(self) -> list[str]:
         """Names shown by /agent: ``default`` followed by every
         discovered agent from the prompts/agents/ directory."""
-        return ["default", *sorted(self._discovered_agents.keys())]
+        return [RESERVED_AGENT_NAME, *sorted(self._discovered_agents.keys())]
 
     def _agent_switch_by_name(self, name: str) -> None:
         """Switch to a named agent (or ``default``) and report."""
@@ -524,7 +524,7 @@ class CommandMixin:
                     "[yellow]  (none found — add .md files to the prompts/agents/ directory to use /agent)[/yellow]"
                 )
             for idx, name in enumerate(all_names, 1):
-                if name == "default":
+                if name == RESERVED_AGENT_NAME:
                     self.console.print(f"  [cyan]{idx})[/cyan] default — agent.md")
                 else:
                     prompt_file = self._discovered_agents[name]

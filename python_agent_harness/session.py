@@ -22,7 +22,7 @@ from .mcp.manager import MCPManager
 from .models import AgentMode
 from .persistence import SessionPersistence, escape_role_headers
 from .planmode import PlanMode
-from .prompts import discover_agents, index_skills
+from .prompts import RESERVED_AGENT_NAME, discover_agents, index_skills
 from .subagent import run_subagent
 from .token_estimator import TokenCalibrator
 from .tools import Registry, ToolContext
@@ -188,6 +188,10 @@ class Session:
         # agent's prompt instead of the built-in default (agent.md).
         # ``/agent default`` restores the built-in, not this setting.
         self.default_agent = default_agent
+        # Non-fatal startup warnings (e.g. a default_agent that could not
+        # be applied); the TUI renders these in its banner so they are
+        # visible inside the interface rather than on stderr.
+        self.startup_warnings: list[str] = []
         # Original system prompt assembled at session start — used by
         # /agent default to restore the original agent.md prompt.
         self._default_system_prompt = system_prompt
@@ -724,7 +728,7 @@ class Session:
         The pseudo-name ``default`` restores the original system prompt
         saved at session construction.  Returns (success, message).
         """
-        if name == "default":
+        if name == RESERVED_AGENT_NAME:
             self.system_prompt = self._default_system_prompt
             self.store.system_prompt = self._default_system_prompt
             return True, "switched to default agent"
@@ -732,7 +736,7 @@ class Session:
         agents = discover_agents()
         prompt_file = agents.get(name)
         if prompt_file is None:
-            available = ", ".join(sorted(["default", *agents.keys()]))
+            available = ", ".join(sorted([RESERVED_AGENT_NAME, *agents.keys()]))
             return False, f"unknown agent: {name} (available: {available})"
         from .prompts import assemble_agent_prompt, load_agent_prompt
 

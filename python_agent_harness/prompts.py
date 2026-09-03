@@ -24,6 +24,9 @@ from .models import Message
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 AGENTS_DIR = PROMPTS_DIR / "agents"
+# Reserved pseudo-name that restores the built-in agent (prompts/agent.md);
+# custom agent files cannot claim it (see discover_agents).
+RESERVED_AGENT_NAME = "default"
 
 
 def read_prompt_file(name: str) -> str:
@@ -536,13 +539,15 @@ def discover_agents() -> dict[str, str]:
     Returns a dict mapping agent name → absolute path to the prompt
     file.  Files without a valid name are skipped.  The built-in
     ``default`` agent is NOT included here — callers add it separately.
+    A file claiming the reserved name ``default`` (via stem or
+    frontmatter) is skipped: the built-in agent always wins.
     """
     if not AGENTS_DIR.is_dir():
         return {}
     agents: dict[str, str] = {}
     for f in sorted(AGENTS_DIR.glob("*.md")):
         name = _agent_name_from_file(f)
-        if not name:
+        if not name or name == RESERVED_AGENT_NAME:
             continue
         agents[name] = str(f.resolve())
     return agents
