@@ -71,7 +71,7 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         # time spent once the run finishes
         self._run_start: float | None = None
         # Discovered agent profiles (name -> prompt file path) from the
-        # agents/ directory; refreshed on each /agent call so files
+        # prompts/agents/ directory; refreshed on each /agent call so files
         # added at runtime are picked up.
         self._discovered_agents: dict[str, str] = {}
         self.prompt_session = _make_prompt_session(
