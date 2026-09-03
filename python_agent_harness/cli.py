@@ -143,14 +143,14 @@ def make_session_with_mcp(
 
     Wraps ``make_session``: the session's MCP servers are connected and
     their tools registered before the session is returned (discovery
-    happens once, at session start).  Per-server failures are printed
-    to stderr and never prevent the session from running — the agent
-    keeps working with the built-in tools.
+    happens once, at session start).  Per-server failures are recorded
+    as startup warnings (rendered by the TUI banner) and never prevent
+    the session from running — the agent keeps working with the
+    built-in tools.
     """
     session = make_session(project_dir, config_path=config_path, model=model, stream=stream)
-    failures = session.connect_mcp()
-    for server, err in failures:
-        print(f"python-agent-harness: [{server}] {err}", file=sys.stderr)
+    for server, err in session.connect_mcp():
+        session.startup_warnings.append(f"MCP [{server}]: {err}")
     return session
 
 

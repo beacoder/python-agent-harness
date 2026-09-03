@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -281,6 +282,62 @@ class TestMakeSessionWithDefaultAgent(unittest.TestCase):
             p.write_text(json.dumps({"default_agent": "reviewer"}), encoding="utf-8")
             session = make_session("/tmp", config_path=str(p))
             self.assertEqual(session.startup_warnings, [])
+
+
+class TestMcpFailuresAsStartupWarnings(unittest.TestCase):
+    """make_session_with_mcp records MCP connection failures as startup
+    warnings so the TUI banner renders them (instead of a stderr print
+    that is invisible inside the interface)."""
+
+    def test_mcp_failure_recorded_as_startup_warning(self):
+        from python_agent_harness import cli
+        from python_agent_harness.mcp.config import MCPConfig, MCPServerConfig
+        from python_agent_harness.mcp.manager import MCPManager
+        from python_agent_harness.session import Session as RealSession
+
+        class WarnSession(RealSession):
+            # swap in a manager whose only server fails to connect
+            def __init__(self, *args, **kwargs):
+                kwargs.pop("mcp", None)
+                super().__init__(*args, **kwargs)
+                self.mcp_manager = MCPManager(
+                    MCPConfig(
+                        servers={
+                            "ghost": MCPServerConfig(
+                                name="ghost",
+                                transport="stdio",
+                                command=sys.executable,
+                                args=["-c", "import sys; sys.exit(1)"],
+                                timeout=15,
+                            )
+                        }
+                    )
+                )
+
+        saved = {k: os.environ.get(k) for k in ENV_KEYS}
+        for k in ENV_KEYS:
+            os.environ.pop(k, None)
+        try:
+            with (
+                mock.patch.object(cli, "Session", WarnSession),
+                tempfile.TemporaryDirectory() as d,
+            ):
+                p = Path(d) / "config.json"
+                p.write_text(json.dumps({"llm": {"model": "test-model"}}), encoding="utf-8")
+                session = cli.make_session_with_mcp("/tmp", config_path=str(p))
+                try:
+                    self.assertEqual(len(session.startup_warnings), 1)
+                    self.assertIn("MCP [ghost]", session.startup_warnings[0])
+                    # built-in tools still work after the failed server
+                    self.assertIn("Read", session.registry._tools)
+                finally:
+                    session.close()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
 
 class TestReviewerAgentContent(unittest.TestCase):
