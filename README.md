@@ -253,7 +253,6 @@ python_agent_harness/
 ├── session.py         # Session wiring hub + MCP lifecycle
 ├── subagent.py        # Sub-agent runner + error containment
 ├── commands.py        # Init/review/custom command definitions
-├── prompts/agents/    # Custom agent prompt files (*.md)
 ├── cli.py             # CLI entry points
 ├── tui/               # Rich + prompt_toolkit TUI (package)
 ├── diffrender.py      # Unified diff generation + Rich rendering
