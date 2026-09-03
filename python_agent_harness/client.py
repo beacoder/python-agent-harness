@@ -36,6 +36,14 @@ class ApiError(Exception):
     """Raised when the API call itself fails (network/HTTP)."""
 
 
+# Grace between shutdown(SHUT_RDWR) and close() of an in-flight socket
+# on macOS (see _shutdown_and_close): 50ms proved too tight under load
+# (the woken thread can still be parked in select() when the fd is
+# released, losing the wakeup).  200ms keeps Ctrl-C responsive while
+# making the fd-reuse race vanishingly unlikely.
+_ABORT_SHUTDOWN_GRACE_S = 0.2
+
+
 class RetryableApiError(ApiError):
     """A transient failure (rate limit, server error) safe to retry.
 
@@ -865,12 +873,17 @@ def _shutdown_and_close(sock: _socket.socket) -> None:
     settimeout for the read timeout), so a blocked recv parks in
     select(); closing the fd before that select has processed the
     shutdown wakeup can lose the wakeup and leave the read parked
-    forever.  Give the woken thread a moment to observe the EOF first.
+    forever.  Worse, ``abort()`` swaps in a fresh httpx client right
+    after, so a new socket could reuse the fd number before the
+    reader observed the EOF.  The grace sleep delays the fd release
+    so the woken thread can observe the EOF on the old fd first.
     """
     with contextlib.suppress(OSError):
         sock.shutdown(_socket.SHUT_RDWR)
     if sys.platform == "darwin":
-        time.sleep(0.05)
+        # macOS only; on Linux shutdown() alone reliably wakes the
+        # blocked recv (measured: <200ms unblock, no sleeps needed).
+        time.sleep(_ABORT_SHUTDOWN_GRACE_S)
     with contextlib.suppress(OSError):
         sock.close()
 
