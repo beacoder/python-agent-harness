@@ -719,7 +719,7 @@ class Session:
     def switch_agent(self, name: str) -> tuple[bool, str]:
         """Switch the main agent's system prompt to a named agent.
 
-        Agent prompt files are discovered from the ``agents/`` package
+        Agent prompt files are discovered from the ``prompts/agents/`` package
         directory (see ``python_agent_harness.prompts.discover_agents``).
         The pseudo-name ``default`` restores the original system prompt
         saved at session construction.  Returns (success, message).
