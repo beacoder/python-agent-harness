@@ -91,13 +91,14 @@ def make_session(
     # (same precedence as the main agent's stream).
     effective_stream = settings["stream"] if stream is None else stream
     model_profiles = config.load_models_config(config_path)
+    default_agent = config.load_default_agent(config_path)
     # Base settings for /model switching: the main llm settings as
     # resolved at session start (incl. the CLI --model/--no-stream
     # overrides above), so a profile's unset keys inherit these
     # instead of values drifted by earlier switches.
     llm_settings = dict(settings)
     llm_settings["stream"] = effective_stream
-    return Session(
+    session = Session(
         project_dir=abs_project,
         client=client,
         model=model,
@@ -117,9 +118,13 @@ def make_session(
         skill_path=paths.get("skill_path"),
         mcp=mcp_config,
         model_profiles=model_profiles,
+        default_agent=default_agent,
         llm_settings=llm_settings,
         config_path=config_path,
     )
+    if default_agent and default_agent != "default":
+        session.switch_agent(default_agent)
+    return session
 
 
 def make_session_with_mcp(
@@ -228,6 +233,9 @@ def cmd_config(args: argparse.Namespace) -> int:
             print(f"  {pattern}: {size}")
     else:
         print("context_windows: (none configured — built-in table in config.py applies)")
+    # Show default agent
+    default_agent = config.load_default_agent(args.path)
+    print(f"default_agent: {default_agent or '(default: agent.md)'}")
     return 0
 
 
