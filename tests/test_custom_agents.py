@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from python_agent_harness import config
-from python_agent_harness.agents import AGENTS_DIR, discover_agents
+from python_agent_harness.prompts import AGENTS_DIR, discover_agents
 from python_agent_harness.client import Client
 from python_agent_harness.session import Session
 from python_agent_harness.tools import default_registry
