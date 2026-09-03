@@ -108,16 +108,19 @@ class CommandMixin:
             self.console.print("[yellow]Conversation history cleared.[/yellow]")
         elif cmd == "/model":
             self._run_model_command(arg)
+        elif cmd == "/agent":
+            self._run_agent_command(arg)
         elif cmd == "/help":
             self.console.print(
                 "/plan /build /init /review /explain /compact "
-                "/save /summary /sessions /restore /clear /model /exit\n"
+                "/save /summary /sessions /restore /clear /model /agent /exit\n"
                 "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
                 "/review [project] [commit|branch|PR] review code changes\n"
                 "/explain [project] [target]          explain code\n"
                 "/sessions                            list saved sessions\n"
                 "/restore [path | title | --latest | latest]   restore a saved session\n"
                 "/model [name]                        switch LLM model profile\n"
+                "/agent [name]                        switch agent system prompt\n"
                 "Ctrl-C cancels the current execution (app stays open); "
                 "Ctrl-D or /exit quits.",
                 markup=False,
@@ -486,6 +489,81 @@ class CommandMixin:
                 self.console.print(msg)
         else:
             self.console.print(msg)
+
+    def _refresh_agent_profiles(self) -> None:
+        """Re-discover agent prompt files from the agents/ directory.
+
+        Agent files may be added/removed while the TUI is running;
+        this re-scans so new agents show up on the next /agent call.
+        """
+        from ..agents import discover_agents
+
+        self._discovered_agents = discover_agents()
+
+    def _agent_list_names(self) -> list[str]:
+        """Names shown by /agent: ``default`` followed by every
+        discovered agent from the agents/ directory."""
+        return ["default", *sorted(self._discovered_agents.keys())]
+
+    def _agent_switch_by_name(self, name: str) -> None:
+        """Switch to a named agent (or ``default``) and report."""
+        success, msg = self.session.switch_agent(name)
+        if success:
+            self.console.print(f"[green]{msg}[/green]")
+            self._data_event.set()
+        else:
+            self.console.print(f"[red]{msg}[/red]")
+
+    def _run_agent_command(self, arg: str) -> None:
+        """Handle /agent command for switching agent system prompts."""
+        self._refresh_agent_profiles()
+        if not arg:
+            all_names = self._agent_list_names()
+            self.console.print("\n[bold cyan]Available agent profiles:[/bold cyan]")
+            if not self._discovered_agents:
+                self.console.print(
+                    "[yellow]  (none found — add .md files to the agents/ directory to use /agent)[/yellow]"
+                )
+            for idx, name in enumerate(all_names, 1):
+                if name == "default":
+                    self.console.print(f"  [cyan]{idx})[/cyan] default — agent.md")
+                else:
+                    prompt_file = self._discovered_agents[name]
+                    self.console.print(f"  [cyan]{idx})[/cyan] {name} — {prompt_file}")
+            total_count = len(all_names)
+            self.console.print(
+                f"\n[dim]Type a number (1-{total_count}) to switch, or enter an agent name directly[/dim]\n"
+            )
+            try:
+                selection = input("Select agent: ").strip()
+                if not selection:
+                    return
+                if selection.isdigit():
+                    idx = int(selection) - 1
+                    if 0 <= idx < len(all_names):
+                        self._agent_switch_by_name(all_names[idx])
+                    else:
+                        self.console.print(
+                            f"[red]Invalid selection: {selection}. Choose 1-{len(all_names)}[/red]"
+                        )
+                else:
+                    self._agent_switch_by_name(selection)
+            except EOFError:
+                pass
+            except KeyboardInterrupt:
+                self.console.print("\n[dim]cancelled[/dim]")
+            return
+        if arg.strip().isdigit():
+            all_names = self._agent_list_names()
+            idx = int(arg.strip()) - 1
+            if 0 <= idx < len(all_names):
+                self._agent_switch_by_name(all_names[idx])
+            else:
+                self.console.print(
+                    f"[red]Invalid selection: {arg}. Choose 1-{len(all_names)}[/red]"
+                )
+            return
+        self._agent_switch_by_name(arg)
 
     def _run_sessions(self) -> None:
         """List saved sessions with metadata."""
