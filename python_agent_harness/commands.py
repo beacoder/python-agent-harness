@@ -63,7 +63,6 @@ class SessionCommand:
         name: str,
         prompt_file: str,
         kickoff: str,
-        buffer_name: str,
         status: str,
         validate_dir: bool = False,
         allow_planexit: bool = True,
@@ -71,7 +70,6 @@ class SessionCommand:
         self.name = name
         self.prompt_file = prompt_file
         self.kickoff = kickoff
-        self.buffer_name = buffer_name
         self.status = status
         self.validate_dir = validate_dir
         self.allow_planexit = allow_planexit
@@ -99,7 +97,6 @@ def initialize_command() -> SessionCommand:
         name="initialize",
         prompt_file="initialize.md",
         kickoff="Analyze the repository at ${path} and create/update AGENTS.md.\n",
-        buffer_name="*gptel-agent-init:*",
         status=" Initializing...",
         validate_dir=True,
         allow_planexit=False,
@@ -111,7 +108,6 @@ def review_command() -> SessionCommand:
         name="review",
         prompt_file="review.md",
         kickoff="Review the requested code changes.",
-        buffer_name="*gptel-agent-review*",
         status=" Reviewing...",
         allow_planexit=False,
     )
@@ -161,7 +157,6 @@ def load_custom_commands() -> list[SessionCommand]:
                 name=name,
                 prompt_file=str(f.relative_to(PROMPTS_DIR)),
                 kickoff="Proceed with the task described in your instructions.\n",
-                buffer_name=f"*gptel-agent-{name}*",
                 status=f" Running {name}...",
             )
         )
