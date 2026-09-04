@@ -8,6 +8,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
 
 from python_agent_harness.models import AgentMode
 from python_agent_harness.planmode import PlanMode, _plan_temp_dir

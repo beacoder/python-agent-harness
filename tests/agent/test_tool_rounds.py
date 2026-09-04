@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # tests/ for plan_cleanup
 
 import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
 from agent_test_utils import (  # noqa: E402,F401
     FakeClient,
     ParallelToolSession,

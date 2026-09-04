@@ -10,6 +10,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
 from agent.agent_test_utils import FakeClient, RecordingSession
 
 from python_agent_harness import config

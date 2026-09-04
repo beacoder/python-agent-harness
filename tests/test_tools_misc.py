@@ -18,6 +18,10 @@ import time
 import unittest
 from unittest import mock
 
+sys.path.insert(0, os.path.dirname(__file__))
+
+import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
+
 from python_agent_harness.tools.agent_tool import AgentTool
 from python_agent_harness.tools.base import PendingToolResult, Registry, ToolContext
 from python_agent_harness.tools.planexit import PlanExit

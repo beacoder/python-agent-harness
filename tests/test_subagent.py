@@ -10,6 +10,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 
 import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
 
 from python_agent_harness.models import Message, Usage
 from python_agent_harness.persistence import SessionPersistence

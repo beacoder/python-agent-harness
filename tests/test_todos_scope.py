@@ -4,7 +4,13 @@ todo list.
 """
 
 import json
+import os
+import sys
 import unittest
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
 
 from python_agent_harness.agent import AgentLoop
 from python_agent_harness.models import Message, ToolCall, Usage

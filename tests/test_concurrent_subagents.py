@@ -28,6 +28,8 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
+
 from python_agent_harness.client import Client
 from python_agent_harness.session import Session
 from python_agent_harness.tools import default_registry
