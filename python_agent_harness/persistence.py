@@ -170,18 +170,12 @@ class SessionPersistence:
         lines = [";; Local Variables:"]
         pairs = [
             ("python-agent-harness--project-dir", self.project_dir),
-            ("gptel-model", self.model),
-            ("gptel-system-prompt", self.system_prompt),
-            ("gptel-temperature", self.temperature),
-            ("gptel-max-tokens", self.max_tokens),
+            ("python-agent-harness--model", self.model),
         ]
         for name, value in pairs:
             if value is None:
                 continue
             lines.append(f";; {name}: {value!r}")
-        if self.tool_names:
-            names = " ".join(f'"{n}"' for n in self.tool_names)
-            lines.append(f";; gptel--tool-names: ({names})")
         if self.round_times:
             stamps = " ".join(repr(float(t)) for t in self.round_times)
             lines.append(f";; python-agent-harness--round-times: {stamps}")

@@ -305,7 +305,7 @@ class TestTuiCommands(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(
                     "**user**: hello\n\n;; Local Variables:\n"
-                    ";; gptel-model: gpt-4\n"
+                    ";; python-agent-harness--model: gpt-4\n"
                     ";; python-agent-harness--project-dir: /tmp/p\n"
                     ";; End:\n"
                 )

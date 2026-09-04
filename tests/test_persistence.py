@@ -37,8 +37,7 @@ class TestSession(unittest.TestCase):
         text = "conversation...\n\n" + meta + "\n"
         parsed = SessionPersistence.parse_metadata(text)
         self.assertEqual(parsed["python-agent-harness--project-dir"], "/tmp/proj")
-        self.assertEqual(parsed["gptel-model"], "deepseek-v4")
-        self.assertIn("glob", parsed["gptel--tool-names"])
+        self.assertEqual(parsed["python-agent-harness--model"], "deepseek-v4")
         stripped = SessionPersistence.strip_metadata(text)
         self.assertEqual(stripped.strip(), "conversation...")
 
@@ -252,22 +251,20 @@ class TestSession(unittest.TestCase):
             ";; Local Variables:\n"
             "plain line without marker\n"
             ";; no-colon-here\n"
-            ";; gptel-model: 'm'\n"
-            ";; gptel--tool-names: ['a', 'b']\n"
-            ";; gptel-system-prompt: unquoted-value\n"
+            ";; python-agent-harness--project-dir: '/tmp/proj'\n"
+            ";; python-agent-harness--model: 'deepseek-v4'\n"
             ";; End:\n"
         )
         parsed = SessionPersistence.parse_metadata(text)
-        self.assertEqual(parsed["gptel-model"], "m")
-        self.assertEqual(parsed["gptel--tool-names"], "a b")
-        self.assertEqual(parsed["gptel-system-prompt"], "unquoted-value")
+        self.assertEqual(parsed["python-agent-harness--project-dir"], "/tmp/proj")
+        self.assertEqual(parsed["python-agent-harness--model"], "deepseek-v4")
         self.assertNotIn("plain line without marker", parsed)
 
     def test_strip_metadata_without_block(self):
         self.assertEqual(SessionPersistence.strip_metadata("plain"), "plain")
 
     def test_strip_metadata_without_end_marker(self):
-        text = "conversation\n;; Local Variables:\n;; gptel-model: 'm'\n"
+        text = "conversation\n;; Local Variables:\n;; python-agent-harness--model: 'm'\n"
         self.assertEqual(SessionPersistence.strip_metadata(text), "conversation")
 
     def test_latest_session_missing_dir(self):

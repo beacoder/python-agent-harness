@@ -578,7 +578,7 @@ class CommandMixin:
                 continue
             meta = SessionPersistence.parse_metadata(text)
             basename = os.path.basename(f)
-            model = meta.get("gptel-model", "?")
+            model = meta.get("python-agent-harness--model", "?")
             project = meta.get("python-agent-harness--project-dir", "?")
             self.console.print(f"  {basename:50s}  model={model:20s}  project={project}")
 
@@ -645,7 +645,7 @@ class CommandMixin:
         self.session.last_messages = list(messages)
         self.session.clear_todos()
         self._history_dirty = True
-        model = meta.get("gptel-model", "?")
+        model = meta.get("python-agent-harness--model", "?")
         project = meta.get("python-agent-harness--project-dir", "?")
         self.console.print(
             f"[green]restored:[/green] {os.path.basename(path)} "
