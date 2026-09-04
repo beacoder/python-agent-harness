@@ -80,9 +80,9 @@ class TestTuiRender(unittest.TestCase):
         self.assertLess(out.index("[BUILD]"), out.index("hello agent"))
 
     def test_status_bar_fits_terminal_width(self):
-        """The status bar stays on one line: the status text is
-        truncated with an ellipsis only when the terminal is too
-        narrow to show it, and never wraps."""
+        """The status bar is at most two lines: a long status wraps
+        onto a second line, and anything beyond two lines is
+        truncated with an ellipsis."""
         tui, buf = make_tui()
         long_msg = "agent error: " + "y" * 120  # 131 cells: fits a wide terminal
         tui._on_log(long_msg)
@@ -91,13 +91,86 @@ class TestTuiRender(unittest.TestCase):
         tui.console.file = io.StringIO()
         tui.console.print(tui._status_bar())
         self.assertIn(long_msg, tui.console.file.getvalue())
-        # narrow terminal: one line, ellipsized
+        # narrow terminal: wraps to two lines, tail ellipsized
         tui.console.width = 40
         tui.console.file = io.StringIO()
         tui.console.print(tui._status_bar())
         lines = tui.console.file.getvalue().rstrip("\n").split("\n")
-        self.assertEqual(len(lines), 1)
-        self.assertTrue(lines[0].endswith("…"))
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].endswith("…"))
+
+    def test_status_bar_wraps_long_error_two_lines(self):
+        """A long API error must be readable: it wraps word-wise onto
+        the second status line instead of being cut at one line."""
+        tui, buf = make_tui()
+        msg = (
+            "Error: API error 429: "
+            '{"error":{"code":"insufficient_quota","message":"You exceeded '
+            'your current quota"}}'
+        )
+        tui._on_log(msg)
+        tui.console.width = 100
+        tui.console.file = io.StringIO()
+        tui.console.print(tui._status_bar())
+        out = tui.console.file.getvalue()
+        self.assertIn("insufficient_quota", out)
+        self.assertIn("current quota", out)
+        self.assertNotIn("…", out)
+
+    def test_status_bar_beyond_two_lines_ellipsized(self):
+        """Content wider than two lines ends with an ellipsis on line 2."""
+        tui, buf = make_tui()
+        msg = "Error: " + " ".join(f"word{i}" for i in range(200))
+        tui._on_log(msg)
+        tui.console.width = 40
+        tui.console.file = io.StringIO()
+        tui.console.print(tui._status_bar())
+        lines = tui.console.file.getvalue().rstrip("\n").split("\n")
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].endswith("…"))
+        self.assertFalse(lines[0].endswith("…"))
+
+    def test_status_bar_single_long_word_hard_breaks(self):
+        """One unbroken token wider than the line is cut mid-word,
+        not dropped, and still fits exactly two lines."""
+        tui, buf = make_tui()
+        msg = "Error: " + "z" * 300
+        tui._on_log(msg)
+        tui.console.width = 40
+        tui.console.file = io.StringIO()
+        tui.console.print(tui._status_bar())
+        lines = tui.console.file.getvalue().rstrip("\n").split("\n")
+        self.assertEqual(len(lines), 2)
+        rendered = "".join(lines).replace(" ", "").replace("…", "")
+        self.assertIn("Error:", rendered)
+        self.assertIn("zzz", rendered)
+
+    def test_wrap_line_splits_on_space(self):
+        """_wrap_line returns the fitting prefix and the remainder."""
+        tui, _ = make_tui()
+        line, rest = tui._wrap_line("alpha beta gamma", 10)
+        self.assertEqual(line, "alpha beta")
+        self.assertEqual(rest, "gamma")
+        # short text: everything fits, no remainder
+        line, rest = tui._wrap_line("short", 10)
+        self.assertEqual((line, rest), ("short", ""))
+
+    def test_wrap_line_hard_breaks_oversized_word(self):
+        """A single word wider than the line is cut at the boundary."""
+        tui, _ = make_tui()
+        line, rest = tui._wrap_line("abcdefghij", 5)
+        self.assertEqual(line, "abcde")
+        self.assertEqual(rest, "fghij")
+
+    def test_status_bar_two_lines_reserved_in_row_budget(self):
+        """The visible-row cap reserves two lines for the status bar."""
+        from types import SimpleNamespace
+
+        tui, _ = make_tui()
+        tui.session.todos = []
+        tui.console = SimpleNamespace(height=24, width=100)
+        # 24 - 3 (status 2 + prompt 1) = 21
+        self.assertEqual(tui._visible_row_cap(), 21)
 
     def test_role_labels(self):
         """Roles render as user / assistant / tool, not You / Agent."""

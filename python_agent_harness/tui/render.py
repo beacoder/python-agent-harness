@@ -450,9 +450,9 @@ class RenderMixin:
         height = getattr(self.console, "height", None)
         if not height or height <= 0:
             return 60
-        # reserve: status bar (1) + input prompt (1)
+        # reserve: status bar (up to 2 lines) + input prompt (1)
         # + the pinned Todos section when visible (its title line + rows)
-        reserved = 2
+        reserved = 3
         if self.session.todos:
             reserved += min(len(self.session.todos), 8) + 1
         return max(5, height - reserved)
@@ -521,23 +521,58 @@ class RenderMixin:
         return t
 
     def _fit_status(self, used: int, msg: str) -> str:
-        """Fit the status message on the status-bar line: newlines are
-        flattened and the message is truncated with an ellipsis only
-        when it would overflow the terminal width."""
+        """Fit the status message on the status bar: up to two lines.
+
+        Line 1 shares its row with the mode/context prefix (``used``
+        cells); line 2 gets the full terminal width.  Newlines in the
+        message are flattened, words break at spaces where possible,
+        and anything beyond two lines is truncated with an ellipsis.
+        """
         msg = " ".join(msg.splitlines())
         width = self.console.width or 80
-        avail = max(1, width - used - 1)
-        if cell_len(msg) <= avail:
-            return msg
-        out = ""
-        used_cells = 0
-        for ch in msg:
-            w = cell_len(ch)
-            if used_cells + w > avail - 1:
-                break
-            out += ch
-            used_cells += w
-        return out + "…"
+        avail1 = max(1, width - used - 1)
+        avail2 = max(1, width - 2)
+        line1, rest = self._wrap_line(msg, avail1)
+        if not rest:
+            return line1
+        line2, rest2 = self._wrap_line(rest, avail2)
+        if rest2:
+            # re-wrap reserving a cell so the ellipsis fits the line
+            line2, _ = self._wrap_line(rest, max(1, avail2 - 1))
+            return f"{line1}\n{line2}…"
+        return f"{line1}\n{line2}"
+
+    @staticmethod
+    def _wrap_line(text: str, avail: int) -> tuple[str, str]:
+        """Split ``text`` into ``(line, remainder)`` where ``line`` is the
+        longest prefix fitting ``avail`` cells.
+
+        Breaks at a space so words stay whole; a single word wider than
+        the line (long JSON tokens, URLs) is hard-broken at the cell
+        boundary instead of dropped.
+        """
+        if cell_len(text) <= avail:
+            return text, ""
+        words = text.split(" ")
+        line = ""
+        for idx, word in enumerate(words):
+            candidate = word if not line else f"{line} {word}"
+            if cell_len(candidate) <= avail:
+                line = candidate
+                continue
+            if not line:
+                # one word wider than the whole line: cut mid-word
+                take = ""
+                for ch in word:
+                    if cell_len(take) + cell_len(ch) > avail:
+                        break
+                    take += ch
+                rest_word = word[len(take) :]
+                tail = words[idx + 1 :]
+                remainder = " ".join([rest_word, *tail]) if rest_word else " ".join(tail)
+                return take, remainder
+            return line, " ".join(words[idx:])
+        return line, ""
 
     def _status_style(self) -> str:
         """Status-bar color by state: errors red, activity cyan, idle dim."""
