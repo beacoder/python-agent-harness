@@ -637,14 +637,25 @@ def run_agent_loop(
 
     ``client`` (when given) overrides the session's client for this
     run — the per-invocation sub-agent clone."""
-    return AgentLoop(
+    loop = AgentLoop(
         session,
         messages=messages,
         top_level=top_level,
         system=system,
         max_rounds=max_rounds,
         client=client,
-    ).run()
+    )
+    result = loop.run()
+    # Notify run_done only for a successfully completed top-level run:
+    # - top_level: sub-agents share the parent's session (notify_fn
+    #   included) and must not mark the parent run finished while it is
+    #   still executing tools
+    # - DONE only: ERRS already notifies "error" with the detail, and
+    #   ABRT is cancellation/supersession (TUI sets that status).  DONE
+    #   also implies not cancelled — the FSM routes cancelled to ABRT.
+    if loop.top_level and loop.state == AgentLoop.DONE:
+        session.notify("run_done")
+    return result
 
 
 class Supervisor:

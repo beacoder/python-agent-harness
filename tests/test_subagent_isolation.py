@@ -127,6 +127,57 @@ class TestSubagentIsolation(unittest.TestCase):
         self.assertIn(1, client.streamed)  # parent's Agent-call turn
         self.assertIn(4, client.streamed)  # parent's reply turn
 
+    def test_run_done_notified_once_for_parent_not_subagent(self):
+        """'run_done' fires exactly once for the top-level run reaching
+        DONE — the inner sub-agent loop (which shares the parent's
+        session) must not fire it mid-parent-run, and the sub-agent's
+        own DONE must not double-fire after the parent already notified."""
+        client = RecClient(
+            [
+                ("", [ToolCall(id="p1", name="Agent", arguments=AGENT_CALL)]),
+                ("", [ToolCall(id="s1", name="Read", arguments="{}")]),
+                "sub done",  # sub-agent reaches DONE
+                "parent done",  # parent reaches DONE
+            ]
+        )
+        s = make_session(client)
+        kinds = []
+        s.notify_fn = lambda kind, data=None: kinds.append(kind)
+        run_agent_loop(s, messages=[Message(role="user", content="delegate")], top_level=True)
+        self.assertEqual(kinds.count("run_done"), 1)
+
+    def test_run_done_not_sent_on_error_or_cancel(self):
+        """ERRS (API error) and ABRT (Ctrl-C) must not notify run_done —
+        those states have their own status paths ('error', cancel)."""
+
+        # ERRS: the client raises mid-request
+        class BoomClient(RecClient):
+            def chat(self, *a, **k):
+                raise RuntimeError("boom")
+
+        s = make_session(BoomClient([]))
+        kinds = []
+        s.notify_fn = lambda kind, data=None: kinds.append(kind)
+        run_agent_loop(s, messages=[Message(role="user", content="go")], top_level=True)
+        self.assertNotIn("run_done", kinds)
+
+        # ABRT: cancel before the run; the loop routes to ABRT
+        s2 = make_session(RecClient(["done"]))
+        kinds2 = []
+        s2.notify_fn = lambda kind, data=None: kinds2.append(kind)
+        s2.cancel()
+        run_agent_loop(s2, messages=[Message(role="user", content="go")], top_level=True)
+        self.assertNotIn("run_done", kinds2)
+
+    def test_run_done_without_notify_fn_is_noop(self):
+        """A session without a TUI (notify_fn None) must not crash when
+        the run completes (Session.notify no-ops)."""
+        client = RecClient(["done"])
+        s = make_session(client)
+        run_agent_loop(
+            s, messages=[Message(role="user", content="go")], top_level=True
+        )  # must not raise
+
     def test_subagent_uses_separate_client_when_configured(self):
         """A session with a dedicated sub-agent client (subagent_llm in
         the config) routes sub-agent requests through it with its own

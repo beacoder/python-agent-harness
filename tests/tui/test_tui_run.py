@@ -146,6 +146,13 @@ class TestTuiRun(unittest.TestCase):
         self.assertEqual(tui.status, " running")
         self.assertTrue(tui._data_event.is_set())
 
+    def test_on_notify_run_done(self):
+        tui, _ = make_tui()
+        tui._on_notify("run_done")
+        self.assertEqual(tui.status, " done")
+        self.assertTrue(tui._data_event.is_set())
+        self.assertTrue(tui._history_dirty)
+
     def test_on_log_sets_status(self):
         tui, _ = make_tui()
         tui._on_log("checking files")

@@ -153,6 +153,10 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         elif kind == "save-error":
             with self.lock:
                 self.status = " auto-save failed"
+        elif kind == "run_done":
+            with self.lock:
+                self.status = " done"
+                self._history_dirty = True
         else:
             with self.lock:
                 self.status = " running"
