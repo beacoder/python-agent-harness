@@ -7,7 +7,9 @@ name = "python-agent-harness"
 homepage = "https://github.com/beacoder/python-agent-harness"
 version = "1.5.5.1"
 description = "A lightweight, hackable mini-OpenCode written in Python."
-authors = ["Huming Chen <chenhuming@gmail.com>"]
+authors = [
+    {name = "Huming Chen", email = "chenhuming@gmail.com"}
+]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.11"
