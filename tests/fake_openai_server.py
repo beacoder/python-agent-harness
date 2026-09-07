@@ -1,5 +1,6 @@
 """Fake OpenAI-compatible server for smoke-testing the client."""
 
+import contextlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -35,6 +36,10 @@ def reset_state() -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def handle(self):
+        with contextlib.suppress(BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            super().handle()
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
