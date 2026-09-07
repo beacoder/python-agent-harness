@@ -65,12 +65,13 @@ class TestBashAsync(unittest.TestCase):
         return session, loop
 
     def test_run_returns_pending_result(self):
-        from python_agent_harness.tools import PendingToolResult, ToolContext
-        from python_agent_harness.tools.bash import Bash
+        from python_agent_harness.tools import PendingToolResult, ToolContext, default_registry
 
         with tempfile.TemporaryDirectory(prefix="pah-bash-") as tmpdir:
             session = RecordingSession(project_dir=tmpdir)
-            result = Bash().run({"command": "echo hello"}, ToolContext(session))
+            result = (
+                default_registry().get("Bash").run({"command": "echo hello"}, ToolContext(session))
+            )
             self.assertIsInstance(result, PendingToolResult)
             self.assertEqual(result.wait(), "hello\nExit code: 0")
 
@@ -98,12 +99,13 @@ class TestBashAsync(unittest.TestCase):
             )
 
     def test_cancel_kills_process_and_delivers_error(self):
-        from python_agent_harness.tools import PendingToolResult, ToolContext
-        from python_agent_harness.tools.bash import Bash
+        from python_agent_harness.tools import PendingToolResult, ToolContext, default_registry
 
         with tempfile.TemporaryDirectory(prefix="pah-bash-") as tmpdir:
             session = RecordingSession(project_dir=tmpdir)
-            result = Bash().run({"command": "sleep 30"}, ToolContext(session))
+            result = (
+                default_registry().get("Bash").run({"command": "sleep 30"}, ToolContext(session))
+            )
             self.assertIsInstance(result, PendingToolResult)
             threading.Timer(0.5, session.cancel).start()
             start = time.monotonic()
