@@ -243,7 +243,7 @@ python_agent_harness/
 
 ## Development
 
-Requires Python ≥ 3.11. CI runs against Python 3.11, 3.12, and 3.13 on Linux and macOS.
+Requires Python ≥ 3.11. CI runs against Python 3.11, 3.12, and 3.13 on Linux, MacOS and Windows.
 
 ```sh
 make test                           # unit tests
