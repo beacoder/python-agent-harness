@@ -30,6 +30,7 @@ import os
 import select
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -144,7 +145,8 @@ def _collect_output(proc: subprocess.Popen, cancel: threading.Event | None) -> t
     if stdout is None:  # unreachable (stdout=PIPE), kept for the type checker
         return "", "ok"
     fd = stdout.fileno()
-    os.set_blocking(fd, False)  # pyright: ignore[reportAttributeAccessIssue]
+    if sys.platform != "win32":
+        os.set_blocking(fd, False)  # pyright: ignore[reportAttributeAccessIssue]
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     head: list[str] = []
     head_len = 0
