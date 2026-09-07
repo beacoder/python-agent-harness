@@ -1686,5 +1686,281 @@ class TestGrepMac(unittest.TestCase):
         self.assertIn("ripgrep/grep/git-grep not available", out)
 
 
+class TestWindowsVariants(unittest.TestCase):
+    """Windows tool backends: pure-Python fallbacks that run on every
+    platform so the Windows paths are covered by Linux CI too (same
+    approach as TestEditMac / TestGrepMac).
+    """
+
+    def setUp(self):
+        self.ctx = ToolContext()
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _mkdir(self, *parts) -> str:
+        p = os.path.join(self.tmp.name, *parts)
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    def _file(self, *parts, content: str = "") -> str:
+        p = os.path.join(self.tmp.name, *parts)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            f.write(content)
+        return p
+
+    # ------------------------------------------------------------------
+    # EditWindows: pure-Python diff applier
+    # ------------------------------------------------------------------
+    def test_edit_win_simple_replace_applies(self):
+        from python_agent_harness.tools.edit_win import EditWindows
+
+        path = self._file("f.txt", content="line1\nline2\nline3\n")
+        ctx, sess = make_ctx()
+        diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+lineTWO\n line3\n"
+        result = EditWindows().run({"path": path, "new_str": diff, "diff": True}, ctx)
+        self.assertIn("Diff successfully applied", result)
+        with open(path) as f:
+            self.assertEqual(f.read(), "line1\nlineTWO\nline3\n")
+        self.assertEqual(len(sess.recorded_diffs), 1)
+
+    def test_edit_win_mismatch_errors(self):
+        from python_agent_harness.tools.edit_win import EditWindows
+
+        path = self._file("f.txt", content="a\nb\n")
+        ctx, sess = make_ctx()
+        bad_diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n a\n-NOPE\n+B\n"
+        result = EditWindows().run({"path": path, "new_str": bad_diff, "diff": True}, ctx)
+        self.assertTrue(result.startswith("Error:"))
+        with open(path) as f:
+            self.assertEqual(f.read(), "a\nb\n")
+        self.assertEqual(sess.recorded_diffs, [])
+
+    def test_edit_win_fenced_diff_applies(self):
+        from python_agent_harness.tools.edit_win import EditWindows
+
+        path = self._file("f.txt", content="a\nb\n")
+        ctx, _ = make_ctx()
+        diff = "```diff\n--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n a\n-b\n+B\n```\n"
+        result = EditWindows().run({"path": path, "new_str": diff, "diff": True}, ctx)
+        self.assertIn("Diff successfully applied", result)
+        with open(path) as f:
+            self.assertEqual(f.read(), "a\nB\n")
+
+    def test_edit_win_multifile_diff_applies(self):
+        from python_agent_harness.tools.edit_win import EditWindows
+
+        self._file("f1.txt", content="one\n")
+        self._file("f2.txt", content="two\n")
+        ctx, _ = make_ctx()
+        diff = (
+            "--- a/f1.txt\n+++ b/f1.txt\n@@ -1 +1 @@\n-one\n+ONE\n"
+            "--- a/f2.txt\n+++ b/f2.txt\n@@ -1 +1 @@\n-two\n+TWO\n"
+        )
+        d = os.path.join(self.tmp.name, "")
+        result = EditWindows().run({"path": d, "new_str": diff, "diff": True}, ctx)
+        self.assertIn("Diff successfully applied", result)
+        with open(os.path.join(self.tmp.name, "f1.txt")) as f:
+            self.assertEqual(f.read(), "ONE\n")
+        with open(os.path.join(self.tmp.name, "f2.txt")) as f:
+            self.assertEqual(f.read(), "TWO\n")
+
+    # ------------------------------------------------------------------
+    # GlobWindows: pure-Python rglob fallback
+    # ------------------------------------------------------------------
+    def test_glob_win_lists_files(self):
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "a.py")
+        self._file("proj", "b.txt")
+        out = GlobWindows().run({"pattern": "*.py", "path": d}, self.ctx)
+        self.assertIn(os.path.realpath(os.path.join(d, "a.py")), out)
+        self.assertNotIn("b.txt", out)
+
+    def test_glob_win_depth_limiting(self):
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "top.py")
+        self._file("proj", "sub", "deep.py")
+        out = GlobWindows().run({"pattern": "*.py", "path": d, "depth": 1}, self.ctx)
+        self.assertIn(os.path.realpath(os.path.join(d, "top.py")), out)
+        self.assertNotIn("deep.py", out)
+
+    def test_glob_win_unlimited_depth(self):
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "top.py")
+        self._file("proj", "sub", "deep.py")
+        out = GlobWindows().run({"pattern": "*.py", "path": d}, self.ctx)
+        self.assertIn(os.path.realpath(os.path.join(d, "top.py")), out)
+        self.assertIn(os.path.realpath(os.path.join(d, "sub", "deep.py")), out)
+
+    def test_glob_win_skips_hidden_dirs(self):
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "visible.py")
+        self._file("proj", ".hidden", "secret.py")
+        out = GlobWindows().run({"pattern": "*.py", "path": d}, self.ctx)
+        self.assertIn("visible.py", out)
+        self.assertNotIn("secret.py", out)
+
+    def test_glob_win_no_matches_returns_empty(self):
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "a.txt")
+        out = GlobWindows().run({"pattern": "*.rs", "path": d}, self.ctx)
+        self.assertEqual(out, "")
+
+    def test_glob_win_empty_pattern_errors(self):
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        out = GlobWindows().run({"pattern": "", "path": self.tmp.name}, self.ctx)
+        self.assertIn("Error", out)
+
+    def test_glob_win_nonexistent_path_errors(self):
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        out = GlobWindows().run(
+            {"pattern": "*", "path": os.path.join(self.tmp.name, "nope")}, self.ctx
+        )
+        self.assertIn("Error", out)
+
+    def test_glob_win_sorted_by_mtime(self):
+        import time
+
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        d = self._mkdir("proj")
+        older = self._file("proj", "older.py")
+        time.sleep(0.05)
+        newer = self._file("proj", "newer.py")
+        out = GlobWindows().run({"pattern": "*.py", "path": d}, self.ctx)
+        older_pos = out.index(os.path.realpath(older))
+        newer_pos = out.index(os.path.realpath(newer))
+        self.assertLess(newer_pos, older_pos, "newer file should appear first")
+
+    def test_glob_win_git_delegation(self):
+        """Inside a git repo, GlobWindows delegates to the parent's
+        git ls-files path."""
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        repo = self._mkdir("repo")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        self._file("repo", "a.py", content="hello\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        out = GlobWindows().run({"pattern": "*", "path": repo}, self.ctx)
+        self.assertIn(os.path.realpath(os.path.join(repo, "a.py")), out)
+
+    # ------------------------------------------------------------------
+    # GrepWindows: rg → pure-Python re fallback chain
+    # ------------------------------------------------------------------
+    def test_grep_win_python_grep_finds_matches(self):
+        """With rg unavailable, GrepWindows uses the pure-Python search."""
+        from python_agent_harness.tools.grep_win import GrepWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "a.py", content="hello world\n")
+        with mock.patch("shutil.which", return_value=None):
+            out = GrepWindows().run({"regex": "hello", "path": d}, self.ctx)
+        self.assertIn("a.py", out)
+        self.assertIn("hello world", out)
+
+    def test_grep_win_python_grep_line_numbers(self):
+        from python_agent_harness.tools.grep_win import GrepWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "a.py", content="one\ntwo\nthree two\n")
+        with mock.patch("shutil.which", return_value=None):
+            out = GrepWindows().run({"regex": "two", "path": d}, self.ctx)
+        self.assertIn("a.py:2:two", out.replace("\\", "/"))
+        self.assertIn("a.py:3:three two", out.replace("\\", "/"))
+
+    def test_grep_win_python_grep_glob_filter(self):
+        from python_agent_harness.tools.grep_win import GrepWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "a.py", content="needle\n")
+        self._file("proj", "b.md", content="needle\n")
+        with mock.patch("shutil.which", return_value=None):
+            out = GrepWindows().run({"regex": "needle", "path": d, "glob": "*.py"}, self.ctx)
+        self.assertIn("a.py", out.replace("\\", "/"))
+        self.assertNotIn("b.md", out)
+
+    def test_grep_win_python_grep_skips_hidden_dirs(self):
+        from python_agent_harness.tools.grep_win import GrepWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "visible.py", content="needle\n")
+        self._file("proj", ".hidden", "secret.py", content="needle\n")
+        with mock.patch("shutil.which", return_value=None):
+            out = GrepWindows().run({"regex": "needle", "path": d}, self.ctx)
+        self.assertIn("visible.py", out.replace("\\", "/"))
+        self.assertNotIn("secret.py", out)
+
+    def test_grep_win_python_grep_context_lines(self):
+        from python_agent_harness.tools.grep_win import GrepWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "a.py", content="line1\nline2\nline3\nline4\n")
+        with mock.patch("shutil.which", return_value=None):
+            out = GrepWindows().run({"regex": "line3", "path": d, "context_lines": 1}, self.ctx)
+        self.assertIn("line2", out)
+        self.assertIn("line3", out)
+        self.assertIn("line4", out)
+
+    def test_grep_win_python_grep_no_matches_returns_empty(self):
+        from python_agent_harness.tools.grep_win import GrepWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "a.txt", content="hello\n")
+        with mock.patch("shutil.which", return_value=None):
+            out = GrepWindows().run({"regex": "zzz-no-match", "path": d}, self.ctx)
+        self.assertEqual(out, "")
+
+    def test_grep_win_python_grep_single_file_path(self):
+        from python_agent_harness.tools.grep_win import GrepWindows
+
+        p = self._file("a.py", content="needle here\n")
+        with mock.patch("shutil.which", return_value=None):
+            out = GrepWindows().run({"regex": "needle", "path": p}, self.ctx)
+        self.assertIn("needle here", out)
+
+    def test_grep_win_invalid_regex_errors(self):
+        from python_agent_harness.tools.grep_win import GrepWindows
+
+        d = self._mkdir("proj")
+        self._file("proj", "a.txt", content="hello\n")
+        with mock.patch("shutil.which", return_value=None):
+            out = GrepWindows().run({"regex": "[unclosed", "path": d}, self.ctx)
+        self.assertIn("Error", out)
+
+    def test_grep_win_nonexistent_path_errors(self):
+        from python_agent_harness.tools.grep_win import GrepWindows
+
+        out = GrepWindows().run(
+            {"regex": "x", "path": os.path.join(self.tmp.name, "nope")}, self.ctx
+        )
+        self.assertIn("Error", out)
+
+    def test_grep_win_git_path_unaffected(self):
+        """Inside a git repo, GrepWindows still uses git grep -P."""
+        from python_agent_harness.tools.grep_win import GrepWindows
+
+        repo = self._mkdir("repo")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        self._file("repo", "a.py", content="hello world\n")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        out = GrepWindows().run({"regex": "hello", "path": repo}, self.ctx)
+        self.assertIn("a.py", out)
+        self.assertIn("hello", out)
+
+
 if __name__ == "__main__":
     unittest.main()
