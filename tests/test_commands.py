@@ -3,6 +3,7 @@ prompt/kickoff preparation, custom-command loading and lookup."""
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -97,7 +98,7 @@ class TestLoadCustomCommands(unittest.TestCase):
             ):
                 loaded = load_custom_commands()
         self.assertEqual([c.name for c in loaded], ["explain"])
-        self.assertEqual(loaded[0].prompt_file, "commands/explain.md")
+        self.assertEqual(loaded[0].prompt_file.replace(os.sep, "/"), "commands/explain.md")
 
 
 class TestFindCommand(unittest.TestCase):
