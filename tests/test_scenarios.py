@@ -603,6 +603,10 @@ class DropOnceHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     attempts = 0
 
+    def handle(self):
+        with contextlib.suppress(BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            super().handle()
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         self.rfile.read(length or b"{}")
