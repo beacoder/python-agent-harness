@@ -175,7 +175,7 @@ def cmd_config(args: argparse.Namespace) -> int:
         if path.exists() and not args.force:
             print(f"config already exists: {path} (use --force to overwrite)")
             return 1
-        template = config.CONFIG_TEMPLATE.format(path=path)
+        template = config.CONFIG_TEMPLATE.format(path=str(path).replace("\\", "\\\\"))
         path.write_text(template, encoding="utf-8")
         print(f"wrote config template: {path}")
         return 0
