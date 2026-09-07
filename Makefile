@@ -1,6 +1,13 @@
 PYTHON ?= python3
 VENV ?= venv
-PIP = $(VENV)/bin/pip
+# Windows venvs use Scripts/ instead of bin/
+ifeq ($(OS),Windows_NT)
+    BIN := Scripts
+else
+    BIN := bin
+endif
+PIP = $(VENV)/$(BIN)/pip
+PY = $(VENV)/$(BIN)/python
 
 .PHONY: help setup install test build run clean
 
@@ -13,9 +20,9 @@ help:
 	@echo "  run     launch the interactive TUI agent"
 	@echo "  clean   remove virtualenv and build artifacts"
 
-setup: $(VENV)/bin/python
+setup: $(VENV)/$(BIN)/python
 
-$(VENV)/bin/python:
+$(VENV)/$(BIN)/python:
 	$(PYTHON) -m venv $(VENV)
 
 install: setup
@@ -23,14 +30,14 @@ install: setup
 	$(PIP) install -e .
 
 test: install
-	$(VENV)/bin/python -m unittest discover -s tests -v
+	$(PY) -m unittest discover -s tests -v
 
 build: setup
 	$(PIP) install build
-	$(VENV)/bin/python -m build
+	$(PY) -m build
 
 run: install
-	$(VENV)/bin/python -m python_agent_harness.cli run
+	$(PY) -m python_agent_harness.cli run
 
 clean:
 	rm -rf $(VENV) build dist *.egg-info
