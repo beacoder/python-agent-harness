@@ -125,9 +125,11 @@ jobs:
         shell: bash
         run: |
           python -m venv /tmp/wheeltest
-          # Install ONLY from the built wheel (no source tree / editable install)
-          /tmp/wheeltest/bin/pip install --upgrade pip || /tmp/wheeltest/Scripts/pip install --upgrade pip
-          /tmp/wheeltest/bin/pip install dist/*.whl || /tmp/wheeltest/Scripts/pip install dist/*.whl
+          # Find the venv's python (bin/ on Unix, Scripts/ on Windows)
+          VENV_PY=/tmp/wheeltest/bin/python
+          if [ ! -f "$VENV_PY" ]; then VENV_PY=/tmp/wheeltest/Scripts/python; fi
+          "$VENV_PY" -m pip install --upgrade pip
+          "$VENV_PY" -m pip install dist/*.whl
 
       - name: CLI smoke test
         # Run from a neutral directory: if we ran inside the checkout, the
