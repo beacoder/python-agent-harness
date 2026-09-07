@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 from collections.abc import Callable, Iterable
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit import PromptSession
@@ -20,6 +21,20 @@ from rich.console import Console
 from rich.text import Text
 
 from .. import config
+
+
+@contextmanager
+def _safe_patch_stdout():
+    """patch_stdout that degrades to a no-op when the terminal output
+    cannot be created (e.g. headless Windows CI without a console)."""
+    try:
+        proxy = patch_stdout()
+    except Exception:
+        yield
+        return
+    with proxy:
+        yield
+
 
 if TYPE_CHECKING:
     from ..session import Session
@@ -97,6 +112,16 @@ def _make_prompt_session(
     the completion state just before the Tab-triggered task runs, which
     then bails out without inserting the common part).  Tab must be the
     single, deterministic trigger.
+
+    ``enable_suspend`` is off on Windows: Ctrl-Z (suspend) is a Unix
+    terminal feature with no Windows equivalent.
+
+    On Windows without a real console (headless CI, redirected stdout),
+    prompt_toolkit raises ``NoConsoleScreenBufferError`` while creating
+    the default ``Win32Output``.  The fallback rebuilds the session with
+    a no-op ``DummyOutput`` so the TUI can still be constructed; on a
+    real terminal the first attempt succeeds and the fallback is never
+    reached.
     """
     try:
         return PromptSession(
@@ -109,6 +134,7 @@ def _make_prompt_session(
             **kwargs,
         )
     except Exception:
+        # No console available (headless Windows CI): use a no-op output.
         from prompt_toolkit.output import DummyOutput
 
         return PromptSession(
@@ -313,7 +339,7 @@ class InputMixin:
 
     def _read_multiline(self) -> str | None:
         try:
-            with patch_stdout():
+            with _safe_patch_stdout():
                 text = self.prompt_session.prompt(self._input_prompt())
         except EOFError:
             # Ctrl-D: quit
@@ -361,7 +387,7 @@ class InputMixin:
         else:
             prompt = q.prompt + " > "
         try:
-            with patch_stdout():
+            with _safe_patch_stdout():
                 answer = self.prompt_session.prompt(prompt, multiline=False)
         except (EOFError, KeyboardInterrupt):
             answer = ""
