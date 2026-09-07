@@ -516,6 +516,7 @@ class TestGlobGrepTools(unittest.TestCase):
         return p
 
     @unittest.skipUnless(shutil.which("tree"), "tree not available")
+    @unittest.skipIf(sys.platform == "win32", "legacy GlobTool tree fallback is Unix-only")
     def test_glob_tree_fallback_lists_files_and_depth(self):
         d = self._mkdir("proj")
         open(os.path.join(d, "a.py"), "w").close()
