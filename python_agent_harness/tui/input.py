@@ -26,13 +26,22 @@ from .. import config
 @contextmanager
 def _safe_patch_stdout():
     """patch_stdout that degrades to a no-op when the terminal output
-    cannot be created (e.g. headless Windows CI without a console)."""
+    cannot be created (e.g. headless Windows CI without a console).
+
+    ``patch_stdout`` fails in ``__enter__``: StdoutProxy reads
+    ``app_session.output``, which triggers ``create_output`` and raises
+    ``NoConsoleScreenBufferError`` on a headless Windows console.  We
+    force output creation up front; if it fails, skip patching (the
+    body's own exceptions still propagate normally).
+    """
     try:
-        proxy = patch_stdout()
+        from prompt_toolkit.application.current import get_app_session
+
+        _ = get_app_session().output
     except Exception:
         yield
         return
-    with proxy:
+    with patch_stdout():
         yield
 
 
