@@ -1856,7 +1856,8 @@ class TestWindowsVariants(unittest.TestCase):
         self._file("repo", "a.py", content="hello\n")
         subprocess.run(["git", "add", "."], cwd=repo, check=True)
         out = GlobWindows().run({"pattern": "*", "path": repo}, self.ctx)
-        self.assertIn(os.path.realpath(os.path.join(repo, "a.py")), out)
+        expected = os.path.realpath(os.path.join(repo, "a.py")).replace("\\", "/")
+        self.assertIn(expected, out.replace("\\", "/"))
 
     # ------------------------------------------------------------------
     # GrepWindows: rg → pure-Python re fallback chain
