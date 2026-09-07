@@ -13,6 +13,7 @@ import os
 import random
 import socket as _socket
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -128,7 +129,7 @@ def _llm_log_path() -> Path:
         d = Path(log_dir)
         d.mkdir(parents=True, exist_ok=True)
         return d / f"python-agent-harness-{date_str}-{session_id}.json"
-    return Path(f"/tmp/python-agent-harness-{date_str}-{session_id}.json")
+    return Path(tempfile.gettempdir()) / f"python-agent-harness-{date_str}-{session_id}.json"
 
 
 def _log_llm_interaction(
@@ -196,8 +197,12 @@ def _resolve_ca_bundle() -> str | bool:
         "/etc/pki/tls/certs/ca-bundle.crt",
         "/etc/ssl/certs/ca-certificates.crt",
         "/etc/ssl/ca-bundle.pem",
+        # Windows (Git for Windows, conda, etc.)
+        os.path.join(os.environ.get("PROGRAMFILES", ""), "Git", "mingw64", "ssl", "cert.pem"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "Git", "mingw64", "ssl", "cert.pem"),
+        os.path.join(os.environ.get("CONDA_PREFIX", ""), "ssl", "cert.pem"),
     ):
-        if os.path.isfile(cand):
+        if cand and os.path.isfile(cand):
             return cand
     return True
 
