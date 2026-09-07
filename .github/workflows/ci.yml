@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -65,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
@@ -108,7 +108,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -122,28 +122,33 @@ jobs:
           python -m build
 
       - name: Install the built wheel into a clean venv
+        shell: bash
         run: |
           python -m venv /tmp/wheeltest
           # Install ONLY from the built wheel (no source tree / editable install)
-          /tmp/wheeltest/bin/pip install --upgrade pip
-          /tmp/wheeltest/bin/pip install dist/*.whl
+          /tmp/wheeltest/bin/pip install --upgrade pip || /tmp/wheeltest/Scripts/pip install --upgrade pip
+          /tmp/wheeltest/bin/pip install dist/*.whl || /tmp/wheeltest/Scripts/pip install dist/*.whl
 
       - name: CLI smoke test
         # Run from a neutral directory: if we ran inside the checkout, the
         # source `python_agent_harness/` tree would shadow the installed wheel
         # on sys.path and we'd be testing the source, not the built artifact.
         working-directory: /tmp
+        shell: bash
         run: |
           set -euxo pipefail
           BIN=/tmp/wheeltest/bin/python-agent-harness
+          if [ ! -f "$BIN" ]; then BIN=/tmp/wheeltest/Scripts/python-agent-harness; fi
           # Console script is installed and importable
           "$BIN" --help
           # Config subcommand runs without any API key / network
           "$BIN" config
           # Module entry point works too
-          /tmp/wheeltest/bin/python -m python_agent_harness --help
+          PY=/tmp/wheeltest/bin/python
+          if [ ! -f "$PY" ]; then PY=/tmp/wheeltest/Scripts/python; fi
+          "$PY" -m python_agent_harness --help
           # Import resolves to the INSTALLED wheel + bundled prompts shipped
-          /tmp/wheeltest/bin/python - <<'PY'
+          "$PY" - <<'PY'
           import importlib.resources as r
           import python_agent_harness
           loc = python_agent_harness.__file__
@@ -166,7 +171,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -184,6 +189,7 @@ jobs:
       # environment, which would flag unrelated tooling like pip/setuptools.
       # Record accepted/unfixable advisories in .pip-audit-known-vulnerabilities.
       - name: pip-audit
+        shell: bash
         run: |
           IGNORE_VULNS=""
           if [ -f .pip-audit-known-vulnerabilities ]; then
