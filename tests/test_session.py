@@ -126,11 +126,15 @@ class TestPlanModeGuard(unittest.TestCase):
 
     def test_tool_path_resolution(self):
         session = RecordingSession()
-        self.assertEqual(session._tool_path("Edit", {"path": "/a/b.py"}), "/a/b.py")
-        self.assertEqual(session._tool_path("Insert", {"path": "/a/c.py"}), "/a/c.py")
+        self.assertEqual(
+            session._tool_path("Edit", {"path": "/a/b.py"}), os.path.realpath("/a/b.py")
+        )
+        self.assertEqual(
+            session._tool_path("Insert", {"path": "/a/c.py"}), os.path.realpath("/a/c.py")
+        )
         self.assertEqual(
             session._tool_path("Mkdir", {"parent": "/a", "name": "d"}),
-            os.path.join("/a", "d"),
+            os.path.realpath(os.path.join("/a", "d")),
         )
         self.assertIsNone(session._tool_path("Read", {"path": "/x"}))
 
@@ -166,7 +170,7 @@ class TestFindSkill(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="pah-skills-") as d:
             sub = os.path.join(d, "weather-forecaster")
             os.makedirs(sub)
-            with open(os.path.join(sub, "SKILL.md"), "w") as f:
+            with open(os.path.join(sub, "SKILL.md"), "w", encoding="utf-8") as f:
                 f.write("---\nname: 天气预报助手\n---\n# body")
             session._skill_dir = d
             self.assertEqual(
