@@ -43,7 +43,7 @@ class TestTuiInput(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             os.mkdir(os.path.join(d, "workspace"))
             os.mkdir(os.path.join(d, "workbench"))
-            with mock.patch.dict(os.environ, {"HOME": d}):
+            with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}):
                 c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
                 completions = list(
                     c.get_completions(Document(text="~/wor", cursor_position=5), None)
