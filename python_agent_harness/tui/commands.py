@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import sys
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -138,11 +137,12 @@ class CommandMixin:
     def _split_args(arg: str) -> list[str]:
         """Split a slash-command argument string (shell-like quoting).
 
-        On Windows, ``posix=False`` keeps backslashes literal (POSIX mode
-        would treat ``\\U`` etc. as escape sequences and mangle paths).
+        Backslashes are pre-escaped so POSIX shlex keeps them literal
+        (``\\U`` etc. would otherwise be consumed as escape sequences
+        and mangle Windows paths like ``C:\\Users\\...``).
         """
         try:
-            return shlex.split(arg, posix=sys.platform != "win32")
+            return shlex.split(arg.replace("\\", "\\\\"))
         except ValueError:
             return arg.split()
 
