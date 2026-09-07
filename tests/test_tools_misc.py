@@ -276,6 +276,7 @@ class TestAgentTool(unittest.TestCase):
         self.assertIn("Error: Task 'task' failed", result.wait())
 
 
+@unittest.skipUnless(sys.platform != "win32", "Bash process-group tests are Unix-only")
 class TestBashInternals(unittest.TestCase):
     """Bash process-group kill, bounded output collection, and
     read-failure containment."""
