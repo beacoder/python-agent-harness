@@ -56,7 +56,7 @@ def _kill_pgid(pgid: int) -> None:
     stdout pipe open is still running in the group.
     """
     with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-        os.killpg(pgid, signal.SIGKILL)
+        os.killpg(pgid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def _kill_graceful(pgid: int, proc: subprocess.Popen) -> None:
@@ -66,7 +66,7 @@ def _kill_graceful(pgid: int, proc: subprocess.Popen) -> None:
     children before the hard kill.
     """
     with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-        os.killpg(pgid, signal.SIGTERM)
+        os.killpg(pgid, signal.SIGTERM)  # pyright: ignore[reportAttributeAccessIssue]
     try:
         proc.wait(timeout=2)
     except subprocess.TimeoutExpired:
@@ -144,7 +144,7 @@ def _collect_output(proc: subprocess.Popen, cancel: threading.Event | None) -> t
     if stdout is None:  # unreachable (stdout=PIPE), kept for the type checker
         return "", "ok"
     fd = stdout.fileno()
-    os.set_blocking(fd, False)
+    os.set_blocking(fd, False)  # pyright: ignore[reportAttributeAccessIssue]
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     head: list[str] = []
     head_len = 0
