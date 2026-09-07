@@ -538,8 +538,9 @@ class TestGlobGrepTools(unittest.TestCase):
                 f.write(content)
         subprocess.run(["git", "add", "."], cwd=repo, check=True)
         out = GlobTool().run({"pattern": "*", "path": repo}, self.ctx)
-        self.assertIn(os.path.realpath(os.path.join(repo, "a.py")), out)
-        self.assertIn(os.path.realpath(os.path.join(repo, "b.txt")), out)
+        # git backend reports forward-slash paths on every platform
+        self.assertIn(os.path.realpath(os.path.join(repo, "a.py")).replace(os.sep, "/"), out)
+        self.assertIn(os.path.realpath(os.path.join(repo, "b.txt")).replace(os.sep, "/"), out)
         out = Grep().run({"regex": "hello", "path": repo}, self.ctx)
         self.assertIn("a.py", out)
         self.assertIn("hello", out)
