@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from .mcp.config import MCPConfig
@@ -50,7 +51,10 @@ CALIBRATION_MIN = 0.5
 CALIBRATION_MAX = 3.0
 
 # ---- sessions ---------------------------------------------------------------
-SESSION_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+if sys.platform == "win32":
+    SESSION_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+else:
+    SESSION_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 SESSION_SUBDIR = "python-agent-harness/sessions"
 AUTO_SAVE_SESSION = True
 
@@ -164,9 +168,15 @@ DEFAULT_AGENT_PROMPT_FILE = PROMPTS_DIR / "agent.md"
 DEFAULT_SUBAGENT_PROMPT_FILE = PROMPTS_DIR / "subagent.md"
 
 # ---- configuration file ---------------------------------------------------------
-CONFIG_DIR = (
-    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "python-agent-harness"
-)
+if sys.platform == "win32":
+    CONFIG_DIR = (
+        Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        / "python-agent-harness"
+    )
+else:
+    CONFIG_DIR = (
+        Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "python-agent-harness"
+    )
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULT_LLM: dict = {
