@@ -156,10 +156,10 @@ def _git_glob_results(raw: str, git_root: str, base: str, depth: object) -> str:
     """
     lines = [line for line in raw.split("\0") if line]
     if _natnump(depth):
-        rel_base = os.path.relpath(base, git_root)
+        rel_base = os.path.relpath(base, git_root).replace(os.sep, "/")
         base_depth = 0 if rel_base == "." else 1 + rel_base.count("/")
         lines = [line for line in lines if line.count("/") < base_depth + depth]
-    out = "\n".join(os.path.join(git_root, line) for line in lines)
+    out = "\n".join(os.path.join(git_root, line).replace(os.sep, "/") for line in lines)
     if not out:
         return ""
     return _spool(out + "\n", "glob")
