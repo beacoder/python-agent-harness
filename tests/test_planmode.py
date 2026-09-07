@@ -77,7 +77,7 @@ class TestPlanMode(unittest.TestCase):
 class TestPlanTempDir(unittest.TestCase):
     def test_tmpdir_env_wins(self):
         with mock.patch.dict(os.environ, {"TMPDIR": "/custom/tmp"}, clear=False):
-            self.assertEqual(_plan_temp_dir(), "/custom/tmp")
+            self.assertEqual(_plan_temp_dir(), os.path.abspath("/custom/tmp"))
 
     def test_falls_back_to_plain_tmp(self):
         """With no TMPDIR/TMP/TEMP and an empty gettempdir(), the
