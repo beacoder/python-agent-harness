@@ -657,7 +657,7 @@ class TestClientHelpers(unittest.TestCase):
         env.pop("LLM_LOG_DIR", None)
         with mock.patch.dict(os.environ, env):
             p = _llm_log_path()
-        self.assertTrue(str(p).startswith("/tmp/"))
+        self.assertTrue(str(p).startswith(str(tempfile.gettempdir())))
         self.assertRegex(p.name, r"^python-agent-harness-\d{8}-[0-9a-f]{8}\.json$")
 
     def test_resolve_ca_bundle_prefers_env(self):
