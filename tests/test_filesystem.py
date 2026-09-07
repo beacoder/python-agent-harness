@@ -569,7 +569,9 @@ class TestGlobGrepTools(unittest.TestCase):
         out = GlobTool().run({"pattern": "*", "path": link}, self.ctx)
         self.assertNotIn("outside repository", out)
         self.assertNotIn("Glob failed", out)
-        self.assertIn(os.path.realpath(os.path.join(real, "a.py")), out)
+        # Normalize path separators for Windows compatibility
+        expected = os.path.realpath(os.path.join(real, "a.py")).replace("\\", "/")
+        self.assertIn(expected, out.replace("\\", "/"))
         out = Grep().run({"regex": "hello", "path": link}, self.ctx)
         self.assertIn("a.py", out)
         self.assertIn("hello", out)
