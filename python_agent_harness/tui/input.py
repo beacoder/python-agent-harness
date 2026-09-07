@@ -5,6 +5,7 @@ InputMixin that provides prompt reading and question blocking.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
@@ -103,7 +104,7 @@ def _make_prompt_session(
         completer=completer,
         complete_while_typing=False,
         multiline=True,
-        enable_suspend=True,
+        enable_suspend=sys.platform != "win32",
         **kwargs,
     )
 
