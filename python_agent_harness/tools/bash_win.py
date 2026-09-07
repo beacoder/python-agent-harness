@@ -156,7 +156,7 @@ def _collect_output_win(proc: subprocess.Popen, cancel: threading.Event | None) 
             continue
         if raw is None:
             break
-        chunk = decoder.decode(raw)
+        chunk = decoder.decode(raw).replace("\r\n", "\n")
         total += len(chunk)
         last_output = time.monotonic()
         if head_len < _MAX_OUTPUT:
