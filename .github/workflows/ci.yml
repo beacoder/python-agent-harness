@@ -135,10 +135,11 @@ jobs:
         # Run from a neutral directory: if we ran inside the checkout, the
         # source `python_agent_harness/` tree would shadow the installed wheel
         # on sys.path and we'd be testing the source, not the built artifact.
-        working-directory: /tmp
         shell: bash
         run: |
           set -euxo pipefail
+          NEUTRAL_DIR=$(mktemp -d)
+          cd "$NEUTRAL_DIR"
           BIN=/tmp/wheeltest/bin/python-agent-harness
           if [ ! -f "$BIN" ]; then BIN=/tmp/wheeltest/Scripts/python-agent-harness; fi
           # Console script is installed and importable
