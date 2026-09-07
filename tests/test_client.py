@@ -824,6 +824,7 @@ class TestAbortInflightSockets(unittest.TestCase):
 
     def test_shuts_down_and_closes_live_socket(self):
         import socket as _socket
+        import sys
 
         from python_agent_harness.client import _abort_inflight_sockets
 
@@ -832,8 +833,11 @@ class TestAbortInflightSockets(unittest.TestCase):
         stream.get_extra_info.return_value = sock
         _abort_inflight_sockets(self._fake_client_with_stream(stream))
         # shutdown wakes the recv on Linux; close() is the reliable wake
-        # on macOS/BSD where shutdown alone may leave a parked recv stuck
-        sock.shutdown.assert_called_once_with(_socket.SHUT_RDWR)
+        # on macOS/BSD where shutdown alone may leave a parked recv stuck.
+        # On Windows, shutdown is skipped (causes WinError 10058 on the
+        # server side); close() alone triggers a TCP RST that wakes reads.
+        if sys.platform != "win32":
+            sock.shutdown.assert_called_once_with(_socket.SHUT_RDWR)
         sock.close.assert_called_once_with()
 
     def test_close_still_runs_when_shutdown_raises(self):
