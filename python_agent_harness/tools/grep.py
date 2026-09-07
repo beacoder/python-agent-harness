@@ -1,7 +1,8 @@
-"""Grep tool: git grep, then rg, then plain grep.
+"""Glob tool: `git ls-files` inside git repos, `tree` outside.
 
-Grep mirrors `gptel-agent-harness-tools--grep`: git grep (passing the
-regex via `-e`), then rg, then plain grep.  Oversized results are
+Glob mirrors `gptel-agent-harness-tools--glob`: inside a git
+repository it uses `git ls-files` (fast, .gitignore-respecting), and
+falls back to the `tree` command outside git.  Oversized results are
 spilled to a temp file (see `filesystem._spool`), so no matches are
 ever silently lost.
 """
@@ -13,67 +14,89 @@ import shutil
 import subprocess
 
 from .base import Tool, ToolContext
-from .filesystem import _git_root, _spool
+from .filesystem import _git_root, _natnump, _spool
 
 
-class Grep(Tool):
-    name = "Grep"
+class GlobTool(Tool):
+    name = "Glob"
     is_readonly = True
     description = (
-        "Search file contents with a regular expression. "
-        "Use this for content search; use Glob for filename search. "
-        "Oversized results are spilled to a temp file (see the 'Stored in:' "
+        "Recursively find files matching a provided glob pattern.\n\n"
+        '- Supports glob patterns like "*.md" or "*test*.py".\n'
+        "- Inside a git repository, matching respects .gitignore and covers "
+        "both tracked and untracked files.\n"
+        "- Returns matching file paths (absolute) at all depths.  Limit the "
+        "depth of the search by providing the `depth` argument.\n"
+        "- When you are doing an open ended search that may require multiple "
+        'rounds of globbing and grepping, use the "Agent" tool instead.\n'
+        "- Oversized results are spilled to a temp file (see the 'Stored in:' "
         "path); use Read to view the full output."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "regex": {"type": "string", "description": "Regular expression to search for"},
-            "path": {"type": "string", "description": "File or directory to search in"},
-            "glob": {"type": "string", "description": "Optional file pattern filter (e.g. *.py)"},
-            "context_lines": {
+            "pattern": {
+                "type": "string",
+                "description": (
+                    'Glob pattern to match, for example "*.el". Must not be '
+                    'empty.\nUse "*" to list all files in a directory.'
+                ),
+            },
+            "path": {
+                "type": "string",
+                "description": (
+                    'Directory to search in.  Supports relative paths and defaults to "."'
+                ),
+            },
+            "depth": {
                 "type": "integer",
-                "description": "Lines of context (0-15)",
-                "maximum": 15,
+                "description": (
+                    "Limit directory depth of search, 1 or higher. Defaults to no limit."
+                ),
             },
         },
-        "required": ["regex", "path"],
+        "required": ["pattern"],
     }
 
     def run(self, args: dict, ctx: ToolContext) -> str:
-        regex = args["regex"]
-        path = os.path.realpath(args["path"])
-        if not os.path.isdir(path) and not os.path.isfile(path):
-            return f"Error: path {args['path']} is not readable"
-        glob = args.get("glob")
-        context = args.get("context_lines")
-        if context is not None:
-            context = max(0, min(15, int(context)))
+        # Mirrors `gptel-agent-harness-tools--glob': `git ls-files' inside a
+        # git repository (fast, .gitignore-respecting), `tree' as a fallback
+        # outside git.
+        pattern = args.get("pattern") or ""
+        if not pattern:
+            return "Error: pattern must not be empty"
+        path = args.get("path")
+        if path:
+            if not (os.path.isdir(path) and os.access(path, os.R_OK)):
+                return f"Error: path {path} is not readable"
+        else:
+            path = ctx.cwd
+        # realpath (not abspath): _git_root resolves symlinks (macOS /var ->
+        # /private/var), so the base must be canonical or relpath produces a
+        # pathspec git rejects as "outside repository".
+        base = os.path.realpath(path)
+        depth = args.get("depth")
 
-        git_root = _git_root(path)
+        git_root = _git_root(base)
+        if not git_root and not shutil.which("tree"):
+            return "Error: Executable `tree` not found.  This tool cannot be used"
+
         if git_root:
-            rel = os.path.relpath(path, git_root)
-            pathspec = rel
-            if glob and os.path.isdir(path):
-                pathspec = os.path.join(rel, glob).replace(os.sep, "/")
-            cmd = [
-                "git",
-                "grep",
-                "--line-number",
-                "--no-color",
-                "--max-count=1000",
-                "--untracked",
-                "-P",
-                "-e",
-                regex,
-                "--",
-                pathspec,
-            ]
-            if context:
-                cmd = cmd[:3] + [f"-C{context}"] + cmd[3:]
+            rel = os.path.relpath(base, git_root)
+            pathspec = pattern if rel == "." else f"{rel}/{pattern}".replace(os.sep, "/")
             try:
                 proc = subprocess.run(
-                    cmd,
+                    [
+                        "git",
+                        "ls-files",
+                        "-z",
+                        "--full-name",
+                        "--cached",
+                        "--others",
+                        "--exclude-standard",
+                        "--",
+                        pathspec,
+                    ],
                     cwd=git_root,
                     capture_output=True,
                     text=True,
@@ -81,82 +104,62 @@ class Grep(Tool):
                     errors="replace",
                     timeout=60,
                 )
-            except (OSError, subprocess.TimeoutExpired):
-                proc = None
-            if proc is not None and proc.returncode in (0, 1):
-                return _grep_out(proc, "git")
-        return self._fallback_rg_grep(regex, path, glob, context)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                return f"Error: {e}"
+            if proc.returncode != 0:
+                # Failure banner is prepended to whatever git emitted.
+                banner = f"Glob failed with exit code {proc.returncode}\nSTDOUT:\n\n"
+                return _spool(banner + (proc.stdout or "") + (proc.stderr or ""), "glob")
+            return _git_glob_results(proc.stdout, git_root, base, depth)
 
-    def _fallback_rg_grep(
-        self, regex: str, path: str, glob: str | None, context: int | None
-    ) -> str:
-        """rg → grep fallback chain (no git grep).
-
-        Shared by :class:`Grep` (after git grep -P fails) and
-        :class:`GrepMac` (after git grep -E fails).  Extracted here so
-        the Mac variant can skip the parent's ``git grep -P`` attempt
-        without duplicating the rg/grep logic.
-        """
-        if shutil.which("rg"):
-            cmd = [
-                "rg",
-                "--sort=modified",
-                "--max-count=1000",
-                "--heading",
-                "--line-number",
-                "-e",
-                regex,
-                path,
-            ]
-            if context:
-                cmd = cmd[:1] + [f"--context={context}"] + cmd[1:]
-            if glob:
-                cmd = cmd[:1] + [f"--glob={glob}"] + cmd[1:]
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=60,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                proc = None
-            if proc is not None and proc.returncode in (0, 1):
-                return _grep_out(proc, "rg")
-        if shutil.which("grep"):
-            cmd = [
-                "grep",
-                "--recursive",
-                "--max-count=1000",
-                "--line-number",
-                "--regexp",
-                regex,
-                path,
-            ]
-            if context:
-                cmd = cmd[:1] + [f"--context={context}"] + cmd[1:]
-            if glob:
-                cmd = cmd[:1] + [f"--include={glob}"] + cmd[1:]
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=60,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                proc = None
-            if proc is not None:
-                return _grep_out(proc, "grep")
-        return "Error: ripgrep/grep/git-grep not available, this tool cannot be used"
+        # --- Tree strategy (fallback outside git) ---
+        cmd = [
+            "tree",
+            "-l",
+            "-f",
+            "-i",
+            "-I",
+            ".git",
+            "--sort=mtime",
+            "--ignore-case",
+            "--prune",
+            "-P",
+            pattern,
+            base,
+        ]
+        if _natnump(depth):
+            cmd += ["-L", str(depth)]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return f"Error: {e}"
+        out = proc.stdout
+        if proc.returncode != 0:
+            out = f"Glob failed with exit code {proc.returncode}\nSTDOUT:\n\n" + out
+        return _spool(out, "glob")
 
 
-def _grep_out(proc: subprocess.CompletedProcess, backend: str) -> str:
-    text = proc.stdout
-    if proc.returncode >= 2:
-        text = f"Error: search failed with exit-code {proc.returncode}.  Tool output:\n\n{text}"
-    return _spool(text, "grep")
+def _git_glob_results(raw: str, git_root: str, base: str, depth: object) -> str:
+    """Format `git ls-files -z` output into absolute paths, depth-filtered.
+
+    Mirrors the git branch of `gptel-agent-harness-tools--glob': split on
+    NUL, drop entries whose slash-count reaches ``base_depth + depth``
+    (only when DEPTH is a non-negative integer — `natnump'), then prefix
+    each remaining entry with GIT-ROOT.
+    """
+    lines = [line for line in raw.split("\0") if line]
+    if _natnump(depth):
+        rel_base = os.path.relpath(base, git_root).replace(os.sep, "/")
+        base_depth = 0 if rel_base == "." else 1 + rel_base.count("/")
+        lines = [line for line in lines if line.count("/") < base_depth + depth]
+    out = "\n".join(os.path.join(git_root, line).replace(os.sep, "/") for line in lines)
+    if not out:
+        return ""
+    return _spool(out + "\n", "glob")
