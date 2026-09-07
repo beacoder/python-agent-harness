@@ -98,15 +98,29 @@ def _make_prompt_session(
     then bails out without inserting the common part).  Tab must be the
     single, deterministic trigger.
     """
-    return PromptSession(
-        history=history,
-        key_bindings=_make_key_bindings(),
-        completer=completer,
-        complete_while_typing=False,
-        multiline=True,
-        enable_suspend=sys.platform != "win32",
-        **kwargs,
-    )
+    try:
+        return PromptSession(
+            history=history,
+            key_bindings=_make_key_bindings(),
+            completer=completer,
+            complete_while_typing=False,
+            multiline=True,
+            enable_suspend=sys.platform != "win32",
+            **kwargs,
+        )
+    except Exception:
+        from prompt_toolkit.output import DummyOutput
+
+        return PromptSession(
+            history=history,
+            key_bindings=_make_key_bindings(),
+            completer=completer,
+            complete_while_typing=False,
+            multiline=True,
+            enable_suspend=False,
+            output=DummyOutput(),
+            **kwargs,
+        )
 
 
 class SlashCompleter(Completer):
