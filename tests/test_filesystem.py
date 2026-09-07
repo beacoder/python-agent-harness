@@ -483,6 +483,7 @@ class TestReadTool(unittest.TestCase):
         hasattr(os, "geteuid") and os.geteuid() == 0,
         "root bypasses file permission checks",
     )
+    @unittest.skipIf(sys.platform == "win32", "Windows ACLs don't respect chmod 0o000")
     def test_unreadable_file_returns_error_not_crash(self):
         p = os.path.join(self.tmp.name, "secret.txt")
         with open(p, "w") as f:
@@ -836,7 +837,7 @@ class TestSpoolDirAndTruncate(unittest.TestCase):
         import python_agent_harness.tools.filesystem as fs
 
         with mock.patch.dict(os.environ, {"TMPDIR": "/custom/tmp"}, clear=True):
-            self.assertEqual(fs._spool_dir(), "/custom/tmp")
+            self.assertEqual(fs._spool_dir(), os.path.abspath("/custom/tmp"))
 
     def test_spool_dir_falls_back_to_system_tempdir(self):
         import python_agent_harness.tools.filesystem as fs
@@ -1382,6 +1383,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
+@unittest.skipIf(sys.platform == "win32", "GlobMac uses Unix 'find', not available on Windows")
 class TestGlobMac(unittest.TestCase):
     """GlobMac: pure-Python non-git fallback (pathlib) and git delegation.
 
