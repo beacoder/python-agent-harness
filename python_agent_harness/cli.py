@@ -9,7 +9,7 @@ sessions, restore and summary/explain — are TUI slash commands only;
 they are NOT registered as CLI subcommands.
 
 Configuration (LLM etc.) is read from a JSON file, by default
-~/.config/python-agent-harness/config.json; see `config --init`.
+from the OS config directory; see `config --init`.
 """
 
 from __future__ import annotations
@@ -250,7 +250,7 @@ def _add_config_arg(parser: argparse.ArgumentParser, suppress: bool = False) -> 
         "--config",
         metavar="PATH",
         default=argparse.SUPPRESS if suppress else None,
-        help="path to config.json (default: ~/.config/python-agent-harness/config.json)",
+        help="path to config.json (default: OS config dir / python-agent-harness / config.json)",
     )
 
 
