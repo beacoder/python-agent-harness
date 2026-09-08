@@ -48,7 +48,7 @@ class _Hunk:
         """(kind, content-without-newline) for the lines that must exist
         in the old file (' ' context and '-' removed lines)."""
         return [
-            (kind, content.rstrip("\n")) for kind, content, _ in self.body if kind in (" ", "-")
+            (kind, content.rstrip("\r\n")) for kind, content, _ in self.body if kind in (" ", "-")
         ]
 
 
@@ -142,7 +142,7 @@ def _match_hunk(hunk: _Hunk, file_lines: list[str]) -> int | None:
         mismatches = 0
         ok = True
         for i, (kind, content) in enumerate(old_seq):
-            file_content = file_lines[p + i].rstrip("\n")
+            file_content = file_lines[p + i].rstrip("\r\n")
             if kind == "-":
                 if file_content != content:
                     ok = False
