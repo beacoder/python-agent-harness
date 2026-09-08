@@ -59,6 +59,22 @@ class TestSession(unittest.TestCase):
         store = SessionPersistence(project_dir="/tmp/proj", model="m")
         self.assertNotIn("round-times", store.metadata_block())
 
+    def test_agent_persisted_in_metadata(self):
+        """A session with an active custom agent records it in the
+        metadata block so /restore can reapply it."""
+        store = SessionPersistence(project_dir="/tmp/proj", model="m", agent="reviewer")
+        meta = store.metadata_block()
+        self.assertIn("python-agent-harness--agent", meta)
+        text = "conversation...\n\n" + meta + "\n"
+        parsed = SessionPersistence.parse_metadata(text)
+        self.assertEqual(parsed["python-agent-harness--agent"], "reviewer")
+
+    def test_agent_absent_when_none(self):
+        """No custom agent -> no agent line in the metadata block, so
+        old sessions and default-agent sessions parse identically."""
+        store = SessionPersistence(project_dir="/tmp/proj", model="m", agent=None)
+        self.assertNotIn("python-agent-harness--agent", store.metadata_block())
+
     def test_save_and_restore_flow(self):
         import os
         import tempfile

@@ -163,6 +163,25 @@ class TestSwitchAgent(unittest.TestCase):
         session.switch_agent("default")
         self.assertEqual(session.store.system_prompt, "original prompt")
 
+    def test_switch_updates_store_agent(self):
+        """switch_agent must keep store.agent in sync so every auto-save
+        records the currently active agent in the metadata block."""
+        session = _make_session(system_prompt="original prompt")
+        self.assertIsNone(session.store.agent)  # no custom agent yet
+        session.switch_agent("reviewer")
+        self.assertEqual(session.store.agent, "reviewer")
+        session.switch_agent("default")
+        self.assertIsNone(session.store.agent)  # default = no custom agent
+
+    def test_failed_switch_leaves_store_agent_untouched(self):
+        """A failed switch (unknown name) must not change store.agent:
+        the metadata must never record an agent that is not active."""
+        session = _make_session(system_prompt="original prompt")
+        session.switch_agent("reviewer")
+        ok, _ = session.switch_agent("nonexistent")
+        self.assertFalse(ok)
+        self.assertEqual(session.store.agent, "reviewer")
+
 
 class TestDefaultAgentConfig(unittest.TestCase):
     """config.load_default_agent: reading the default_agent setting."""
@@ -286,6 +305,30 @@ class TestMakeSessionWithDefaultAgent(unittest.TestCase):
             p.write_text(json.dumps({"default_agent": "reviewer"}), encoding="utf-8")
             session = make_session("/tmp", config_path=str(p))
             self.assertEqual(session.startup_warnings, [])
+            session.close()
+
+    def test_valid_default_agent_recorded_in_store(self):
+        """A successfully applied default_agent is recorded in store.agent,
+        so saved sessions restore it.  A typo'd one must NOT be recorded:
+        the metadata must never name an agent that is not active."""
+        from python_agent_harness.cli import make_session
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(json.dumps({"default_agent": "reviewer"}), encoding="utf-8")
+            session = make_session("/tmp", config_path=str(p))
+            try:
+                self.assertEqual(session.store.agent, "reviewer")
+            finally:
+                session.close()
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(json.dumps({"default_agent": "no-such-agent"}), encoding="utf-8")
+            session = make_session("/tmp", config_path=str(p))
+            try:
+                self.assertIsNone(session.store.agent)
+            finally:
+                session.close()
 
 
 class TestMcpFailuresAsStartupWarnings(unittest.TestCase):

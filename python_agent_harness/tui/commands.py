@@ -119,7 +119,7 @@ class CommandMixin:
                 "/review [project] [commit|branch|PR] review code changes\n"
                 "/explain [project] [target]          explain code\n"
                 "/sessions                            list saved sessions\n"
-                "/restore [path | title | --latest | latest]   restore a saved session\n"
+                "/restore [path | title | --latest | latest]   restore a saved session (conversation + agent + model)\n"
                 "/model [name]                        switch LLM model profile\n"
                 "/agent [name]                        switch agent system prompt\n"
                 "Ctrl-C cancels the current execution (app stays open); "
@@ -642,6 +642,59 @@ class CommandMixin:
         title = title_from_filename(path)
         if title:
             self.session.store.title = title
+        # Restore agent if saved
+        agent = meta.get("python-agent-harness--agent")
+        if agent:
+            try:
+                success, msg = self.session.switch_agent(agent)
+                if success:
+                    self.console.print(f"[green]{msg}[/green]")
+                else:
+                    self.console.print(f"[yellow]warning: {msg}[/yellow]")
+            except Exception as e:
+                self.console.print(f"[yellow]warning: could not restore agent: {e}[/yellow]")
+        # Restore model if saved: /model's profile switching is the
+        # canonical path — it also fixes base_url/api_key/temperature
+        # and other settings that a bare model-name change would leave
+        # pointing at the wrong endpoint.  The metadata stores the raw
+        # model name, so first try it as a profile name, then fall back
+        # to a profile whose model matches; without a matching profile
+        # the current model stays active (profile names are not saved).
+        model = meta.get("python-agent-harness--model")
+        if model:
+            try:
+                if model == self.session.model:
+                    # Already the active model: nothing to do, no noise.
+                    pass
+                elif model == self.session.llm_settings.get("model"):
+                    # The saved model is the session-start default: the
+                    # "default" pseudo-profile restores exactly those
+                    # original llm settings (profile names were not saved,
+                    # so there is no better match).
+                    success, msg = self.session.switch_model("default")
+                    self.console.print(f"[green]{msg}[/green]")
+                else:
+                    success, msg = self.session.switch_model(model)
+                    if not success:
+                        profile = next(
+                            (
+                                name
+                                for name, p in self.session.model_profiles.items()
+                                if p.get("model") == model
+                            ),
+                            None,
+                        )
+                        if profile:
+                            success, msg = self.session.switch_model(profile)
+                    if success:
+                        self.console.print(f"[green]{msg}[/green]")
+                    else:
+                        self.console.print(
+                            f"[yellow]warning: model {model!r} has no matching profile, "
+                            f"keeping current model[/yellow]"
+                        )
+            except Exception as e:
+                self.console.print(f"[yellow]warning: could not restore model: {e}[/yellow]")
         # Replace conversation history: a new generation.  Invalidate any
         # worker still winding down from a cancelled run so its salvaged
         # history can't clobber the restored session.
@@ -650,11 +703,11 @@ class CommandMixin:
         self.session.last_messages = list(messages)
         self.session.clear_todos()
         self._history_dirty = True
-        model = meta.get("python-agent-harness--model", "?")
         project = meta.get("python-agent-harness--project-dir", "?")
+        agent_display = meta.get("python-agent-harness--agent", "default")
         self.console.print(
             f"[green]restored:[/green] {os.path.basename(path)} "
-            f"(model={model}, project={project}, {len(messages)} messages)"
+            f"(model={model}, agent={agent_display}, project={project}, {len(messages)} messages)"
         )
 
     @staticmethod
@@ -664,13 +717,15 @@ class CommandMixin:
         The save format is markdown with **role**: content blocks
         separated by blank lines.
 
-        ``tool`` blocks are dropped: the saved markdown does not keep
-        ``tool_call_id``/``name`` (assistant tool calls are flattened to
-        plain text), so a restored ``role="tool"`` message would form an
-        API-invalid payload (a tool message with no preceding assistant
-        ``tool_calls``).  The following assistant reply already
-        summarizes the results, so dropping them loses no essential
-        context.
+        ``tool`` and ``system`` blocks are dropped: the saved markdown
+        does not keep ``tool_call_id``/``name`` (assistant tool calls are
+        flattened to plain text), so a restored ``role="tool"`` message
+        would form an API-invalid payload (a tool message with no
+        preceding assistant ``tool_calls``).  A restored ``system``
+        message would duplicate the live system prompt the client
+        prepends on every request.  The following assistant reply
+        already summarizes the results, so dropping them loses no
+        essential context.
 
         Body lines that merely look like a block header are escaped by
         the renderer (see `escape_role_headers`) and unescaped here, so
@@ -687,9 +742,10 @@ class CommandMixin:
             header = split_role_header(line)
             if header is not None:
                 role, rest = header
-                # Save the previous block (tool blocks are dropped:
-                # their tool_call_id/name were not persisted)
-                if current_role is not None and current_role != "tool":
+                # Save the previous block (tool blocks lose their
+                # tool_call_id/name; system blocks would duplicate the
+                # live system prompt the client prepends per request)
+                if current_role is not None and current_role not in ("tool", "system"):
                     content = "\n".join(current_lines).strip()
                     if content:
                         messages.append(Message(role=current_role, content=content))
@@ -698,8 +754,8 @@ class CommandMixin:
                 continue
             current_lines.append(unescape_role_header(line))
 
-        # Don't forget the last block (tool blocks are dropped)
-        if current_role is not None and current_role != "tool":
+        # Don't forget the last block (tool/system blocks dropped, see above)
+        if current_role is not None and current_role not in ("tool", "system"):
             content = "\n".join(current_lines).strip()
             if content:
                 messages.append(Message(role=current_role, content=content))

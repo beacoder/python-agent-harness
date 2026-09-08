@@ -398,6 +398,178 @@ class TestTuiCommands(unittest.TestCase):
         self.assertIn("restored:", buf.getvalue())
         self.assertEqual(tui.session.store.title, "my session")
 
+    # ------------------------------------------------------------------
+    # /restore: agent + model restoration
+    # ------------------------------------------------------------------
+    def test_restore_applies_saved_agent(self):
+        """A session saved under a custom agent switches back to it on
+        restore; the summary line shows the agent name."""
+        tui, buf = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**user**: hi\n\n**assistant**: hello\n\n;; Local Variables:\n"
+                    ";; python-agent-harness--model: fake\n"
+                    ";; python-agent-harness--agent: 'reviewer'\n"
+                    ";; End:\n"
+                )
+            tui._run_restore(path)
+        out = buf.getvalue()
+        self.assertIn("switched to reviewer", out)
+        self.assertIn("agent=reviewer", out)
+        self.assertIn("code reviewer", tui.session.system_prompt)
+        self.assertEqual(tui.session.store.agent, "reviewer")
+
+    def test_restore_without_agent_metadata_keeps_current(self):
+        """Old session files (no agent metadata) restore cleanly: the
+        active agent stays untouched and no warning is printed."""
+        tui, buf = make_tui()
+        tui.session.store.agent = "reviewer"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**user**: hi\n\n;; Local Variables:\n"
+                    ";; python-agent-harness--model: fake\n"
+                    ";; End:\n"
+                )
+            tui._run_restore(path)
+        out = buf.getvalue()
+        self.assertNotIn("switched", out)
+        self.assertNotIn("warning", out)
+        self.assertEqual(tui.session.store.agent, "reviewer")
+
+    def test_restore_unknown_agent_warns_and_keeps_current(self):
+        """An agent name that no longer exists produces a warning, leaves
+        the current agent active, and the history is still restored."""
+        tui, buf = make_tui()
+        before_prompt = tui.session.system_prompt
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**user**: hi\n\n;; Local Variables:\n"
+                    ";; python-agent-harness--model: fake\n"
+                    ";; python-agent-harness--agent: 'no-such-agent'\n"
+                    ";; End:\n"
+                )
+            tui._run_restore(path)
+        out = buf.getvalue()
+        self.assertIn("warning: unknown agent", out)
+        self.assertEqual(tui.session.system_prompt, before_prompt)
+        # conversation history restored regardless
+        self.assertEqual([m.text() for m in tui.session.last_messages], ["hi"])
+        self.assertIn("restored:", out)
+
+    def test_restore_model_via_matching_profile(self):
+        """A saved raw model name matching a profile's model field switches
+        through the profile (fixing base_url etc. together with the name)."""
+        tui, buf = make_tui()
+        tui.session.llm_settings = {"model": "start-model", "stream": True}
+        tui.session.model_profiles = {"deepseek": {"model": "ds-chat", "base_url": "https://ds/v1"}}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**user**: hi\n\n;; Local Variables:\n"
+                    ";; python-agent-harness--model: 'ds-chat'\n"
+                    ";; End:\n"
+                )
+            tui._run_restore(path)
+        self.assertEqual(tui.session.model, "ds-chat")
+        self.assertEqual(tui.session.client.model, "ds-chat")
+        self.assertEqual(tui.session.client.base_url, "https://ds/v1")
+        self.assertIn("switched to deepseek", buf.getvalue())
+
+    def test_restore_default_model_via_pseudo_profile(self):
+        """A saved model equal to the session-start default restores the
+        original llm settings through the ``default`` pseudo-profile,
+        even after the current session drifted to another profile."""
+        tui, buf = make_tui()
+        tui.session.llm_settings = {"model": "start-model", "stream": True}
+        tui.session.model_profiles = {"other": {"model": "other-model", "base_url": "https://o/v1"}}
+        tui.session.switch_model("other")
+        self.assertEqual(tui.session.model, "other-model")
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**user**: hi\n\n;; Local Variables:\n"
+                    ";; python-agent-harness--model: 'start-model'\n"
+                    ";; End:\n"
+                )
+            tui._run_restore(path)
+        self.assertEqual(tui.session.model, "start-model")
+        self.assertIn("switched to default", buf.getvalue())
+
+    def test_restore_model_without_match_keeps_current(self):
+        """A saved model with no profile-name or profile-model match warns
+        and keeps the current model; the history is still restored."""
+        tui, buf = make_tui()
+        tui.session.llm_settings = {"model": "start-model", "stream": True}
+        tui.session.model_profiles = {}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**user**: hi\n\n;; Local Variables:\n"
+                    ";; python-agent-harness--model: 'mystery-model'\n"
+                    ";; End:\n"
+                )
+            tui._run_restore(path)
+        out = buf.getvalue()
+        self.assertIn("no matching profile", out)
+        self.assertEqual(tui.session.model, "fake")  # make_tui's model
+        self.assertEqual([m.text() for m in tui.session.last_messages], ["hi"])
+
+    def test_restore_saved_agent_and_model_together(self):
+        """Full save/restore round trip: agent and model from the saved
+        metadata are both applied on top of the restored history."""
+        tui, buf = make_tui()
+        tui.session.llm_settings = {"model": "start-model", "stream": True}
+        tui.session.model_profiles = {"glm": {"model": "glm-5.2", "base_url": "https://glm/v1"}}
+        # simulate a saved session: save with active agent + profile model
+        tui.session.switch_agent("reviewer")
+        tui.session.switch_model("glm")
+        saved_text = tui.session._conversation_text(tui.session.last_messages)
+        saved_meta = tui.session.store.metadata_block()
+        self.assertIn("python-agent-harness--agent: 'reviewer'", saved_meta)
+        # fresh session, restore from the saved text
+        tui2, buf2 = make_tui()
+        tui2.session.llm_settings = {"model": "start-model", "stream": True}
+        tui2.session.model_profiles = dict(tui.session.model_profiles)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(saved_text + "\n\n" + saved_meta + "\n")
+            tui2._run_restore(path)
+        self.assertIn("code reviewer", tui2.session.system_prompt)
+        self.assertEqual(tui2.session.model, "glm-5.2")
+        self.assertEqual(tui2.session.client.base_url, "https://glm/v1")
+        out = buf2.getvalue()
+        self.assertIn("switched to reviewer", out)
+        self.assertIn("switched to glm", out)
+        self.assertIn("agent=reviewer", out)
+
+    def test_restore_drops_system_and_tool_blocks(self):
+        """``**system**:`` and ``**tool**:`` blocks in a saved body are
+        dropped: a restored system message would duplicate the live
+        prompt, a restored tool message would be API-invalid."""
+        tui, buf = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**system**: stale prompt\n\n"
+                    "**user**: hi\n\n"
+                    "**tool**: stale tool output\n\n"
+                    "**assistant**: hello"
+                )
+            tui._run_restore(path)
+        roles = [m.role for m in tui.session.last_messages]
+        self.assertEqual(roles, ["user", "assistant"])
+
     def test_find_session_by_title(self):
         """Title lookup: exact basename, .md-less, substring and
         derived-title matches; unmatched queries return None."""

@@ -162,6 +162,12 @@ class Session:
         # cache build simultaneously — double-checked locking prevents
         # redundant filesystem scans and the data race on the cache tuple
         self._skill_index_lock = threading.Lock()
+        # NOTE: the store does NOT record ``default_agent`` here: the
+        # store's agent must reflect the agent actually applied, and
+        # only a successful switch_agent() can guarantee that (a typo'd
+        # default_agent is reported as a startup warning and the session
+        # keeps the built-in prompt).  cli.make_session applies the
+        # default_agent right after construction, which sets it.
         self.store = SessionPersistence(
             project_dir=project_dir,
             model=model,
@@ -731,6 +737,7 @@ class Session:
         if name == RESERVED_AGENT_NAME:
             self.system_prompt = self._default_system_prompt
             self.store.system_prompt = self._default_system_prompt
+            self.store.agent = None
             return True, "switched to default agent"
 
         agents = discover_agents()
@@ -749,6 +756,7 @@ class Session:
             context_path=self._configured_context_path,
         )
         self.store.system_prompt = self.system_prompt
+        self.store.agent = name
         return True, f"switched to {name}"
 
     # ------------------------------------------------------------------

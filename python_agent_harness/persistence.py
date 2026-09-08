@@ -112,9 +112,11 @@ class SessionPersistence:
         max_tokens: int | None = None,
         tool_names: list[str] | None = None,
         round_times: list[float] | None = None,
+        agent: str | None = None,
     ) -> None:
         self.project_dir = project_dir
         self.model = model
+        self.agent = agent
         self.system_prompt = system_prompt
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -171,6 +173,7 @@ class SessionPersistence:
         pairs = [
             ("python-agent-harness--project-dir", self.project_dir),
             ("python-agent-harness--model", self.model),
+            ("python-agent-harness--agent", self.agent),
         ]
         for name, value in pairs:
             if value is None:
