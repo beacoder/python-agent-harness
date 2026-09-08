@@ -98,12 +98,17 @@ class GrepWindows(Grep):
             files = [Path(path)]
         else:
             root = Path(path)
-            files = (
-                p
-                for p in root.rglob("*")
-                if p.is_file()
-                and not any(part.startswith(".") for part in p.relative_to(root).parts[:-1])
-            )
+            collected: list[Path] = []
+            try:
+                for p in root.rglob("*"):
+                    if not p.is_file():
+                        continue
+                    if any(part.startswith(".") for part in p.relative_to(root).parts[:-1]):
+                        continue
+                    collected.append(p)
+            except OSError:
+                pass
+            files = collected
 
         for file_path in files:
             if match_count >= max_matches:
@@ -124,7 +129,7 @@ class GrepWindows(Grep):
                         start = max(0, i - 1 - context)
                         end = min(len(lines), i + context)
                         for j in range(start, end):
-                            marker = ":" if j + 1 != i else ":"
+                            marker = "-" if j + 1 != i else ":"
                             results.append(f"{file_path}:{j + 1}{marker}{lines[j].rstrip()}")
                         results.append("")  # blank line between matches with context
                     else:
