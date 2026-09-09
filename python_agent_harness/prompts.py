@@ -509,28 +509,76 @@ def compacted_messages(summary: str, prompts: list[str]) -> list[Message]:
 # ``prompts/agents/``.  Each file becomes a switchable agent profile
 # available via the ``/agent`` TUI command.  The file's stem (e.g.
 # ``reviewer.md`` → ``reviewer``) is the agent name; an optional YAML
-# frontmatter ``name:`` can override it.  The built-in ``default``
-# agent (``prompts/agent.md``) is always available and cannot be
-# overridden by a file in this directory.
+# frontmatter ``name:`` can override it, and an optional
+# ``exclude_tools:`` list restricts which tools the agent sees (an
+# entry matches by exact name, glob pattern, or ``__``-delimited
+# prefix, e.g. ``mcp__git`` or ``mcp__git__*``).  The built-in
+# ``default`` agent (``prompts/agent.md``) is always available and
+# cannot be overridden by a file in this directory.
+
+
+def _agent_frontmatter(path: Path) -> dict[str, Any]:
+    """Parse the YAML frontmatter of an agent prompt file.
+
+    Supports ``name:`` (string) and ``exclude_tools:`` (a YAML list —
+    either block form with ``- item`` lines or inline ``[a, b]``).
+    Unknown keys are ignored; a missing or unreadable frontmatter
+    yields an empty dict.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return {}
+    data: dict[str, Any] = {}
+    lines = m.group(0).splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("name:"):
+            data["name"] = line[len("name:") :].strip()
+        elif line.startswith("exclude_tools:"):
+            rest = line[len("exclude_tools:") :].strip()
+            tools: list[str] = []
+            if rest.startswith("[") and rest.endswith("]"):
+                tools = [
+                    item.strip().strip("'\"") for item in rest[1:-1].split(",") if item.strip()
+                ]
+            else:
+                j = i + 1
+                while j < len(lines) and lines[j].lstrip().startswith("- "):
+                    tools.append(lines[j].lstrip()[2:].strip().strip("'\""))
+                    j += 1
+                i = j - 1
+            data["exclude_tools"] = tools
+        i += 1
+    return data
 
 
 def _agent_name_from_file(path: Path) -> str:
     """Derive agent name from a file: frontmatter ``name:`` if present,
     otherwise the file stem (lowercased, non-alphanumerics → ``-``)."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-    m = _FRONTMATTER_RE.match(text)
-    if m:
-        for line in m.group(0).splitlines():
-            if line.startswith("name:"):
-                name = line[len("name:") :].strip()
-                if name:
-                    return name
+    name = _agent_frontmatter(path).get("name", "")
+    if name:
+        return name
     base = path.stem.lower()
     base = re.sub(r"[^a-z0-9]+", "-", base)
     return base.strip("-")
+
+
+def agent_exclude_tools(path: Path | str) -> tuple[str, ...]:
+    """Tool name substrings/patterns the agent profile excludes.
+
+    Reads the ``exclude_tools:`` frontmatter list of an agent prompt
+    file.  An entry matches a tool by exact name, glob pattern
+    (``mcp__git__*``), or ``__``-delimited prefix (``mcp__git`` hides
+    ``mcp__git__list_repos``); matching happens in
+    ``Session.tool_specs``.  Returns an empty tuple when the key is
+    absent.
+    """
+    return tuple(_agent_frontmatter(Path(path)).get("exclude_tools", ()))
 
 
 def discover_agents() -> dict[str, str]:
