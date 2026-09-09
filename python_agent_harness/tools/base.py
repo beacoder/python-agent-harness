@@ -52,14 +52,20 @@ class ToolRuntime(Protocol):
             project_dir = "/tmp"
             cancel_event = threading.Event()
             def ask_questions(self, questions): return "..."
-            ...  # only the methods the tool under test touches
+            ...  # every ToolRuntime member (see below)
 
         ctx = ToolContext(FakeRuntime())
         tool.run(args, ctx)
 
-    ``ToolContext`` still accepts ``None`` and objects implementing only
-    part of this surface (its methods guard each call), so the protocol
-    describes the *complete* runtime while partial fakes remain valid.
+    ``ToolContext`` still accepts ``None`` (its methods fall back to safe
+    no-op defaults when there is no session).  For a non-``None`` runtime
+    it proxies each call unconditionally (no ``hasattr`` probing): a
+    complete runtime like the real ``Session`` always works, and a
+    partial fake works too *as long as the tool under test only reaches
+    for members it implements* — a missing member surfaces as a plain
+    ``AttributeError`` rather than a silent default.  Test doubles that
+    stand in for a full ``Session`` therefore implement every member and
+    assert conformance via ``x: ToolRuntime = FakeThing()``.
 
     ``project_dir`` / ``cancel_event`` are declared as read-only
     properties (``ToolContext`` only ever reads them): that admits both
@@ -103,38 +109,38 @@ class ToolContext:
         return self.session.project_dir if self.session else "."
 
     def ask_questions(self, questions: list[dict]) -> str:
-        if self.session and hasattr(self.session, "ask_questions"):
+        if self.session:
             return self.session.ask_questions(questions)
         return "Unanswered"
 
     def record_diff(self, diff_text: str) -> None:
         """Attach a unified diff to the currently-executing tool call."""
-        if self.session and hasattr(self.session, "record_diff"):
+        if self.session:
             self.session.record_diff(diff_text)
 
     def update_todos(self, todos: list[dict]) -> None:
-        if self.session and hasattr(self.session, "update_todos"):
+        if self.session:
             self.session.update_todos(todos)
 
     def find_skill(self, name: str) -> str | None:
-        if self.session and hasattr(self.session, "find_skill"):
+        if self.session:
             return self.session.find_skill(name)
         return None
 
     def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str:
-        if self.session and hasattr(self.session, "run_subagent"):
+        if self.session:
             return self.session.run_subagent(subagent_type, description, prompt)
         return f"Error: Task {description!r} returned an unexpected response — no session"
 
     def plan_exit(self) -> str:
-        if self.session and hasattr(self.session, "plan_exit"):
+        if self.session:
             return self.session.plan_exit()
         return "Not in plan mode; PlanExit has no effect.  Continue as normal."
 
     @property
     def cancel_event(self) -> threading.Event | None:
         """Session cancel event (set when the user presses Ctrl-C)."""
-        if self.session and hasattr(self.session, "cancel_event"):
+        if self.session:
             return self.session.cancel_event
         return None
 
