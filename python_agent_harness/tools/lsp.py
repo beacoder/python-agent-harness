@@ -122,17 +122,23 @@ class LSP(Tool):
         if line < 1 or character < 1:
             return "Error: line and character must be >= 1"
 
+        # Validate the requested line before spinning up a server so a bad
+        # position fails fast even when no LSP binary is installed.
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeError) as e:
+            return f"Error: failed to read {raw_path}: {e}"
+        lines = text.splitlines(keepends=True)
+        if line > len(lines):
+            return f"Error: line {line} is beyond end of file ({len(lines)} lines)"
+
         try:
             client, _ = get_client(path, ctx.cwd)
-            text = Path(path).read_text(encoding="utf-8", errors="replace")
             uri = Path(path).as_uri()
             client.open_document(uri, text)
 
             # LSP positions are 0-based. Character conversion to the negotiated
             # encoding is done here using the source line.
-            lines = text.splitlines(keepends=True)
-            if line > len(lines):
-                return f"Error: line {line} is beyond end of file ({len(lines)} lines)"
             source_line = lines[line - 1].rstrip("\r\n")
             py_index = min(character - 1, len(source_line))
             if client.position_encoding == "utf-8":
