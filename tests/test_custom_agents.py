@@ -387,6 +387,216 @@ class TestMcpFailuresAsStartupWarnings(unittest.TestCase):
                     os.environ[k] = v
 
 
+class TestAgentExcludeTools(unittest.TestCase):
+    """Agent profile ``exclude_tools`` frontmatter: parsing and effect
+    on the tool specs exposed to the model."""
+
+    def _write_agent(
+        self, name: str, frontmatter: str, body: str = "You are a test agent."
+    ) -> Path:
+        p = AGENTS_DIR / f"{name}.md"
+        p.write_text(f"---\n{frontmatter}---\n{body}", encoding="utf-8")
+        return p
+
+    def test_parse_exclude_tools(self):
+        """agent_exclude_tools reads the frontmatter list."""
+        from python_agent_harness.prompts import agent_exclude_tools
+
+        p = self._write_agent(
+            "test-exclude-parse",
+            "name: test-exclude-parse\nexclude_tools:\n  - Bash\n  - Edit\n  - mcp__git__*\n",
+        )
+        try:
+            self.assertEqual(
+                agent_exclude_tools(p),
+                ("Bash", "Edit", "mcp__git__*"),
+            )
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_parse_exclude_tools_inline(self):
+        """agent_exclude_tools reads an inline ``[a, b]`` list too."""
+        from python_agent_harness.prompts import agent_exclude_tools
+
+        p = self._write_agent(
+            "test-exclude-inline",
+            "name: test-exclude-inline\nexclude_tools: [Bash, mcp__git__*]\n",
+        )
+        try:
+            self.assertEqual(
+                agent_exclude_tools(p),
+                ("Bash", "mcp__git__*"),
+            )
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_no_exclude_tools_returns_empty(self):
+        """An agent without the key excludes nothing."""
+        from python_agent_harness.prompts import agent_exclude_tools
+
+        p = self._write_agent("test-exclude-none", "name: test-exclude-none\n")
+        try:
+            self.assertEqual(agent_exclude_tools(p), ())
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_switch_agent_applies_exclusions(self):
+        """switch_agent activates the profile's excluded tools."""
+        p = self._write_agent(
+            "test-exclude-switch",
+            "name: test-exclude-switch\nexclude_tools:\n  - Bash\n  - Edit\n",
+        )
+        try:
+            session = _make_session()
+            ok, msg = session.switch_agent("test-exclude-switch")
+            self.assertTrue(ok, msg)
+            names = {s.name for s in session.tool_specs()}
+            self.assertNotIn("Bash", names)
+            self.assertNotIn("Edit", names)
+            self.assertIn("Read", names)
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_switch_to_default_clears_exclusions(self):
+        """/agent default restores the full tool set."""
+        p = self._write_agent(
+            "test-exclude-default",
+            "name: test-exclude-default\nexclude_tools:\n  - Bash\n",
+        )
+        try:
+            session = _make_session()
+            session.switch_agent("test-exclude-default")
+            self.assertNotIn("Bash", {s.name for s in session.tool_specs()})
+            ok, msg = session.switch_agent("default")
+            self.assertTrue(ok, msg)
+            self.assertIn("Bash", {s.name for s in session.tool_specs()})
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_glob_pattern_excludes_mcp_tools(self):
+        """mcp__<server>__* patterns hide every tool of one server."""
+        from python_agent_harness.tools.base import Tool
+
+        class FakeMcpTool(Tool):
+            name = "mcp__git__list_repos"
+            description = "fake"
+
+            def run(self, args, ctx):
+                return ""
+
+        p = self._write_agent(
+            "test-exclude-glob",
+            "name: test-exclude-glob\nexclude_tools:\n  - mcp__git__*\n",
+        )
+        try:
+            session = _make_session()
+            session.registry.register(FakeMcpTool())
+            self.assertIn("mcp__git__list_repos", {s.name for s in session.tool_specs()})
+            session.switch_agent("test-exclude-glob")
+            names = {s.name for s in session.tool_specs()}
+            self.assertNotIn("mcp__git__list_repos", names)
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_substring_pattern_excludes_mcp_tools(self):
+        """A ``__``-delimited prefix (mcp__git) hides every tool of one
+        server, but does NOT accidentally match unrelated tools."""
+        from python_agent_harness.tools.base import Tool
+
+        class FakeMcpTool(Tool):
+            name = "mcp__git__list_repos"
+            description = "fake"
+
+            def run(self, args, ctx):
+                return ""
+
+        p = self._write_agent(
+            "test-exclude-substr",
+            "name: test-exclude-substr\nexclude_tools:\n  - mcp__git\n",
+        )
+        try:
+            session = _make_session()
+            session.registry.register(FakeMcpTool())
+            self.assertIn("mcp__git__list_repos", {s.name for s in session.tool_specs()})
+            session.switch_agent("test-exclude-substr")
+            names = {s.name for s in session.tool_specs()}
+            self.assertNotIn("mcp__git__list_repos", names)
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_write_does_not_exclude_todowrite(self):
+        """``Write`` must not accidentally hide ``TodoWrite``: matching
+        is by exact name or ``__``-delimited prefix, not raw substring."""
+        p = self._write_agent(
+            "test-exclude-no-false-match",
+            "name: test-exclude-no-false-match\nexclude_tools:\n  - Write\n",
+        )
+        try:
+            session = _make_session()
+            session.switch_agent("test-exclude-no-false-match")
+            names = {s.name for s in session.tool_specs()}
+            self.assertNotIn("Write", names)
+            self.assertIn("TodoWrite", names)
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_explicit_exclude_still_works(self):
+        """The caller's exclude argument composes with the profile's."""
+        p = self._write_agent(
+            "test-exclude-compose",
+            "name: test-exclude-compose\nexclude_tools:\n  - Bash\n",
+        )
+        try:
+            session = _make_session()
+            session.switch_agent("test-exclude-compose")
+            names = {s.name for s in session.tool_specs(exclude=("Edit",))}
+            self.assertNotIn("Bash", names)
+            self.assertNotIn("Edit", names)
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_failed_switch_leaves_exclusions_untouched(self):
+        """A failed switch (unknown name) must not change the active
+        exclusions: the caller's tool set must never silently shift."""
+        p = self._write_agent(
+            "test-exclude-fail",
+            "name: test-exclude-fail\nexclude_tools:\n  - Bash\n",
+        )
+        try:
+            session = _make_session()
+            session.switch_agent("test-exclude-fail")
+            self.assertNotIn("Bash", {s.name for s in session.tool_specs()})
+            ok, _ = session.switch_agent("nonexistent")
+            self.assertFalse(ok)
+            self.assertNotIn("Bash", {s.name for s in session.tool_specs()})
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_quoted_items_stripped(self):
+        """Quoted frontmatter items lose their quotes during parsing."""
+        from python_agent_harness.prompts import agent_exclude_tools
+
+        p = self._write_agent(
+            "test-exclude-quoted",
+            "name: test-exclude-quoted\nexclude_tools:\n  - \"Bash\"\n  - 'Edit'\n",
+        )
+        try:
+            self.assertEqual(agent_exclude_tools(p), ("Bash", "Edit"))
+        finally:
+            p.unlink(missing_ok=True)
+
+    def test_no_frontmatter_at_all(self):
+        """A file with no frontmatter block excludes nothing."""
+        from python_agent_harness.prompts import agent_exclude_tools
+
+        p = self._write_agent("test-no-frontmatter", "")
+        p.write_text("You are a simple agent with no frontmatter.", encoding="utf-8")
+        try:
+            self.assertEqual(agent_exclude_tools(p), ())
+        finally:
+            p.unlink(missing_ok=True)
+
+
 class TestReviewerAgentContent(unittest.TestCase):
     """Verify the bundled reviewer.md agent has expected content."""
 
