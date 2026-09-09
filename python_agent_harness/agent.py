@@ -38,6 +38,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from . import config
+from .client import LLMClient
 from .context_manager import ContextManager
 from .models import Message, ToolCall
 from .token_estimator import context_window_for, estimate_payload_tokens
@@ -74,7 +75,7 @@ class AgentLoop:
         top_level: bool = True,
         system: str | None = None,
         max_rounds: int = 60,
-        client: Any | None = None,
+        client: LLMClient | None = None,
     ) -> None:
         self.session = session
         self.messages: list[Message] = messages if messages is not None else []
@@ -631,7 +632,7 @@ def run_agent_loop(
     top_level: bool = True,
     system: str | None = None,
     max_rounds: int = 60,
-    client: Any | None = None,
+    client: LLMClient | None = None,
 ) -> str | None:
     """Convenience wrapper running a full agent run (FSM).
 
