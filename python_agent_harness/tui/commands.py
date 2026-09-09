@@ -650,6 +650,9 @@ class CommandMixin:
                 if success:
                     self.console.print(f"[green]{msg}[/green]")
                 else:
+                    # Agent no longer exists: reset to default to avoid
+                    # stale exclusions from the previously active agent
+                    self.session.switch_agent("default")
                     self.console.print(f"[yellow]warning: {msg}[/yellow]")
             except Exception as e:
                 self.console.print(f"[yellow]warning: could not restore agent: {e}[/yellow]")
