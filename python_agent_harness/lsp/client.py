@@ -220,11 +220,11 @@ class LSPClient:
                 raise LSPError(f"failed writing to LSP server: {e}") from e
 
     def _read_loop(self) -> None:
-        proc = self.proc
-        if proc is None or proc.stdout is None:
-            return
-        stream = proc.stdout
         try:
+            proc = self.proc
+            if proc is None or proc.stdout is None:
+                return
+            stream = proc.stdout
             while not self._closed:
                 headers: dict[str, str] = {}
                 while True:
