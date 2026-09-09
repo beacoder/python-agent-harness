@@ -16,6 +16,7 @@ from .glob_mac import GlobMac
 from .glob_win import GlobWindows
 from .grep_mac import GrepMac
 from .grep_win import GrepWindows
+from .lsp import LSP
 from .mcp import MCPTool, mcp_tools_from_manager, normalize_mcp_result
 from .planexit import PlanExit
 from .question import Question
@@ -40,6 +41,7 @@ __all__ = [
     "GrepMac",
     "GrepWindows",
     "Insert",
+    "LSP",
     "MCPTool",
     "Mkdir",
     "PlanExit",
@@ -70,6 +72,7 @@ def default_registry() -> Registry:
     for tool in (
         AgentTool(),
         TodoWrite(),
+        LSP(),
         glob_tool,
         grep_tool,
         Read(),
