@@ -647,10 +647,11 @@ class Session:
         # MCP server connections + event-loop thread (no-op when no MCP
         # servers are configured or none connected)
         self.mcp_manager.close_all()
-        if hasattr(self.client, "close"):
+        with contextlib.suppress(Exception):  # best effort
             self.client.close()
-        if self.subagent_client is not self.client and hasattr(self.subagent_client, "close"):
-            self.subagent_client.close()
+        if self.subagent_client is not self.client:
+            with contextlib.suppress(Exception):  # best effort
+                self.subagent_client.close()
         # defensive: sub-agent workers close their own clones in
         # run_subagent's finally; close any stragglers (e.g. a worker
         # still winding down after cancel) so no pool leaks
@@ -658,9 +659,8 @@ class Session:
             strays = list(self._active_subagent_clients)
             self._active_subagent_clients.clear()
         for c in strays:
-            if hasattr(c, "close"):
-                with contextlib.suppress(Exception):  # best effort
-                    c.close()
+            with contextlib.suppress(Exception):  # best effort
+                c.close()
 
     def cancel(self) -> None:
         """Cancel the in-flight agent run (Ctrl-C).
@@ -688,9 +688,8 @@ class Session:
         with self._subagent_clients_lock:
             clients.extend(self._active_subagent_clients)
         for c in clients:
-            if hasattr(c, "abort"):
-                with contextlib.suppress(Exception):  # best effort
-                    c.abort()
+            with contextlib.suppress(Exception):  # best effort
+                c.abort()
 
     # ------------------------------------------------------------------
     # model switching
@@ -759,10 +758,7 @@ class Session:
         self.calibrator.reset()
         self.temperature = merged["temperature"]
         self.max_tokens = merged["max_tokens"]
-        if hasattr(self.client, "set_timeout"):
-            self.client.set_timeout(merged["timeout"])
-        else:
-            self.client.timeout = merged["timeout"]
+        self.client.set_timeout(merged["timeout"])
         self.reasoning_effort = merged["reasoning_effort"]
         self.stream = merged["stream"]
         return True, f"switched to {name} ({self.model})"
