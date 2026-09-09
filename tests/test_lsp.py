@@ -689,13 +689,20 @@ class TestRegistryIntegration(unittest.TestCase):
     def test_goToImplementation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             f = Path(tmpdir) / "sample.py"
-            f.write_text("class Base:\n    pass\nclass Derived(Base):\n    pass\n", encoding="utf-8")
+            f.write_text(
+                "class Base:\n    pass\nclass Derived(Base):\n    pass\n", encoding="utf-8"
+            )
             client = _fake_server(
                 {"textDocument/implementation": [{"uri": "file:///x.py", "range": {}}]}
             )
             with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
                 result = LSP().run(
-                    {"operation": "goToImplementation", "file_path": str(f), "line": 2, "character": 1},
+                    {
+                        "operation": "goToImplementation",
+                        "file_path": str(f),
+                        "line": 2,
+                        "character": 1,
+                    },
                     ToolContext(SimpleNamespace(project_dir=tmpdir)),
                 )
             self.assertIn("file:///x.py", result)
@@ -708,7 +715,12 @@ class TestRegistryIntegration(unittest.TestCase):
             client = _fake_server({"textDocument/prepareCallHierarchy": [item]})
             with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
                 result = LSP().run(
-                    {"operation": "prepareCallHierarchy", "file_path": str(f), "line": 1, "character": 1},
+                    {
+                        "operation": "prepareCallHierarchy",
+                        "file_path": str(f),
+                        "line": 1,
+                        "character": 1,
+                    },
                     ToolContext(SimpleNamespace(project_dir=tmpdir)),
                 )
             self.assertIn("hello", result)
