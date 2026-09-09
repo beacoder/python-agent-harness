@@ -8,10 +8,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
-from python_agent_harness.tools.base import ToolContext
+from python_agent_harness.tools.base import ToolContext, ToolRuntime
 from python_agent_harness.tools.edit_mac import EditMac
 from python_agent_harness.tools.filesystem import (
     Edit,
@@ -38,17 +39,49 @@ def _big_output(lines: int = 6000, width: int = 80) -> str:
 
 
 class FakeSession:
-    """Minimal session double satisfying the ToolContext protocol."""
+    """Session double satisfying the full ToolRuntime protocol.
+
+    The filesystem tools only touch ``project_dir`` and ``record_diff``,
+    but the double implements every ToolRuntime member so ``ToolContext``
+    can proxy unconditionally (no ``hasattr`` guard) — the static
+    assertion below enforces that the double never drifts from the
+    protocol.
+    """
 
     def __init__(self) -> None:
         self.recorded_diffs: list[str] = []
+        self._cancel = threading.Event()
 
     @property
     def project_dir(self) -> str:
         return "/tmp"
 
+    @property
+    def cancel_event(self) -> threading.Event:
+        return self._cancel
+
+    def ask_questions(self, questions: list[dict]) -> str:
+        return "answer"
+
     def record_diff(self, diff_text: str) -> None:
         self.recorded_diffs.append(diff_text)
+
+    def update_todos(self, todos: list[dict]) -> None:
+        pass
+
+    def find_skill(self, name: str) -> str | None:
+        return None
+
+    def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str:
+        return f"ran {description}"
+
+    def plan_exit(self) -> str:
+        return "approved"
+
+
+# static conformance: the double must satisfy the same ToolRuntime
+# interface the real Session does (pyright fails here on any drift).
+_fake_session_is_tool_runtime: ToolRuntime = FakeSession()
 
 
 def make_ctx() -> tuple[ToolContext, FakeSession]:
