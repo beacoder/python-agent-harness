@@ -98,6 +98,7 @@ DEFAULT_TOOLS: list[str] = [
     "Bash",
     "Skill",
     "Question",
+    "LSP",
 ]
 
 # ---- tool output limits --------------------------------------------------------
