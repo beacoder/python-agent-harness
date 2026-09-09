@@ -95,7 +95,7 @@ def _jsonable(value: Any) -> Any:
 
 
 class LSP(Tool):
-    name = "lsp"
+    name = "LSP"
     description = DESCRIPTION
     parameters = PARAMETERS
     is_readonly = True

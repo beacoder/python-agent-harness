@@ -643,17 +643,25 @@ class TestRegistryIntegration(unittest.TestCase):
         from python_agent_harness.tools import default_registry
 
         reg = default_registry()
-        tool = reg.get("lsp")
+        tool = reg.get("LSP")
         self.assertIsNotNone(tool)
         self.assertTrue(tool.is_readonly)
-        self.assertEqual(tool.name, "lsp")
+        self.assertEqual(tool.name, "LSP")
+
+    def test_lsp_in_default_tools_config(self):
+        from python_agent_harness.config import DEFAULT_TOOLS
+        from python_agent_harness.tools import default_registry
+
+        reg_names = set(default_registry()._tools.keys())
+        for name in DEFAULT_TOOLS:
+            self.assertIn(name, reg_names, f"DEFAULT_TOOLS entry {name!r} missing from registry")
 
     def test_lsp_spec_exposed(self):
         from python_agent_harness.tools import default_registry
 
-        specs = {s.name: s for s in default_registry().specs(["lsp"])}
-        self.assertIn("lsp", specs)
-        self.assertIn("operation", json.loads(json.dumps(specs["lsp"].parameters))["properties"])
+        specs = {s.name: s for s in default_registry().specs(["LSP"])}
+        self.assertIn("LSP", specs)
+        self.assertIn("operation", json.loads(json.dumps(specs["LSP"].parameters))["properties"])
 
 
 if __name__ == "__main__":
