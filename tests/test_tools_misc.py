@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
 
 from python_agent_harness.tools.agent_tool import AgentTool
-from python_agent_harness.tools.base import PendingToolResult, Registry, ToolContext
+from python_agent_harness.tools.base import PendingToolResult, Registry, ToolContext, ToolRuntime
 from python_agent_harness.tools.planexit import PlanExit
 from python_agent_harness.tools.question import Question
 from python_agent_harness.tools.skill import Skill
@@ -59,6 +59,12 @@ class FakeSession:
     @property
     def cancel_event(self) -> threading.Event:
         return self._cancel
+
+
+# static conformance: the FakeSession double must satisfy the same
+# ToolRuntime interface the real Session does, so these tests exercise
+# the genuine ToolContext surface rather than an ad-hoc shape.
+_fake_session_is_tool_runtime: ToolRuntime = FakeSession()
 
 
 class TestToolContext(unittest.TestCase):
@@ -508,6 +514,40 @@ class TestBashInternals(unittest.TestCase):
         out = Bash().run({"command": "seq 1 100000; exit 7"}, ToolContext()).wait()
         self.assertIn("[truncated", out)
         self.assertTrue(out.endswith("Exit code: 7"))
+
+
+class TestStandaloneToolWithFakeRuntime(unittest.TestCase):
+    """A tool can be driven with a minimal ToolRuntime double and NO
+    full Session — the payoff of typing ToolContext against ToolRuntime.
+
+    A custom-tool author only has to implement the slice of the runtime
+    their tool actually touches (here: ``update_todos``), wrap it in a
+    ToolContext, and call ``run`` — no Session, MCP, client, or FSM
+    wiring required.
+    """
+
+    def test_todowrite_runs_against_minimal_fake_runtime(self):
+        class FakeRuntime:
+            """Only the members TodoWrite reaches through the context."""
+
+            def __init__(self) -> None:
+                self.project_dir = "/tmp"
+                self.cancel_event = threading.Event()
+                self.captured: list[dict] = []
+
+            def update_todos(self, todos: list[dict]) -> None:
+                self.captured = todos
+
+        runtime = FakeRuntime()
+        ctx = ToolContext(runtime)  # type: ignore[arg-type]  # partial fake
+        todos = [{"content": "write tests", "status": "in_progress"}]
+
+        out = TodoWrite().run({"todos": todos}, ctx)
+
+        # the tool proxied the write straight into our fake runtime ...
+        self.assertEqual(runtime.captured, todos)
+        # ... and returned its normal structured result
+        self.assertEqual(json.loads(out), {"todos": todos, "count": 1})
 
 
 if __name__ == "__main__":
