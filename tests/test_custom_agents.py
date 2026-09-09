@@ -596,6 +596,19 @@ class TestAgentExcludeTools(unittest.TestCase):
         finally:
             p.unlink(missing_ok=True)
 
+    def test_crlf_line_endings(self):
+        """CRLF line endings must not break frontmatter parsing."""
+        from python_agent_harness.prompts import agent_exclude_tools
+
+        p = AGENTS_DIR / "test-crlf-agent.md"
+        p.write_bytes(
+            b"---\r\nname: test-crlf-agent\r\nexclude_tools:\r\n  - Bash\r\n  - Edit\r\n---\r\nYou are a CRLF agent.\r\n"
+        )
+        try:
+            self.assertEqual(agent_exclude_tools(p), ("Bash", "Edit"))
+        finally:
+            p.unlink(missing_ok=True)
+
 
 class TestReviewerAgentContent(unittest.TestCase):
     """Verify the bundled reviewer.md agent has expected content."""
