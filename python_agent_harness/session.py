@@ -9,6 +9,7 @@ provide interactive confirmations.
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import os
 import threading
 import time
@@ -29,6 +30,21 @@ from .tools import Registry, ToolContext
 from .tools.base import PendingToolResult
 from .tools.filesystem import cleanup_spooled_files
 from .tools.mcp import mcp_tools_from_manager
+
+
+def _tool_excluded(pattern: str, name: str) -> bool:
+    """True when *pattern* excludes tool *name*.
+
+    A pattern matches when it is the exact tool name, a glob pattern
+    (``mcp__git__*``), or a prefix delimited by ``__`` (``mcp__git``
+    hides ``mcp__git__list_repos`` but ``Write`` does NOT hide
+    ``TodoWrite``).
+    """
+    if "*" in pattern:
+        return fnmatch.fnmatchcase(name, pattern)
+    if pattern == name:
+        return True
+    return name.startswith(pattern + "__")
 
 
 def find_skill_dir(project_dir: str, configured: str | None = None) -> str | None:
@@ -201,6 +217,11 @@ class Session:
         # Original system prompt assembled at session start — used by
         # /agent default to restore the original agent.md prompt.
         self._default_system_prompt = system_prompt
+        # Tool exclusions from the active agent profile's
+        # ``exclude_tools`` frontmatter (substrings or glob patterns).
+        # The built-in default agent excludes nothing; switch_agent
+        # replaces this tuple when a custom agent is activated.
+        self._agent_excluded_tools: tuple[str, ...] = ()
         # Monotonic cancel identity: cancel() bumps this counter, so a
         # worker from a cancelled run can tell it was cancelled even
         # after the next run clears the shared event.
@@ -251,9 +272,26 @@ class Session:
     # tools
     # ------------------------------------------------------------------
     def tool_specs(self, exclude: tuple[str, ...] = ()) -> list:
-        """Tool specs exposed to the model; ``exclude`` drops tools by
-        name (e.g. one-shot/interactive tools for sub-agent runs)."""
-        return [spec for spec in self.registry.specs() if spec.name not in exclude]
+        """Tool specs exposed to the model.
+
+        ``exclude`` drops tools by name (e.g. one-shot/interactive tools
+        for sub-agent runs).  The active agent profile's own
+        ``exclude_tools`` frontmatter is applied on top: an entry
+        matches a tool by exact name, glob pattern (``mcp__git__*``),
+        or ``__``-delimited prefix (``mcp__git`` hides
+        ``mcp__git__list_repos`` but ``Write`` does NOT hide
+        ``TodoWrite``).
+        """
+        excluded = set(exclude)
+        specs = self.registry.specs()
+        patterns = self._agent_excluded_tools
+        if not patterns:
+            return [spec for spec in specs if spec.name not in excluded]
+        return [
+            spec
+            for spec in specs
+            if spec.name not in excluded and not any(_tool_excluded(p, spec.name) for p in patterns)
+        ]
 
     def execute_tool(
         self, name: str, args: dict[str, Any], call_id: str | None = None
@@ -738,6 +776,7 @@ class Session:
             self.system_prompt = self._default_system_prompt
             self.store.system_prompt = self._default_system_prompt
             self.store.agent = None
+            self._agent_excluded_tools = ()
             return True, "switched to default agent"
 
         agents = discover_agents()
@@ -757,6 +796,9 @@ class Session:
         )
         self.store.system_prompt = self.system_prompt
         self.store.agent = name
+        from .prompts import agent_exclude_tools
+
+        self._agent_excluded_tools = agent_exclude_tools(prompt_file)
         return True, f"switched to {name}"
 
     # ------------------------------------------------------------------
