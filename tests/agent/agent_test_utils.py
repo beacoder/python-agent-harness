@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # tests/ for plan_cleanup
@@ -12,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # tests/ for pla
 import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
 import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
 
+from python_agent_harness.client import LLMClient
 from python_agent_harness.models import Message, ToolCall, Usage
 from python_agent_harness.persistence import SessionPersistence
 from python_agent_harness.session import Session
@@ -26,9 +28,10 @@ class FakeClient:
         self.calls = []
         self.kwargs = []
         self.base_url = "https://fake.example/v1"
-        self.api_key = None
+        self.api_key: str | None = None
         self.model = "gpt-5-mini"
         self.timeout = 600.0
+        self.log_path: Path | None = None
 
     @property
     def context_window(self) -> int:
@@ -40,6 +43,23 @@ class FakeClient:
     def set_timeout(self, timeout):
         self.timeout = timeout
 
+    def clone(self):
+        # a shallow copy is enough for tests: doubles carry no pool /
+        # abort state that must be isolated per request
+        twin = FakeClient(self.script)
+        twin.base_url = self.base_url
+        twin.api_key = self.api_key
+        twin.model = self.model
+        twin.timeout = self.timeout
+        twin.log_path = self.log_path
+        return twin
+
+    def abort(self):
+        pass
+
+    def close(self):
+        pass
+
     def chat(
         self,
         messages,
@@ -49,6 +69,7 @@ class FakeClient:
         max_tokens=None,
         reasoning_effort=None,
         on_delta=None,
+        on_tool_call=None,
         stream=True,
         cancel_check=None,
         on_retry=None,
@@ -86,6 +107,13 @@ class FakeClient:
         cancel_check=None,
     ):
         return Message(role="assistant", content="SYNC-OK"), Usage()
+
+
+# static conformance: pyright fails here if FakeClient drifts from the
+# LLMClient interface the agent loop depends on (a signature change in
+# the real Client that the double didn't follow surfaces at type-check
+# time, not as a confusing runtime failure deep in the FSM)
+_fake_client_is_llm_client: LLMClient = FakeClient([])
 
 
 class RecordingSession(Session):
