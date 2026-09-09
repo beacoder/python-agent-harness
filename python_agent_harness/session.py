@@ -784,11 +784,12 @@ class Session:
         if prompt_file is None:
             available = ", ".join(sorted([RESERVED_AGENT_NAME, *agents.keys()]))
             return False, f"unknown agent: {name} (available: {available})"
-        from .prompts import assemble_agent_prompt, load_agent_prompt
+        from .prompts import agent_exclude_tools, assemble_agent_prompt, load_agent_prompt
 
         agent_prompt = load_agent_prompt(prompt_file, skill_dir=self._skill_dir)
         if agent_prompt is None:
             return False, f"agent {name}: prompt file not found or empty: {prompt_file}"
+        new_exclusions = agent_exclude_tools(prompt_file)
         self.system_prompt = assemble_agent_prompt(
             self.project_dir,
             agent_prompt,
@@ -796,9 +797,7 @@ class Session:
         )
         self.store.system_prompt = self.system_prompt
         self.store.agent = name
-        from .prompts import agent_exclude_tools
-
-        self._agent_excluded_tools = agent_exclude_tools(prompt_file)
+        self._agent_excluded_tools = new_exclusions
         return True, f"switched to {name}"
 
     # ------------------------------------------------------------------
