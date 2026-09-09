@@ -14,10 +14,10 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import config
-from .client import Client
+from .client import Client, LLMClient
 from .mcp.config import MCPConfig
 from .mcp.manager import MCPManager
 from .models import AgentMode
@@ -30,6 +30,9 @@ from .tools import Registry, ToolContext
 from .tools.base import PendingToolResult
 from .tools.filesystem import cleanup_spooled_files
 from .tools.mcp import mcp_tools_from_manager
+
+if TYPE_CHECKING:
+    from .tools.base import ToolRuntime
 
 
 def _tool_excluded(pattern: str, name: str) -> bool:
@@ -85,7 +88,7 @@ class Session:
     def __init__(
         self,
         project_dir: str,
-        client: Client,
+        client: LLMClient,
         model: str,
         system_prompt: str | None = None,
         subagent_system_prompt: str | None = None,
@@ -93,7 +96,7 @@ class Session:
         max_tokens: int | None = config.MAX_TOKENS,
         reasoning_effort: str | None = None,
         stream: bool = True,
-        subagent_client: Client | None = None,
+        subagent_client: LLMClient | None = None,
         subagent_temperature: float | None = None,
         subagent_max_tokens: int | None = None,
         subagent_reasoning_effort: str | None = None,
@@ -172,7 +175,7 @@ class Session:
         # down a sibling's in-flight request on a shared client.  The
         # active clones are tracked so cancel()/close() can reach them.
         self._subagent_clients_lock = threading.Lock()
-        self._active_subagent_clients: list[Client] = []
+        self._active_subagent_clients: list[LLMClient] = []
         # guards _skill_index_cache: parallel readonly tool threads
         # (e.g. multiple Skill calls in one round) can hit the lazy
         # cache build simultaneously — double-checked locking prevents
@@ -880,3 +883,13 @@ class Session:
         self.last_messages.append(Msg(role="assistant", content=summary))
         self.auto_save(self.last_messages, self.system_prompt)
         return "Summary appended."
+
+
+if TYPE_CHECKING:
+    # static conformance: Session must satisfy the ToolRuntime interface
+    # that ToolContext proxies to (it is passed as ``ToolContext(self)``).
+    # pyright fails here if Session ever drifts from that surface — e.g.
+    # a renamed run_subagent — instead of the mismatch surfacing only as
+    # a runtime AttributeError inside a tool.
+    def _assert_session_is_tool_runtime(s: Session) -> ToolRuntime:
+        return s
