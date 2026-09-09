@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from ..models import ToolSpec
 
@@ -36,6 +36,57 @@ class PendingToolResult:
         return self._result or ""
 
 
+@runtime_checkable
+class ToolRuntime(Protocol):
+    """The session surface a ``ToolContext`` proxies to.
+
+    ``ToolContext`` needs only this slice of the full ``Session`` —
+    a project directory, a cancel event, and a handful of callbacks
+    for user questions, diff/todo recording, skill lookup, sub-agent
+    delegation, and plan-mode exit.  Typing the context against this
+    protocol (instead of ``Any``) documents the real dependency and
+    lets a tool be exercised with a lightweight fake runtime, no full
+    ``Session`` required::
+
+        class FakeRuntime:
+            project_dir = "/tmp"
+            cancel_event = threading.Event()
+            def ask_questions(self, questions): return "..."
+            ...  # only the methods the tool under test touches
+
+        ctx = ToolContext(FakeRuntime())
+        tool.run(args, ctx)
+
+    ``ToolContext`` still accepts ``None`` and objects implementing only
+    part of this surface (its methods guard each call), so the protocol
+    describes the *complete* runtime while partial fakes remain valid.
+
+    ``project_dir`` / ``cancel_event`` are declared as read-only
+    properties (``ToolContext`` only ever reads them): that admits both
+    a plain-attribute implementation (the real ``Session``) and a
+    property-backed one (test doubles), whereas a plain mutable-attribute
+    declaration would be invariant and reject a ``property``.
+    """
+
+    @property
+    def project_dir(self) -> str: ...
+
+    @property
+    def cancel_event(self) -> threading.Event: ...
+
+    def ask_questions(self, questions: list[dict]) -> str: ...
+
+    def record_diff(self, diff_text: str) -> None: ...
+
+    def update_todos(self, todos: list[dict]) -> None: ...
+
+    def find_skill(self, name: str) -> str | None: ...
+
+    def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str: ...
+
+    def plan_exit(self) -> str: ...
+
+
 class ToolContext:
     """Runtime context handed to tools.
 
@@ -44,7 +95,7 @@ class ToolContext:
     proxy to the session when present; defaults are safe no-ops.
     """
 
-    def __init__(self, session: Any = None) -> None:
+    def __init__(self, session: ToolRuntime | None = None) -> None:
         self.session = session
 
     @property
@@ -81,7 +132,7 @@ class ToolContext:
         return "Not in plan mode; PlanExit has no effect.  Continue as normal."
 
     @property
-    def cancel_event(self) -> Any:
+    def cancel_event(self) -> threading.Event | None:
         """Session cancel event (set when the user presses Ctrl-C)."""
         if self.session and hasattr(self.session, "cancel_event"):
             return self.session.cancel_event
