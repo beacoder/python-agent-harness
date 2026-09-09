@@ -55,13 +55,15 @@ class TestURIToPath(unittest.TestCase):
     def test_plain_uri_roundtrip(self):
         from python_agent_harness.tools.lsp import _uri_to_path
 
-        p = Path("/tmp/project/main.py")
+        p = Path(tempfile.gettempdir()) / "project" / "main.py"
+        p.parent.mkdir(parents=True, exist_ok=True)
         self.assertEqual(_uri_to_path(p.as_uri()), str(p))
 
     def test_uri_with_spaces(self):
         from python_agent_harness.tools.lsp import _uri_to_path
 
-        p = Path("/tmp/my project/main file.py")
+        p = Path(tempfile.gettempdir()) / "my project" / "main file.py"
+        p.parent.mkdir(parents=True, exist_ok=True)
         self.assertEqual(_uri_to_path(p.as_uri()), str(p))
 
     def test_non_file_uri_returned_as_is(self):
@@ -411,15 +413,18 @@ class TestManager(unittest.TestCase):
             sub.mkdir(parents=True)
             (root / "pyproject.toml").write_text("", encoding="utf-8")
             (root / ".git").mkdir()
-            self.assertEqual(lsp_manager._find_root(str(sub / "a.py"), str(tmpdir)), str(root))
+            # Use resolve() consistently on both sides to handle macOS /var → /private/var
+            found = lsp_manager._find_root(str(sub / "a.py"), str(tmpdir))
+            expected = str(root.resolve())
+            self.assertEqual(found, expected)
 
     def test_find_root_falls_back_to_project_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             sub = Path(tmpdir) / "pkg"
             sub.mkdir()
-            self.assertEqual(
-                lsp_manager._find_root(str(sub / "a.py"), tmpdir), str(Path(tmpdir).resolve())
-            )
+            found = lsp_manager._find_root(str(sub / "a.py"), tmpdir)
+            expected = str(Path(tmpdir).resolve())
+            self.assertEqual(found, expected)
 
     def test_get_client_raises_for_unhandled_type(self):
         with self.assertRaises(LSPError):
@@ -662,6 +667,51 @@ class TestRegistryIntegration(unittest.TestCase):
         specs = {s.name: s for s in default_registry().specs(["LSP"])}
         self.assertIn("LSP", specs)
         self.assertIn("operation", json.loads(json.dumps(specs["LSP"].parameters))["properties"])
+
+    def test_workspaceSymbol_with_empty_query(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = Path(tmpdir) / "sample.py"
+            f.write_text("def hello():\n    pass\n", encoding="utf-8")
+            client = _fake_server({"workspace/symbol": [{"name": "hello"}]})
+            with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
+                result = LSP().run(
+                    {
+                        "operation": "workspaceSymbol",
+                        "file_path": str(f),
+                        "line": 1,
+                        "character": 1,
+                        "query": "",
+                    },
+                    ToolContext(SimpleNamespace(project_dir=tmpdir)),
+                )
+            self.assertIn("hello", result)
+
+    def test_goToImplementation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = Path(tmpdir) / "sample.py"
+            f.write_text("class Base:\n    pass\nclass Derived(Base):\n    pass\n", encoding="utf-8")
+            client = _fake_server(
+                {"textDocument/implementation": [{"uri": "file:///x.py", "range": {}}]}
+            )
+            with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
+                result = LSP().run(
+                    {"operation": "goToImplementation", "file_path": str(f), "line": 2, "character": 1},
+                    ToolContext(SimpleNamespace(project_dir=tmpdir)),
+                )
+            self.assertIn("file:///x.py", result)
+
+    def test_prepareCallHierarchy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = Path(tmpdir) / "sample.py"
+            f.write_text("def hello():\n    pass\n", encoding="utf-8")
+            item = {"name": "hello", "uri": "file:///x.py", "range": {}}
+            client = _fake_server({"textDocument/prepareCallHierarchy": [item]})
+            with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
+                result = LSP().run(
+                    {"operation": "prepareCallHierarchy", "file_path": str(f), "line": 1, "character": 1},
+                    ToolContext(SimpleNamespace(project_dir=tmpdir)),
+                )
+            self.assertIn("hello", result)
 
 
 if __name__ == "__main__":
