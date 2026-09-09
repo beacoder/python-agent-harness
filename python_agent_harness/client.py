@@ -19,12 +19,81 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
 from . import config
 from .models import Message, ToolCall, ToolSpec, Usage
+
+
+@runtime_checkable
+class LLMClient(Protocol):
+    """Structural interface the agent loop needs from an LLM backend.
+
+    ``AgentLoop`` and ``Session`` depend only on this surface, never on
+    the concrete ``Client`` transport.  Anything providing these
+    members — the OpenAI-compatible ``Client`` below, a fake/replay
+    double in tests, or an alternative provider — can drive the FSM.
+
+    The members mirror how the agent consumes a client today:
+
+    - ``chat`` / ``chat_sync`` — the two request entry points (streaming
+      turns and one-shot compaction/title/summary calls).
+    - ``clone`` — a fresh, state-isolated copy for a concurrent
+      sub-agent (pools and the abort flag must never be shared).
+    - ``abort`` / ``close`` — cancel an in-flight request / release the
+      pool.
+    - ``set_timeout`` — apply a new request timeout (``/model`` switch).
+    - ``base_url`` / ``api_key`` / ``model`` / ``timeout`` — connection
+      settings the session reads and rewrites on a profile switch.
+    - ``context_window`` — the model's window (config-aware), read by
+      the context manager for compaction decisions.
+    - ``log_path`` — the shared LLM log file, inherited by clones.
+    """
+
+    base_url: str
+    api_key: str | None
+    model: str
+    timeout: float
+    log_path: Path | None
+
+    @property
+    def context_window(self) -> int: ...
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[ToolSpec] | None = ...,
+        system: str | None = ...,
+        temperature: float | None = ...,
+        max_tokens: int | None = ...,
+        reasoning_effort: str | None = ...,
+        on_delta: Callable[[str], None] | None = ...,
+        on_tool_call: Callable[[str, str, str], None] | None = ...,
+        stream: bool = ...,
+        cancel_check: Callable[[], bool] | None = ...,
+        on_retry: Callable[[], None] | None = ...,
+    ) -> tuple[Message, Usage]: ...
+
+    def chat_sync(
+        self,
+        messages: list[Message],
+        system: str | None = ...,
+        temperature: float | None = ...,
+        max_tokens: int | None = ...,
+        reasoning_effort: str | None = ...,
+        cancel_check: Callable[[], bool] | None = ...,
+    ) -> tuple[Message, Usage]: ...
+
+    def clone(self) -> LLMClient: ...
+
+    def abort(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def set_timeout(self, timeout: float) -> None: ...
+
 
 # serializes appends to the shared LLM log file: concurrent sub-agents
 # (each with its own client but ONE shared log_path, see Client.clone)
