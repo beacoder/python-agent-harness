@@ -329,9 +329,20 @@ class TestCommandToolAvailability(unittest.TestCase):
         from python_agent_harness.session import Session
         from python_agent_harness.tools import default_registry
 
+        # The client is irrelevant to PlanExit registry manipulation, but
+        # Session.close() now calls client.close() unconditionally (the
+        # LLMClient protocol guarantees it), so use a stub that answers
+        # the lifecycle calls instead of a bare object().
+        class StubClient:
+            def close(self) -> None:
+                pass
+
+            def abort(self) -> None:
+                pass
+
         s = Session(
             project_dir="/tmp",
-            client=object(),
+            client=StubClient(),
             model="m",
             registry=default_registry(),
         )
