@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from . import config
 from .agent import run_agent_loop
+from .client import LLMClient
 from .models import Message
 from .prompts import load_agent_prompt
 
@@ -31,7 +32,7 @@ def run_subagent(
     parent_session: object,
     description: str,
     prompt: str,
-    client: object | None = None,
+    client: LLMClient | None = None,
 ) -> str:
     """Run a sub-agent task; return a result string (never raises).
 
