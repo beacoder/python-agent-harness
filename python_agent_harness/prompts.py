@@ -35,7 +35,7 @@ def read_prompt_file(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-_FRONTMATTER_RE = re.compile(r"\A---\n.*?\n---\n?", re.DOTALL)
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n?", re.DOTALL)
 _SKILLS_PLACEHOLDER_RE = re.compile(r"\{\{\s*SKILLS\s*\}\}")
 _SKILLS_FALLBACK = (
     "Invoke with a skill name and optional args; the tool reports an "
