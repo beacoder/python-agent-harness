@@ -127,9 +127,31 @@ class TestBashAsync(unittest.TestCase):
         from python_agent_harness.tools.bash import Bash
 
         # Popen with shell=True never fails on syntax; simulate the
-        # OSError path via an impossible cwd instead
+        # OSError path via an impossible cwd instead.  The double
+        # implements the full ToolRuntime surface (Bash only reads
+        # project_dir/cancel_event) so ToolContext proxies without any
+        # hasattr guard.
         class FakeSess:
             project_dir = "/nonexistent-pah-dir"
+            cancel_event = threading.Event()
+
+            def ask_questions(self, questions: list[dict]) -> str:
+                return "answer"
+
+            def record_diff(self, diff_text: str) -> None:
+                pass
+
+            def update_todos(self, todos: list[dict]) -> None:
+                pass
+
+            def find_skill(self, name: str) -> str | None:
+                return None
+
+            def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str:
+                return f"ran {description}"
+
+            def plan_exit(self) -> str:
+                return "approved"
 
         result = Bash().run({"command": "echo hi"}, ToolContext(FakeSess()))
         self.assertIsInstance(result, str)
