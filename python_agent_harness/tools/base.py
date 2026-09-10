@@ -80,6 +80,9 @@ class ToolRuntime(Protocol):
     @property
     def cancel_event(self) -> threading.Event: ...
 
+    @property
+    def config_path(self) -> str | None: ...
+
     def ask_questions(self, questions: list[dict]) -> str: ...
 
     def record_diff(self, diff_text: str) -> None: ...
@@ -142,6 +145,18 @@ class ToolContext:
         """Session cancel event (set when the user presses Ctrl-C)."""
         if self.session:
             return self.session.cancel_event
+        return None
+
+    @property
+    def config_path(self) -> str | None:
+        """Path to the active config file (None = default resolution).
+
+        Tools that read the config file (e.g. the LSP tool, which loads
+        per-extension server overrides) use this so a session started
+        with ``--config PATH`` reads the same file.
+        """
+        if self.session:
+            return self.session.config_path
         return None
 
 
