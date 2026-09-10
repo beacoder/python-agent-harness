@@ -7,6 +7,7 @@ A small OpenCode-style surface over the built-in LSP client. The model sees
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -60,19 +61,25 @@ PARAMETERS = {
         "line": {
             "type": "integer",
             "minimum": 1,
-            "description": "The line number (1-based, as shown in editors)",
+            "description": (
+                "The line number (1-based, as shown in editors). "
+                "Required for all operations except workspaceSymbol."
+            ),
         },
         "character": {
             "type": "integer",
             "minimum": 1,
-            "description": "The character offset (1-based, as shown in editors)",
+            "description": (
+                "The character offset (1-based, as shown in editors). "
+                "Required for all operations except workspaceSymbol."
+            ),
         },
         "query": {
             "type": "string",
             "description": "Search query for workspaceSymbol. Empty string requests all symbols.",
         },
     },
-    "required": ["operation", "file_path", "line", "character"],
+    "required": ["operation", "file_path"],
 }
 
 
@@ -116,10 +123,18 @@ class LSP(Tool):
         if not os.path.isfile(path):
             return f"Error: File not found: {raw_path}"
 
+        # workspaceSymbol is project-wide: it uses file_path only to select
+        # the workspace/server and ignores line/character, so it skips all
+        # position validation and coordinate conversion below.
+        needs_position = operation != "workspaceSymbol"
+
         # Keep the agent-facing contract 1-based, while the LSP protocol is 0-based.
-        line = int(args.get("line", 1))
-        character = int(args.get("character", 1))
-        if line < 1 or character < 1:
+        try:
+            line = int(args.get("line", 1))
+            character = int(args.get("character", 1))
+        except (TypeError, ValueError):
+            return "Error: line and character must be integers"
+        if needs_position and (line < 1 or character < 1):
             return "Error: line and character must be >= 1"
 
         # Validate the requested line before spinning up a server so a bad
@@ -129,77 +144,95 @@ class LSP(Tool):
         except (OSError, UnicodeError) as e:
             return f"Error: failed to read {raw_path}: {e}"
         lines = text.splitlines(keepends=True)
-        if line > len(lines):
+        if needs_position and line > len(lines):
             return f"Error: line {line} is beyond end of file ({len(lines)} lines)"
 
         try:
-            client, _ = get_client(path, ctx.cwd)
+            client, _ = get_client(path, ctx.cwd, ctx.config_path)
             uri = Path(path).as_uri()
             client.open_document(uri, text)
+            try:
+                # LSP positions are 0-based. Character conversion to the
+                # negotiated encoding is done here using the source line.
+                # Skipped entirely for workspaceSymbol, which sends no position.
+                position: dict[str, int] | None = None
+                if needs_position:
+                    source_line = lines[line - 1].rstrip("\r\n")
+                    py_index = min(character - 1, len(source_line))
+                    if client.position_encoding == "utf-8":
+                        lsp_character = len(source_line[:py_index].encode("utf-8"))
+                    elif client.position_encoding == "utf-32":
+                        lsp_character = py_index
+                    else:
+                        lsp_character = len(source_line[:py_index].encode("utf-16-le")) // 2
+                    position = {"line": line - 1, "character": lsp_character}
 
-            # LSP positions are 0-based. Character conversion to the negotiated
-            # encoding is done here using the source line.
-            source_line = lines[line - 1].rstrip("\r\n")
-            py_index = min(character - 1, len(source_line))
-            if client.position_encoding == "utf-8":
-                lsp_character = len(source_line[:py_index].encode("utf-8"))
-            elif client.position_encoding == "utf-32":
-                lsp_character = py_index
-            else:
-                lsp_character = len(source_line[:py_index].encode("utf-16-le")) // 2
-            position = {"line": line - 1, "character": lsp_character}
-
-            if operation == "goToDefinition":
-                result = client.request(
-                    "textDocument/definition", {"textDocument": {"uri": uri}, "position": position}
-                )
-            elif operation == "findReferences":
-                result = client.request(
-                    "textDocument/references",
-                    {
-                        "textDocument": {"uri": uri},
-                        "position": position,
-                        "context": {"includeDeclaration": True},
-                    },
-                )
-            elif operation == "hover":
-                result = client.request(
-                    "textDocument/hover", {"textDocument": {"uri": uri}, "position": position}
-                )
-            elif operation == "documentSymbol":
-                result = client.request(
-                    "textDocument/documentSymbol", {"textDocument": {"uri": uri}}
-                )
-            elif operation == "workspaceSymbol":
-                result = client.request("workspace/symbol", {"query": str(args.get("query", ""))})
-            elif operation == "goToImplementation":
-                result = client.request(
-                    "textDocument/implementation",
-                    {"textDocument": {"uri": uri}, "position": position},
-                )
-            elif operation == "prepareCallHierarchy":
-                result = client.request(
-                    "textDocument/prepareCallHierarchy",
-                    {"textDocument": {"uri": uri}, "position": position},
-                )
-            else:
-                prepared = client.request(
-                    "textDocument/prepareCallHierarchy",
-                    {"textDocument": {"uri": uri}, "position": position},
-                )
-                if not prepared:
-                    return "No call hierarchy item found at this position"
-                item = prepared[0]
-                method = (
-                    "callHierarchy/incomingCalls"
-                    if operation == "incomingCalls"
-                    else "callHierarchy/outgoingCalls"
-                )
-                result = client.request(method, {"item": item})
-        except LSPError as e:
+                if operation == "goToDefinition":
+                    result = client.request(
+                        "textDocument/definition",
+                        {"textDocument": {"uri": uri}, "position": position},
+                    )
+                elif operation == "findReferences":
+                    result = client.request(
+                        "textDocument/references",
+                        {
+                            "textDocument": {"uri": uri},
+                            "position": position,
+                            "context": {"includeDeclaration": True},
+                        },
+                    )
+                elif operation == "hover":
+                    result = client.request(
+                        "textDocument/hover", {"textDocument": {"uri": uri}, "position": position}
+                    )
+                elif operation == "documentSymbol":
+                    result = client.request(
+                        "textDocument/documentSymbol", {"textDocument": {"uri": uri}}
+                    )
+                elif operation == "workspaceSymbol":
+                    result = client.request(
+                        "workspace/symbol", {"query": str(args.get("query", ""))}
+                    )
+                elif operation == "goToImplementation":
+                    result = client.request(
+                        "textDocument/implementation",
+                        {"textDocument": {"uri": uri}, "position": position},
+                    )
+                elif operation == "prepareCallHierarchy":
+                    result = client.request(
+                        "textDocument/prepareCallHierarchy",
+                        {"textDocument": {"uri": uri}, "position": position},
+                    )
+                else:
+                    prepared = client.request(
+                        "textDocument/prepareCallHierarchy",
+                        {"textDocument": {"uri": uri}, "position": position},
+                    )
+                    # A spec-compliant server returns a list or null; guard
+                    # against a non-list (truthy but unsubscriptable) reply so
+                    # a misbehaving server cannot raise past the LSPError guard.
+                    if not isinstance(prepared, list) or not prepared:
+                        return "No call hierarchy item found at this position"
+                    item = prepared[0]
+                    method = (
+                        "callHierarchy/incomingCalls"
+                        if operation == "incomingCalls"
+                        else "callHierarchy/outgoingCalls"
+                    )
+                    result = client.request(method, {"item": item})
+            finally:
+                # Close-after-use: keeping every inspected file open would grow
+                # the (long-lived, cached) server's document set unbounded over a
+                # session.  Best-effort — a failed close must not mask a result
+                # or a raised LSPError.
+                with contextlib.suppress(Exception):
+                    client.close_document(uri)
+        except (LSPError, ValueError) as e:
+            # LSPError: no server / server failure. ValueError: a malformed
+            # lsp.servers entry surfacing on this lazy get_client call (it is
+            # also validated eagerly at session start, but a Session built
+            # outside make_session may reach here first).
             return f"Error: {e}"
-        except (OSError, UnicodeError) as e:
-            return f"Error: failed to read {raw_path}: {e}"
 
         if result is None:
             result = []
