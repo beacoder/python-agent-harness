@@ -803,6 +803,42 @@ class TestClientWireProtocol(unittest.TestCase):
         client.close()
         self.assertTrue(client._closed)
 
+    def test_close_closes_proc_streams(self):
+        # close() must release the pipe file objects so their fds are not
+        # leaked (subprocess does not close them on terminate/kill).
+        closed_streams: list[str] = []
+
+        class _Stream:
+            def __init__(self, tag):
+                self.tag = tag
+
+            def close(self):
+                closed_streams.append(self.tag)
+
+        client = _make_client()
+        client.proc = SimpleNamespace(
+            stdin=_Stream("stdin"),
+            stdout=_Stream("stdout"),
+            poll=lambda: 0,  # already exited: skip terminate/kill
+        )
+        client.close()
+        self.assertEqual(sorted(closed_streams), ["stdin", "stdout"])
+
+    def test_close_tolerates_stream_close_failure(self):
+        # a stream whose close() raises must not break close() (best-effort).
+        class _BadStream:
+            def close(self):
+                raise OSError("boom")
+
+        client = _make_client()
+        client.proc = SimpleNamespace(
+            stdin=_BadStream(),
+            stdout=_BadStream(),
+            poll=lambda: 0,
+        )
+        client.close()  # must not raise
+        self.assertTrue(client._closed)
+
 
 class TestRegistryIntegration(unittest.TestCase):
     def test_lsp_tool_registered_in_default_registry(self):
