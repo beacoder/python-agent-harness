@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 
+from .lsp.config import LSPConfig
 from .mcp.config import MCPConfig
 
 # ---- context management -------------------------------------------------
@@ -256,6 +257,15 @@ CONFIG_TEMPLATE = """\
     "context_path": null,
     "skill_path": null
   }},
+  "lsp": {{
+    "_comment": "Optional per-extension LSP server overrides. Keys are file extensions (e.g. '.py', '.cpp'); 'command' is the server argv; 'language_id' defaults to the extension without the dot. These override the built-in DEFAULT_SERVERS table. Remove this section to use only the built-ins. The server binary must be on PATH. The '.example' entry below is inert (no such extension) — copy it to a real extension like '.cpp' to activate.",
+    "servers": {{
+      ".example": {{
+        "command": ["clangd", "--background-index", "--clang-tidy"],
+        "language_id": "cpp"
+      }}
+    }}
+  }},
   "mcp": {{
     "_comment": "Optional MCP servers (requires: pip install -e '.[mcp]'). Each server's tools become agent tools named mcp__<server>__<tool>. Transports: stdio (spawn command+args, pass through env var names), streamable-http / sse (connect to url, optional headers). 'parallel: true' marks read-only servers whose tools may run concurrently; default is serial. 'timeout' bounds connects, discovery and calls (seconds).",
     "servers": {{
@@ -445,6 +455,31 @@ def load_mcp_config(path: str | os.PathLike | None = None) -> MCPConfig:
     if not isinstance(section, dict):
         raise ValueError(f"config file {_config_path(path)}: mcp must be an object")
     return MCPConfig.from_dict(section.get("servers"))
+
+
+def load_lsp_config(path: str | os.PathLike | None = None) -> LSPConfig:
+    """Load per-extension LSP server overrides from the config file.
+
+    Reads the optional ``lsp.servers`` object (keyed by file extension,
+    e.g. ``".py"``) and returns an ``LSPConfig`` (empty when the file
+    has no ``lsp`` section or no servers). These entries layer on top of
+    the built-in ``DEFAULT_SERVERS`` table in ``lsp/manager.py``.
+
+    Malformed entries raise ValueError so config errors surface at
+    session start rather than the first LSP call.
+    """
+    data = _read_config(path)
+    section = data.get("lsp") or {}
+    if not isinstance(section, dict):
+        raise ValueError(f"config file {_config_path(path)}: lsp must be an object")
+    servers = section.get("servers") or {}
+    if not isinstance(servers, dict):
+        raise ValueError(f"config file {_config_path(path)}: lsp.servers must be an object")
+    try:
+        return LSPConfig.from_dict(servers)
+    except ValueError as e:
+        # Re-raise with the config-file path for a clearer message.
+        raise ValueError(f"config file {_config_path(path)}: {e}") from e
 
 
 def load_models_config(path: str | os.PathLike | None = None) -> dict[str, dict]:
