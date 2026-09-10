@@ -57,6 +57,10 @@ class FakeSession:
         return "/tmp"
 
     @property
+    def config_path(self) -> str | None:
+        return None
+
+    @property
     def cancel_event(self) -> threading.Event:
         return self._cancel
 
