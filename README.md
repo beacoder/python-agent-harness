@@ -71,7 +71,7 @@ Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_
 
 - **FSM-driven execution** — explicit `WAIT` / `TOOL` / `TRET` / `SUPERVISE` / `DONE` / `ERRS` / `ABRT` states. Completion supervision nudges the model when it stops early, while failed tool calls are sanitized so they never strand the agent. Transient API failures (`429` / `5xx`) retry with exponential backoff and jitter. Auth-expired status codes (configurable via `AUTH_REFRESH_STATUS_CODES` in `config.py`; defaults to `[401, 502]`) trigger automatic API key re-read from config/env — some API gateways return `502` instead of `401` when the backend auth token has expired. Note: codes in this list are treated as auth-expired exclusively and will not be retried with backoff, so only include codes that are unambiguously auth-related in your environment.
 - **Context management** — CJK-aware token estimation, per-model context windows, and automatic compaction at 70% usage.
-- **Coding tools** — `Agent`, `TodoWrite`, `Glob`, `Grep`, `Read`, `Insert`, `Edit` (including unified diffs), `Write`, `Mkdir`, `Bash`, `Skill`, `Question`, and `PlanExit`. Synchronous tools execute sequentially, but a round made up entirely of read-only tools (`Read`, `Glob`, `Grep`, `Skill`) is dispatched concurrently via a bounded thread pool; asynchronous tools such as `Bash` and `Agent` can run concurrently as well. Results are always delivered in the model's emitted order.
+- **Coding tools** — `Agent`, `TodoWrite`, `Glob`, `Grep`, `Read`, `Insert`, `Edit` (including unified diffs), `Write`, `Mkdir`, `Bash`, `Skill`, `Question`, `LSP`, and `PlanExit`. Synchronous tools execute sequentially, but a round made up entirely of read-only tools (`Read`, `Glob`, `Grep`, `Skill`, `LSP`) is dispatched concurrently via a bounded thread pool; asynchronous tools such as `Bash` and `Agent` can run concurrently as well. Results are always delivered in the model's emitted order.
 - **Plan / Build modes** — plan mode is read-only except for the per-session plan file.
 - **Persistent sessions** — sessions are automatically saved after every response to `~/.local/share/python-agent-harness/sessions/`, with LLM-generated titles and support for `/restore --latest` and `/sessions`.
 - **Focused TUI** — a Rich-based interface with a pinned status bar, Todos panel, inline red/green diff rendering for `Edit` and `Write`, and a `prompt_toolkit` editor with history and completion. `Esc+Enter` submits, `Ctrl-D` quits, and `Ctrl-C` cancels without leaving the application.
@@ -144,6 +144,14 @@ All LLM settings live in a single JSON configuration file. Environment variables
     "context_path": null,
     "skill_path": null
   },
+  "lsp": {
+    "servers": {
+      ".example": {
+        "command": ["clangd", "--background-index", "--clang-tidy"],
+        "language_id": "cpp"
+      }
+    }
+  },
   "mcp": {
     "servers": {
       "example": {
@@ -172,6 +180,7 @@ All LLM settings live in a single JSON configuration file. Environment variables
 - **`subagent_llm`** — LLM configuration for `Agent` tool requests. Unset values inherit from the main `llm`. Set `profile` to reuse a profile from `models`. Precedence is: profile settings > explicit `subagent_llm` settings > main `llm` > environment variables.
 - **`default_agent`** — name of the agent to use at session start (instead of the built-in `agent.md`). The agent must exist as a `.md` file in the `prompts/agents/` directory. When unset or `null`, the built-in default agent is used. Use `/agent default` in the TUI to switch back to the built-in at any time.
 - **`paths.context_path` / `paths.skill_path`** — locations from which to load context files and skills. When unset, the project-local `<project>/contexts` and `<project>/skills` directories are used.
+- **`lsp.servers`** — optional per-extension LSP server overrides for the `LSP` code-intelligence tool. Keys are file extensions (e.g. `.py`, `.cpp`); each value has a `command` (the server argv) and an optional `language_id` (defaults to the extension without its dot). These layer on top of the built-in `DEFAULT_SERVERS` table in `lsp/manager.py`; an entry for an existing extension replaces its default. The server binary must be on `PATH`.
 - **`mcp.servers`** — MCP server configuration. Requires the `[mcp]` extra. Each server supports `transport`, `command`, `args`, `env`, `url`, `headers`, `parallel`, `timeout`, and `enabled`.
 - **Configuration precedence** — code defaults < config file < `OPENAI_*` environment variables. Sub-agent settings also support `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`).
 - **Custom config** — use `--config PATH` or `PYTHON_AGENT_HARNESS_CONFIG`.
