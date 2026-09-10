@@ -146,10 +146,12 @@ All LLM settings live in a single JSON configuration file. Environment variables
   },
   "lsp": {
     "servers": {
-      "example": {
-        "command": ["clangd", "--background-index", "--clang-tidy"],
-        "language_id": "cpp"
-      }
+      ".c":   { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "c" },
+      ".h":   { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "c" },
+      ".cpp": { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "cpp" },
+      ".cc":  { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "cpp" },
+      ".hpp": { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "cpp" },
+      ".cxx": { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "cpp" }
     }
   },
   "mcp": {
