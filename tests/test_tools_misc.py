@@ -35,6 +35,7 @@ class FakeSession:
 
     def __init__(self) -> None:
         self.project_dir = "/tmp"
+        self.config_path: str | None = None
         self.received_todos: list[dict] = []
         self._cancel = threading.Event()
 
@@ -117,6 +118,14 @@ class TestToolContext(unittest.TestCase):
 
     def test_cancel_event_defaults_none(self):
         self.assertIsNone(ToolContext().cancel_event)
+
+    def test_config_path_defaults_none(self):
+        self.assertIsNone(ToolContext().config_path)
+
+    def test_config_path_proxies_to_session(self):
+        sess = FakeSession()
+        sess.config_path = "/tmp/my-config.json"
+        self.assertEqual(ToolContext(sess).config_path, "/tmp/my-config.json")
 
 
 class TestRegistry(unittest.TestCase):
