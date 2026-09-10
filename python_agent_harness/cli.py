@@ -41,6 +41,11 @@ def make_session(
     settings = config.load_llm_config(config_path)
     paths = config.load_paths_config(config_path)
     mcp_config = config.load_mcp_config(config_path)
+    # Validate lsp.servers eagerly so a malformed override fails fast at
+    # session start (with a clear message) instead of poisoning the first
+    # LSP tool call mid-session.  The LSP manager re-reads it lazily via
+    # config_path; this call only surfaces config errors early.
+    config.load_lsp_config(config_path)
     model = model or settings["model"]
     # resolve sub-agent overrides against the EFFECTIVE main settings
     # (so a CLI/caller model override is inherited too when the
