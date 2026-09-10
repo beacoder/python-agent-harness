@@ -267,6 +267,7 @@ python_agent_harness/
 ├── cli.py             # CLI entry points
 ├── tui/               # Rich + prompt_toolkit TUI (package)
 ├── diffrender.py      # Unified diff generation + Rich rendering
+├── lsp/               # Built-in LSP client
 ├── mcp/               # Optional MCP client
 └── tools/             # Tool implementations + registry
 ```
