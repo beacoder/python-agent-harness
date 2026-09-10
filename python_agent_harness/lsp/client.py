@@ -116,6 +116,12 @@ class LSPClient:
             with self._state_lock:
                 self._pending.pop(request_id, None)
             raise LSPError(f"LSP request timed out: {method}") from e
+        except BaseException:
+            # _send() may raise (server down / write failure); drop the
+            # now-orphaned pending entry so it does not leak forever.
+            with self._state_lock:
+                self._pending.pop(request_id, None)
+            raise
         if kind == "error":
             code = value.get("code") if isinstance(value, dict) else None
             msg = (
@@ -137,6 +143,11 @@ class LSPClient:
 
     def open_document(self, uri: str, text: str) -> None:
         self.start_if_needed()
+        # Decide which notification to send while holding _state_lock, but
+        # send it AFTER releasing the lock: notify()->_send() does a blocking
+        # write on the server's stdin pipe, and holding _state_lock across that
+        # write can deadlock the reader thread (which needs _state_lock to
+        # deliver responses/diagnostics) if the pipe buffer fills.
         with self._state_lock:
             version = self._opened.get(uri, 0)
             if version:
@@ -145,27 +156,24 @@ class LSPClient:
                 version += 1
                 self._opened[uri] = version
                 self._texts[uri] = text
-                self.notify(
-                    "textDocument/didChange",
-                    {
-                        "textDocument": {"uri": uri, "version": version},
-                        "contentChanges": [{"text": text}],
-                    },
-                )
-                return
-            self._opened[uri] = 1
-            self._texts[uri] = text
-        self.notify(
-            "textDocument/didOpen",
-            {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": self.language_id,
-                    "version": 1,
-                    "text": text,
+                method = "textDocument/didChange"
+                params: dict[str, Any] = {
+                    "textDocument": {"uri": uri, "version": version},
+                    "contentChanges": [{"text": text}],
                 }
-            },
-        )
+            else:
+                self._opened[uri] = 1
+                self._texts[uri] = text
+                method = "textDocument/didOpen"
+                params = {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": self.language_id,
+                        "version": 1,
+                        "text": text,
+                    }
+                }
+        self.notify(method, params)
 
     def close_document(self, uri: str) -> None:
         with self._state_lock:
