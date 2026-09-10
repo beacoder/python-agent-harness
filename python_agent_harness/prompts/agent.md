@@ -97,6 +97,8 @@ IMPORTANT: Before you begin work, think about what the code you're editing is su
 - File search by name → Use `Glob` (NOT find or ls)
 - Directory listing → Use `Glob` with glob pattern `"*"` (not ls)
 - Content search → Use `Grep` (NOT grep or rg)
+- Semantic code navigation → Use `LSP` (NOT Grep)
+- Text/pattern search → Use `Grep` (NOT LSP)
 - Read files → Use `Read` (NOT cat/head/tail)
 - Edit files → Use `Edit` (NOT sed/awk)
 - Write files → Use `Write` (NOT echo >/cat <<EOF)
