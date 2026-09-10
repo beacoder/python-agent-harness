@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import queue
@@ -23,6 +24,18 @@ def _make_client(**kwargs) -> LSPClient:
     defaults = dict(command=["noop"], root="/tmp", language_id="python")
     defaults.update(kwargs)
     return LSPClient(**defaults)
+
+
+@contextlib.contextmanager
+def _config_file(servers: dict):
+    """Write a temp config file with the given lsp.servers and yield its path."""
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump({"lsp": {"servers": servers}}, f)
+        path = f.name
+    try:
+        yield path
+    finally:
+        os.unlink(path)
 
 
 def _fake_server(responses: dict[str, object], encoding: str = "utf-16") -> LSPClient:
@@ -145,13 +158,100 @@ class TestToolValidation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._write_file(tmpdir, "x = 1\n")
             tool = LSP()
-            fake = SimpleNamespace(project_dir=tmpdir)
+            fake = SimpleNamespace(project_dir=tmpdir, config_path=None)
             with mock.patch.object(tools_lsp, "get_client", side_effect=LSPError("stop-here")):
                 result = tool.run(
                     {"operation": "hover", "file_path": "sample.py", "line": 1, "character": 1},
                     ToolContext(fake),
                 )
             self.assertIn("stop-here", result)
+
+    def test_non_integer_line_returns_clean_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = self._write_file(tmpdir, "x = 1\n")
+            result = LSP().run(
+                {"operation": "hover", "file_path": str(f), "line": "abc", "character": 1},
+                ToolContext(),
+            )
+            self.assertEqual(result, "Error: line and character must be integers")
+
+    def test_null_character_returns_clean_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = self._write_file(tmpdir, "x = 1\n")
+            result = LSP().run(
+                {"operation": "hover", "file_path": str(f), "line": 1, "character": None},
+                ToolContext(),
+            )
+            self.assertEqual(result, "Error: line and character must be integers")
+
+    def test_workspaceSymbol_ignores_invalid_position(self):
+        # workspaceSymbol never uses line/character: a bad/out-of-range
+        # position must NOT be rejected (it is skipped entirely).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = self._write_file(tmpdir, "x = 1\n")
+            client = _fake_server({"workspace/symbol": [{"name": "x"}]})
+            with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
+                result = LSP().run(
+                    {
+                        "operation": "workspaceSymbol",
+                        "file_path": str(f),
+                        "line": 0,  # invalid for position ops, ignored here
+                        "character": 999,  # beyond EOF, ignored here
+                        "query": "x",
+                    },
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
+                )
+            self.assertIn("x", result)
+            method, params = client.requests[-1]
+            self.assertEqual(method, "workspace/symbol")
+            self.assertEqual(params, {"query": "x"})
+
+    def test_workspaceSymbol_without_position_args(self):
+        # line/character are no longer required for workspaceSymbol.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = self._write_file(tmpdir, "x = 1\n")
+            client = _fake_server({"workspace/symbol": [{"name": "x"}]})
+            with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
+                result = LSP().run(
+                    {"operation": "workspaceSymbol", "file_path": str(f), "query": "x"},
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
+                )
+            self.assertIn("x", result)
+
+    def test_config_path_forwarded_to_get_client(self):
+        # The tool must pass the session's config_path through to get_client
+        # so a session started with --config reads the same lsp.servers.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = self._write_file(tmpdir, "x = 1\n")
+            captured: dict = {}
+
+            def fake_get_client(path, project_dir, config_path=None):
+                captured["config_path"] = config_path
+                raise LSPError("stop-here")
+
+            fake = SimpleNamespace(project_dir=tmpdir, config_path="/tmp/custom-config.json")
+            with mock.patch.object(tools_lsp, "get_client", side_effect=fake_get_client):
+                LSP().run(
+                    {"operation": "hover", "file_path": str(f), "line": 1, "character": 1},
+                    ToolContext(fake),
+                )
+            self.assertEqual(captured["config_path"], "/tmp/custom-config.json")
+
+    def test_malformed_config_valueerror_returns_clean_error(self):
+        # A malformed lsp.servers surfacing on the lazy get_client call
+        # (ValueError) must degrade to a clean tool error, not escape.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = self._write_file(tmpdir, "x = 1\n")
+            fake = SimpleNamespace(project_dir=tmpdir, config_path=None)
+            with mock.patch.object(
+                tools_lsp, "get_client", side_effect=ValueError("lsp.servers.zig bad")
+            ):
+                result = LSP().run(
+                    {"operation": "hover", "file_path": str(f), "line": 1, "character": 1},
+                    ToolContext(fake),
+                )
+            self.assertTrue(result.startswith("Error:"))
+            self.assertIn("lsp.servers.zig bad", result)
 
 
 class TestToolOperations(unittest.TestCase):
@@ -165,7 +265,9 @@ class TestToolOperations(unittest.TestCase):
         args.setdefault("file_path", str(f))
         client = _fake_server(responses)
         with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
-            result = LSP().run(args, ToolContext(SimpleNamespace(project_dir=tmpdir)))
+            result = LSP().run(
+                args, ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None))
+            )
         return result, client
 
     def test_hover_converts_1based_to_0based(self):
@@ -188,7 +290,7 @@ class TestToolOperations(unittest.TestCase):
             with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
                 LSP().run(
                     {"operation": "hover", "file_path": str(f), "line": 1, "character": 10},
-                    ToolContext(SimpleNamespace(project_dir=tmpdir)),
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
                 )
             # 10-1=9 python chars into the line; the comment is 5 chars + space,
             # so we reach into the CJK text: each CJK char is 3 utf-8 bytes.
@@ -208,7 +310,7 @@ class TestToolOperations(unittest.TestCase):
             with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
                 LSP().run(
                     {"operation": "hover", "file_path": str(f), "line": 1, "character": 4},
-                    ToolContext(SimpleNamespace(project_dir=tmpdir)),
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
                 )
             _, params = client.requests[-1]
             self.assertEqual(params["position"], {"line": 0, "character": 3})
@@ -221,7 +323,7 @@ class TestToolOperations(unittest.TestCase):
             with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
                 LSP().run(
                     {"operation": "hover", "file_path": str(f), "line": 1, "character": 4},
-                    ToolContext(SimpleNamespace(project_dir=tmpdir)),
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
                 )
             _, params = client.requests[-1]
             # "# 中" in utf-16 code units = 3
@@ -253,7 +355,7 @@ class TestToolOperations(unittest.TestCase):
                         "character": 1,
                         "query": "hello",
                     },
-                    ToolContext(SimpleNamespace(project_dir=tmpdir)),
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
                 )
             self.assertIn("hello", result)
             method, params = client.requests[-1]
@@ -304,6 +406,57 @@ class TestToolOperations(unittest.TestCase):
             )
             self.assertIn("No call hierarchy item found", result)
 
+    def test_incomingCalls_non_list_prepared_handled(self):
+        # A misbehaving server returns a truthy non-list; the tool must not
+        # raise past its LSPError guard, just report no item found.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result, client = self._run(
+                tmpdir,
+                {"operation": "incomingCalls", "line": 1, "character": 1},
+                {"textDocument/prepareCallHierarchy": True},
+            )
+            self.assertIn("No call hierarchy item found", result)
+            # only the prepare step ran; no incomingCalls follow-up
+            self.assertEqual([m for m, _ in client.requests], ["textDocument/prepareCallHierarchy"])
+
+    def test_document_closed_after_use(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            closed: list[str] = []
+
+            class _CloseTracking(_fake_server({"textDocument/hover": {"contents": "x"}}).__class__):
+                def close_document(self, uri):
+                    closed.append(uri)
+
+            client = _CloseTracking()
+            f = Path(tmpdir) / "sample.py"
+            f.write_text("def hello():\n    pass\n", encoding="utf-8")
+            with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
+                LSP().run(
+                    {"operation": "hover", "file_path": str(f), "line": 1, "character": 1},
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
+                )
+            self.assertEqual(len(closed), 1)
+            self.assertEqual(closed[0], Path(f).resolve().as_uri())
+
+    def test_document_closed_even_on_lsp_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            closed: list[str] = []
+
+            class _CloseTracking(_fake_server({"textDocument/hover": LSPError("boom")}).__class__):
+                def close_document(self, uri):
+                    closed.append(uri)
+
+            client = _CloseTracking()
+            f = Path(tmpdir) / "sample.py"
+            f.write_text("def hello():\n    pass\n", encoding="utf-8")
+            with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
+                result = LSP().run(
+                    {"operation": "hover", "file_path": str(f), "line": 1, "character": 1},
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
+                )
+            self.assertIn("boom", result)
+            self.assertEqual(len(closed), 1)  # closed despite the request raising
+
     def test_empty_result_message(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             result, _ = self._run(
@@ -346,7 +499,7 @@ class TestToolOperations(unittest.TestCase):
             with mock.patch.object(tools_lsp, "get_client", return_value=(client, "k")):
                 LSP().run(
                     {"operation": "hover", "file_path": str(f), "line": 1, "character": 1},
-                    ToolContext(SimpleNamespace(project_dir=tmpdir)),
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
                 )
             self.assertEqual(len(opened), 1)
             self.assertEqual(opened[0][1], "def hello():\n    pass\n")
@@ -360,51 +513,62 @@ class TestManager(unittest.TestCase):
         shutdown_all()
 
     def test_load_server_config_defaults(self):
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("PYTHON_AGENT_HARNESS_LSP_SERVERS", None)
-            config = lsp_manager._load_server_config()
-            self.assertIn(".py", config)
-            self.assertEqual(config[".py"], (["pyright-langserver", "--stdio"], "python"))
+        # No config file -> only the built-in DEFAULT_SERVERS.
+        config = lsp_manager._load_server_config("/no/such/config.json")
+        self.assertIn(".py", config)
+        self.assertEqual(config[".py"], (["pyright-langserver", "--stdio"], "python"))
 
     def test_load_server_config_override(self):
-        env = {
-            "PYTHON_AGENT_HARNESS_LSP_SERVERS": json.dumps(
-                {".py": {"command": ["fake-ls"], "language_id": "py"}}
-            )
-        }
-        with mock.patch.dict(os.environ, env):
-            config = lsp_manager._load_server_config()
+        with _config_file({".py": {"command": ["fake-ls"], "language_id": "py"}}) as p:
+            config = lsp_manager._load_server_config(p)
             self.assertEqual(config[".py"], (["fake-ls"], "py"))
+            # built-ins for other extensions remain
+            self.assertIn(".ts", config)
 
-    def test_load_server_config_bad_json_falls_back(self):
-        with mock.patch.dict(os.environ, {"PYTHON_AGENT_HARNESS_LSP_SERVERS": "{not json"}):
-            config = lsp_manager._load_server_config()
-            self.assertIn(".py", config)
+    def test_load_server_config_new_extension_added(self):
+        with _config_file({".zig": {"command": ["zls"]}}) as p:
+            config = lsp_manager._load_server_config(p)
+            # language_id defaults to the extension without its dot
+            self.assertEqual(config[".zig"], (["zls"], "zig"))
 
-    def test_load_server_config_non_dict_falls_back(self):
-        with mock.patch.dict(os.environ, {"PYTHON_AGENT_HARNESS_LSP_SERVERS": "[1,2]"}):
-            config = lsp_manager._load_server_config()
-            self.assertIn(".py", config)
+    def test_load_server_config_bad_json_raises(self):
+        # A malformed config file surfaces as an error (via _read_config).
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            f.write("{not json")
+            p = f.name
+        try:
+            with self.assertRaises(ValueError):
+                lsp_manager._load_server_config(p)
+        finally:
+            os.unlink(p)
 
-    def test_load_server_config_entry_without_command_list_ignored(self):
-        env = {"PYTHON_AGENT_HARNESS_LSP_SERVERS": json.dumps({".zz": {"command": "notalist"}})}
-        with mock.patch.dict(os.environ, env):
-            config = lsp_manager._load_server_config()
-            self.assertNotIn(".zz", config)
+    def test_load_server_config_entry_without_command_list_raises(self):
+        with (
+            _config_file({".zz": {"command": "notalist"}}) as p,
+            self.assertRaises(ValueError),
+        ):
+            lsp_manager._load_server_config(p)
+
+    def test_load_server_config_non_object_servers_raises(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({"lsp": {"servers": [1, 2]}}, f)
+            p = f.name
+        try:
+            with self.assertRaises(ValueError):
+                lsp_manager._load_server_config(p)
+        finally:
+            os.unlink(p)
 
     def test_server_for_unknown_extension(self):
-        self.assertIsNone(lsp_manager._server_for("/tmp/x.unknownext"))
+        self.assertIsNone(lsp_manager._server_for("/tmp/x.unknownext", "/no/such/config.json"))
 
     def test_server_for_missing_binary(self):
-        # .py is configured by default but pyright may not be installed;
-        # missing binary => None. Force the condition to be deterministic.
-        env = {
-            "PYTHON_AGENT_HARNESS_LSP_SERVERS": json.dumps(
-                {".py": {"command": ["definitely-not-a-real-binary-xyz"], "language_id": "python"}}
-            )
-        }
-        with mock.patch.dict(os.environ, env):
-            self.assertIsNone(lsp_manager._server_for("/tmp/x.py"))
+        # missing binary => None. Force the condition to be deterministic
+        # via a config-file override pointing at a nonexistent binary.
+        with _config_file(
+            {".py": {"command": ["definitely-not-a-real-binary-xyz"], "language_id": "python"}}
+        ) as p:
+            self.assertIsNone(lsp_manager._server_for("/tmp/x.py", p))
 
     def test_find_root_prefers_marker_dirs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -428,7 +592,7 @@ class TestManager(unittest.TestCase):
 
     def test_get_client_raises_for_unhandled_type(self):
         with self.assertRaises(LSPError):
-            lsp_manager.get_client("/tmp/nope.unknownext", "/tmp")
+            lsp_manager.get_client("/tmp/nope.unknownext", "/tmp", "/no/such/config.json")
 
     def test_get_client_reuses_live_client(self):
         calls = []
@@ -446,21 +610,18 @@ class TestManager(unittest.TestCase):
                 return True
 
         f = Path("/tmp/x.py")
-        env = {
-            "PYTHON_AGENT_HARNESS_LSP_SERVERS": json.dumps(
-                {".py": {"command": ["fake-ls"], "language_id": "python"}}
-            )
-        }
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            _config_file({".py": {"command": ["fake-ls"], "language_id": "python"}}) as cfg,
+        ):
             (Path(tmpdir) / ".git").mkdir()
             with (
-                mock.patch.dict(os.environ, env),
                 mock.patch.object(lsp_manager, "shutil") as fake_shutil,
                 mock.patch.object(lsp_manager, "LSPClient", _Stub),
             ):
                 fake_shutil.which.return_value = "/usr/bin/fake-ls"
-                c1, _ = lsp_manager.get_client(str(f), tmpdir)
-                c2, _ = lsp_manager.get_client(str(f), tmpdir)
+                c1, _ = lsp_manager.get_client(str(f), tmpdir, cfg)
+                c2, _ = lsp_manager.get_client(str(f), tmpdir, cfg)
                 self.assertIs(c1, c2)
                 self.assertEqual(len(calls), 1)
 
@@ -682,7 +843,7 @@ class TestRegistryIntegration(unittest.TestCase):
                         "character": 1,
                         "query": "",
                     },
-                    ToolContext(SimpleNamespace(project_dir=tmpdir)),
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
                 )
             self.assertIn("hello", result)
 
@@ -703,7 +864,7 @@ class TestRegistryIntegration(unittest.TestCase):
                         "line": 2,
                         "character": 1,
                     },
-                    ToolContext(SimpleNamespace(project_dir=tmpdir)),
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
                 )
             self.assertIn("file:///x.py", result)
 
@@ -721,9 +882,66 @@ class TestRegistryIntegration(unittest.TestCase):
                         "line": 1,
                         "character": 1,
                     },
-                    ToolContext(SimpleNamespace(project_dir=tmpdir)),
+                    ToolContext(SimpleNamespace(project_dir=tmpdir, config_path=None)),
                 )
             self.assertIn("hello", result)
+
+
+class TestLSPConfigDataclass(unittest.TestCase):
+    """Unit tests for the lsp/config.py dataclasses (mirrors mcp/config)."""
+
+    def test_from_dict_empty(self):
+        from python_agent_harness.lsp.config import LSPConfig
+
+        self.assertEqual(LSPConfig.from_dict(None).servers, {})
+        self.assertEqual(LSPConfig.from_dict({}).servers, {})
+
+    def test_from_dict_fills_ext_and_language_id(self):
+        from python_agent_harness.lsp.config import LSPConfig
+
+        cfg = LSPConfig.from_dict({".zig": {"command": ["zls"]}})
+        srv = cfg.servers[".zig"]
+        self.assertEqual(srv.command, ["zls"])
+        self.assertEqual(srv.language_id, "zig")  # defaulted from ext
+        self.assertEqual(srv.ext, ".zig")
+
+    def test_from_dict_explicit_language_id(self):
+        from python_agent_harness.lsp.config import LSPConfig
+
+        cfg = LSPConfig.from_dict({".cpp": {"command": ["clangd"], "language_id": "cpp"}})
+        self.assertEqual(cfg.servers[".cpp"].language_id, "cpp")
+
+    def test_from_dict_skips_comment_key(self):
+        from python_agent_harness.lsp.config import LSPConfig
+
+        cfg = LSPConfig.from_dict({"_comment": "x", ".zig": {"command": ["zls"]}})
+        self.assertEqual(set(cfg.servers), {".zig"})
+
+    def test_from_dict_missing_command_raises(self):
+        from python_agent_harness.lsp.config import LSPConfig
+
+        with self.assertRaises(ValueError):
+            LSPConfig.from_dict({".zig": {"language_id": "zig"}})
+
+    def test_from_dict_non_object_entry_raises(self):
+        from python_agent_harness.lsp.config import LSPConfig
+
+        with self.assertRaises(ValueError):
+            LSPConfig.from_dict({".zig": ["zls"]})
+
+    def test_compact_construction_fills_defaults(self):
+        # Building LSPConfig directly (the dict key is authoritative).
+        from python_agent_harness.lsp.config import LSPConfig, LSPServerConfig
+
+        cfg = LSPConfig(servers={".cpp": LSPServerConfig(command=["clangd"])})
+        self.assertEqual(cfg.servers[".cpp"].ext, ".cpp")
+        self.assertEqual(cfg.servers[".cpp"].language_id, "cpp")
+
+    def test_validate_rejects_empty_command(self):
+        from python_agent_harness.lsp.config import LSPServerConfig
+
+        with self.assertRaises(ValueError):
+            LSPServerConfig(command=[], ext=".zig").validate()
 
 
 if __name__ == "__main__":
