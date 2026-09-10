@@ -659,6 +659,37 @@ class TestConfigCli(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("subagent_llm: (inherits main)", buf.getvalue())
 
+    def test_config_show_lsp_servers(self):
+        """config output lists configured LSP servers, and reports a
+        'none configured' note when the section is absent."""
+        import io
+        from contextlib import redirect_stdout
+
+        from python_agent_harness.cli import main
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"lsp": {"servers": {".cpp": '
+                '{"command": ["clangd", "--background-index"], "language_id": "cpp"}}}}',
+                encoding="utf-8",
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main(["config", "--path", str(p)])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("lsp servers:", out)
+            self.assertIn(".cpp: language_id=cpp, command=clangd --background-index", out)
+
+            # no lsp section -> "none configured" note
+            p.write_text('{"llm": {"model": "m"}}', encoding="utf-8")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main(["config", "--path", str(p)])
+            self.assertEqual(rc, 0)
+            self.assertIn("lsp servers: (none configured", buf.getvalue())
+
     def test_config_init_refuses_overwrite(self):
         from python_agent_harness.cli import main
 
