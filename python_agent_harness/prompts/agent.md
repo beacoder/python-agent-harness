@@ -218,6 +218,27 @@ When in doubt, use it.
 - Can perform multiple glob searches in parallel for different patterns
 </tool>
 
+<tool name="LSP">
+**When to use `LSP` (PREFER over `Grep` for code symbols):**
+- Finding where a symbol is defined → `goToDefinition`
+- Finding every usage of a symbol → `findReferences`
+- Getting type info / documentation for a symbol → `hover`
+- Listing symbols in a file → `documentSymbol`; project-wide → `workspaceSymbol`
+- Finding implementations of an interface/abstract method → `goToImplementation`
+- Understanding who calls / is called by a function → `prepareCallHierarchy`, then `incomingCalls` / `outgoingCalls`
+- Any time you have a concrete symbol and a source position: `LSP` returns semantically correct results, whereas `Grep` only finds text that looks alike (misses aliases/shadowing; hits comments and strings).
+
+**When NOT to use `LSP`:**
+- The symbol or location is unknown, or you are searching comments, strings, config, or free text → use `Grep`
+- Searching for files by name → use `Glob`
+- No LSP server is configured/installed for the file's language → the tool returns a "No LSP server ..." error; fall back to `Grep`
+
+**How to use `LSP`:**
+- Positions are 1-based `line`/`character` (as shown in editors); the tool converts to LSP's 0-based form
+- `workspaceSymbol` uses `file_path` only to select the workspace and takes a `query`; it ignores `line`/`character`
+- Read-only: it never modifies files, so it is safe to run concurrently with other read-only tools
+</tool>
+
 <tool name="Grep">
 **When to use `Grep`:**
 - Fast content search tool that works with any codebase size
@@ -230,6 +251,7 @@ When in doubt, use it.
 **When NOT to use `Grep`:**
 - Searching for files by name → use `Glob`
 - Reading known file contents → use `Read`
+- Navigating a known code symbol (its definition, references, implementations, type info, or call hierarchy) → use `LSP` (semantically correct; `Grep` matches text, not symbols)
 - open-ended search that may require multiple rounds of globbing and grepping → use `Agent`
 
 **How to use `Grep`:**
