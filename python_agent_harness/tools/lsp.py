@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -82,6 +83,9 @@ PARAMETERS = {
     "required": ["operation", "file_path"],
 }
 
+# Operations that require a position (line/character).
+_POSITION_OPS = frozenset(o for o in OPERATIONS if o != "workspaceSymbol")
+
 
 def _uri_to_path(uri: str) -> str:
     parsed = urlparse(uri)
@@ -101,6 +105,116 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def _resolve_path(raw_path: str, cwd: str) -> str:
+    if not os.path.isabs(raw_path):
+        return os.path.realpath(os.path.abspath(os.path.join(cwd, raw_path)))
+    return os.path.realpath(raw_path)
+
+
+def _to_lsp_position(lines: list[str], line: int, character: int, encoding: str) -> dict[str, int]:
+    source_line = lines[line - 1].rstrip("\r\n")
+    py_index = min(character - 1, len(source_line))
+    if encoding == "utf-8":
+        lsp_character = len(source_line[:py_index].encode("utf-8"))
+    elif encoding == "utf-32":
+        lsp_character = py_index
+    else:
+        lsp_character = len(source_line[:py_index].encode("utf-16-le")) // 2
+    return {"line": line - 1, "character": lsp_character}
+
+
+def _format_result(result: Any, operation: str) -> str:
+    if result is None:
+        result = []
+    if isinstance(result, (dict, list)) and not result:
+        return f"No results found for {operation}"
+    return json.dumps(_jsonable(result), ensure_ascii=False, indent=2)
+
+
+# --- Operation handlers -------------------------------------------------
+# Each handler receives (client, uri, position, args) and returns the raw
+# LSP response (or a str error message for early-exit cases like empty
+# call-hierarchy preparation).
+
+
+def _op_definition(client, uri, position, args) -> Any:
+    return client.request(
+        "textDocument/definition",
+        {"textDocument": {"uri": uri}, "position": position},
+    )
+
+
+def _op_references(client, uri, position, args) -> Any:
+    return client.request(
+        "textDocument/references",
+        {
+            "textDocument": {"uri": uri},
+            "position": position,
+            "context": {"includeDeclaration": True},
+        },
+    )
+
+
+def _op_hover(client, uri, position, args) -> Any:
+    return client.request(
+        "textDocument/hover", {"textDocument": {"uri": uri}, "position": position}
+    )
+
+
+def _op_document_symbol(client, uri, position, args) -> Any:
+    return client.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
+
+
+def _op_workspace_symbol(client, uri, position, args) -> Any:
+    return client.request("workspace/symbol", {"query": str(args.get("query", ""))})
+
+
+def _op_implementation(client, uri, position, args) -> Any:
+    return client.request(
+        "textDocument/implementation",
+        {"textDocument": {"uri": uri}, "position": position},
+    )
+
+
+def _op_prepare_call_hierarchy(client, uri, position, args) -> Any:
+    return client.request(
+        "textDocument/prepareCallHierarchy",
+        {"textDocument": {"uri": uri}, "position": position},
+    )
+
+
+def _op_call_hierarchy(direction: str) -> Callable[..., Any]:
+    def handler(client, uri, position, args) -> Any:
+        prepared = client.request(
+            "textDocument/prepareCallHierarchy",
+            {"textDocument": {"uri": uri}, "position": position},
+        )
+        if not isinstance(prepared, list) or not prepared:
+            return "No call hierarchy item found at this position"
+        item = prepared[0]
+        method = (
+            "callHierarchy/incomingCalls"
+            if direction == "incoming"
+            else "callHierarchy/outgoingCalls"
+        )
+        return client.request(method, {"item": item})
+
+    return handler
+
+
+_DISPATCH: dict[str, Callable[..., Any]] = {
+    "goToDefinition": _op_definition,
+    "findReferences": _op_references,
+    "hover": _op_hover,
+    "documentSymbol": _op_document_symbol,
+    "workspaceSymbol": _op_workspace_symbol,
+    "goToImplementation": _op_implementation,
+    "prepareCallHierarchy": _op_prepare_call_hierarchy,
+    "incomingCalls": _op_call_hierarchy("incoming"),
+    "outgoingCalls": _op_call_hierarchy("outgoing"),
+}
+
+
 class LSP(Tool):
     name = "LSP"
     description = DESCRIPTION
@@ -115,20 +229,12 @@ class LSP(Tool):
         raw_path = str(args.get("file_path", ""))
         if not raw_path:
             return "Error: file_path must not be empty"
-        path = (
-            os.path.realpath(os.path.abspath(os.path.join(ctx.cwd, raw_path)))
-            if not os.path.isabs(raw_path)
-            else os.path.realpath(raw_path)
-        )
+        path = _resolve_path(raw_path, ctx.cwd)
         if not os.path.isfile(path):
             return f"Error: File not found: {raw_path}"
 
-        # workspaceSymbol is project-wide: it uses file_path only to select
-        # the workspace/server and ignores line/character, so it skips all
-        # position validation and coordinate conversion below.
-        needs_position = operation != "workspaceSymbol"
+        needs_position = operation in _POSITION_OPS
 
-        # Keep the agent-facing contract 1-based, while the LSP protocol is 0-based.
         try:
             line = int(args.get("line", 1))
             character = int(args.get("character", 1))
@@ -137,8 +243,6 @@ class LSP(Tool):
         if needs_position and (line < 1 or character < 1):
             return "Error: line and character must be >= 1"
 
-        # Validate the requested line before spinning up a server so a bad
-        # position fails fast even when no LSP binary is installed.
         try:
             text = Path(path).read_text(encoding="utf-8", errors="replace")
         except (OSError, UnicodeError) as e:
@@ -152,92 +256,18 @@ class LSP(Tool):
             uri = Path(path).as_uri()
             client.open_document(uri, text)
             try:
-                # LSP positions are 0-based. Character conversion to the
-                # negotiated encoding is done here using the source line.
-                # Skipped entirely for workspaceSymbol, which sends no position.
                 position: dict[str, int] | None = None
                 if needs_position:
-                    source_line = lines[line - 1].rstrip("\r\n")
-                    py_index = min(character - 1, len(source_line))
-                    if client.position_encoding == "utf-8":
-                        lsp_character = len(source_line[:py_index].encode("utf-8"))
-                    elif client.position_encoding == "utf-32":
-                        lsp_character = py_index
-                    else:
-                        lsp_character = len(source_line[:py_index].encode("utf-16-le")) // 2
-                    position = {"line": line - 1, "character": lsp_character}
+                    position = _to_lsp_position(lines, line, character, client.position_encoding)
 
-                if operation == "goToDefinition":
-                    result = client.request(
-                        "textDocument/definition",
-                        {"textDocument": {"uri": uri}, "position": position},
-                    )
-                elif operation == "findReferences":
-                    result = client.request(
-                        "textDocument/references",
-                        {
-                            "textDocument": {"uri": uri},
-                            "position": position,
-                            "context": {"includeDeclaration": True},
-                        },
-                    )
-                elif operation == "hover":
-                    result = client.request(
-                        "textDocument/hover", {"textDocument": {"uri": uri}, "position": position}
-                    )
-                elif operation == "documentSymbol":
-                    result = client.request(
-                        "textDocument/documentSymbol", {"textDocument": {"uri": uri}}
-                    )
-                elif operation == "workspaceSymbol":
-                    result = client.request(
-                        "workspace/symbol", {"query": str(args.get("query", ""))}
-                    )
-                elif operation == "goToImplementation":
-                    result = client.request(
-                        "textDocument/implementation",
-                        {"textDocument": {"uri": uri}, "position": position},
-                    )
-                elif operation == "prepareCallHierarchy":
-                    result = client.request(
-                        "textDocument/prepareCallHierarchy",
-                        {"textDocument": {"uri": uri}, "position": position},
-                    )
-                else:
-                    prepared = client.request(
-                        "textDocument/prepareCallHierarchy",
-                        {"textDocument": {"uri": uri}, "position": position},
-                    )
-                    # A spec-compliant server returns a list or null; guard
-                    # against a non-list (truthy but unsubscriptable) reply so
-                    # a misbehaving server cannot raise past the LSPError guard.
-                    if not isinstance(prepared, list) or not prepared:
-                        return "No call hierarchy item found at this position"
-                    item = prepared[0]
-                    method = (
-                        "callHierarchy/incomingCalls"
-                        if operation == "incomingCalls"
-                        else "callHierarchy/outgoingCalls"
-                    )
-                    result = client.request(method, {"item": item})
+                handler = _DISPATCH[operation]
+                result = handler(client, uri, position, args)
             finally:
-                # Close-after-use: keeping every inspected file open would grow
-                # the (long-lived, cached) server's document set unbounded over a
-                # session.  Best-effort — a failed close must not mask a result
-                # or a raised LSPError.
                 with contextlib.suppress(Exception):
                     client.close_document(uri)
         except (LSPError, ValueError) as e:
-            # LSPError: no server / server failure. ValueError: a malformed
-            # lsp.servers entry surfacing on this lazy get_client call (it is
-            # also validated eagerly at session start, but a Session built
-            # outside make_session may reach here first).
             return f"Error: {e}"
 
-        if result is None:
-            result = []
-        if isinstance(result, dict) and not result:
-            return f"No results found for {operation}"
-        if isinstance(result, list) and not result:
-            return f"No results found for {operation}"
-        return json.dumps(_jsonable(result), ensure_ascii=False, indent=2)
+        if isinstance(result, str):
+            return result
+        return _format_result(result, operation)
