@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import atexit
-import json
 import os
 import shutil
 import threading
 from pathlib import Path
 
+from .. import config
 from .client import LSPClient, LSPError
 
-# command, language id. Users can override/add servers with
-# PYTHON_AGENT_HARNESS_LSP_SERVERS as a JSON object keyed by language/extension.
+# command, language id. Users can override/add servers via the config
+# file's ``lsp.servers`` object (see config.load_lsp_config), keyed by
+# file extension; those entries layer on top of this table.
 DEFAULT_SERVERS: dict[str, tuple[list[str], str]] = {
     ".py": (["pyright-langserver", "--stdio"], "python"),
     ".pyi": (["pyright-langserver", "--stdio"], "python"),
@@ -34,22 +35,18 @@ _SERVERS: dict[str, LSPClient] = {}
 _LOCK = threading.RLock()
 
 
-def _load_server_config() -> dict[str, tuple[list[str], str]]:
+def _load_server_config(
+    config_path: str | os.PathLike | None = None,
+) -> dict[str, tuple[list[str], str]]:
+    """Merge the built-in DEFAULT_SERVERS with the config file's overrides.
+
+    Config-file entries (``lsp.servers``, parsed into an ``LSPConfig``)
+    win over the built-ins for the same extension. A missing/empty
+    section leaves the built-ins intact.
+    """
     result = dict(DEFAULT_SERVERS)
-    raw = os.environ.get("PYTHON_AGENT_HARNESS_LSP_SERVERS")
-    if not raw:
-        return result
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return result
-    if not isinstance(data, dict):
-        return result
-    for key, value in data.items():
-        if isinstance(value, dict) and isinstance(value.get("command"), list):
-            command = [str(x) for x in value["command"]]
-            language_id = str(value.get("language_id", key.lstrip(".")))
-            result[str(key)] = (command, language_id)
+    for ext, server in config.load_lsp_config(config_path).servers.items():
+        result[ext] = (server.command, server.language_id)
     return result
 
 
@@ -73,10 +70,12 @@ def _find_root(path: str, project_dir: str) -> str:
         current = current.parent
 
 
-def _server_for(path: str) -> tuple[str, list[str], str] | None:
+def _server_for(
+    path: str, config_path: str | os.PathLike | None = None
+) -> tuple[str, list[str], str] | None:
     ext = Path(path).suffix.lower()
-    config = _load_server_config()
-    spec = config.get(ext)
+    config_table = _load_server_config(config_path)
+    spec = config_table.get(ext)
     if spec is None:
         return None
     command, language_id = spec
@@ -85,8 +84,10 @@ def _server_for(path: str) -> tuple[str, list[str], str] | None:
     return ext, command, language_id
 
 
-def get_client(path: str, project_dir: str) -> tuple[LSPClient, str]:
-    spec = _server_for(path)
+def get_client(
+    path: str, project_dir: str, config_path: str | os.PathLike | None = None
+) -> tuple[LSPClient, str]:
+    spec = _server_for(path, config_path)
     if spec is None:
         raise LSPError(
             f"No LSP server configured or installed for {Path(path).suffix or 'this'} file type."
