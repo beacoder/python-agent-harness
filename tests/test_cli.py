@@ -82,6 +82,16 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         finally:
             session.close()
 
+    def test_malformed_lsp_config_fails_fast(self):
+        """A bad lsp.servers entry must raise at session construction, not
+        lie dormant until the first LSP tool call."""
+        cfg = Path(self._cfg_dir.name) / "bad-lsp.json"
+        cfg.write_text(
+            '{"lsp": {"servers": {".zig": {"command": "not-a-list"}}}}', encoding="utf-8"
+        )
+        with self.assertRaises(ValueError):
+            cli.make_session(self._tmp.name, config_path=str(cfg))
+
     def test_context_dir_files_prepended_to_system_prompt(self):
         """Files in a contexts/ dir are prepended to system_prompt."""
         import unittest.mock as mock
