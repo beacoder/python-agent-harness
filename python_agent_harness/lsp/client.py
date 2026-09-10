@@ -206,6 +206,14 @@ class LSPClient:
                 proc.wait(timeout=2)
             with contextlib.suppress(Exception):
                 proc.kill()
+        # Close the pipe file objects so their file descriptors are
+        # released (subprocess does not close them on terminate/kill —
+        # leaving them open leaks fds and emits ResourceWarning).
+        if proc is not None:
+            for stream in (proc.stdin, proc.stdout):
+                if stream is not None:
+                    with contextlib.suppress(Exception):
+                        stream.close()
         with self._state_lock:
             with contextlib.suppress(queue.Full):
                 for waiter in self._pending.values():
