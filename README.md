@@ -146,7 +146,7 @@ All LLM settings live in a single JSON configuration file. Environment variables
   },
   "lsp": {
     "servers": {
-      ".example": {
+      "example": {
         "command": ["clangd", "--background-index", "--clang-tidy"],
         "language_id": "cpp"
       }
