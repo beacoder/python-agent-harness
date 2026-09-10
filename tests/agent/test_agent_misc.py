@@ -134,6 +134,7 @@ class TestBashAsync(unittest.TestCase):
         class FakeSess:
             project_dir = "/nonexistent-pah-dir"
             cancel_event = threading.Event()
+            config_path = None
 
             def ask_questions(self, questions: list[dict]) -> str:
                 return "answer"
