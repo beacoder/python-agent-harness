@@ -3,17 +3,38 @@
 ``unified_diff`` builds a standard unified diff between two file
 contents (used by Edit/Write to record what actually changed).
 ``render_diff`` turns that text into a red/green ``rich`` renderable
-suitable for the TUI's tool-output panel.
+suitable for the TUI's tool-output panel.  ``sanitize_for_display``
+makes a recorded diff printable when it carries surrogate-escaped
+bytes from a non-UTF-8 file.
 """
 
 from __future__ import annotations
 
 import difflib
+import re
 
 from rich.console import Group
 from rich.text import Text
 
 MAX_DIFF_LINES = 400  # truncation cap for the rendered (not stored) diff
+
+# Lone surrogates (U+DC80-U+DCFF plus any other surrogate code point):
+# what a file read with errors="surrogateescape" produces for bytes that
+# are not valid UTF-8.
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def sanitize_for_display(text: str) -> str:
+    """Replace lone surrogates in TEXT with U+FFFD.
+
+    Files are read with ``errors="surrogateescape"`` so invalid bytes
+    survive a read/write round trip; those bytes appear as lone
+    surrogates in the string, which cannot be encoded to the terminal
+    (``print`` would raise ``UnicodeEncodeError``).  A recorded diff is
+    display-only, so the surrogates are replaced here — the file on
+    disk is never touched.
+    """
+    return _SURROGATE_RE.sub("\ufffd", text)
 
 
 def unified_diff(

@@ -112,11 +112,16 @@ class ScenarioSession(Session):
 
     def __init__(self, project_dir="/tmp/fakeproj"):
         if ScenarioSession._test_session_dir is None:
+            import atexit
+            import shutil
             import tempfile as _tf
 
-            ScenarioSession._test_session_dir = _tf.mkdtemp(prefix="pah-scenarios-")
             import python_agent_harness.config as cfg
 
+            ScenarioSession._test_session_dir = _tf.mkdtemp(prefix="pah-scenarios-")
+            # remove at process exit: a leaked dir per test run otherwise
+            # accumulates in the temp dir forever
+            atexit.register(shutil.rmtree, ScenarioSession._test_session_dir, ignore_errors=True)
             cfg.SESSION_DIR = __import__("pathlib").Path(ScenarioSession._test_session_dir)
         super().__init__(
             project_dir=project_dir,

@@ -10,6 +10,7 @@ import os
 
 from ..diffrender import unified_diff
 from .base import Tool, ToolContext
+from .edit import _to_crlf, _uses_crlf
 
 
 class Insert(Tool):
@@ -33,16 +34,24 @@ class Insert(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         path = os.path.realpath(os.path.abspath(args["path"]))
+        # surrogateescape + newline="": preserve invalid UTF-8 bytes and
+        # the file's own line endings (see Edit._string_replace)
         try:
-            with open(path, encoding="utf-8") as f:
+            with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
                 old_content = f.read()
                 lines = old_content.splitlines(keepends=True)
         except OSError as e:
             return f"Error: cannot read {path}: {e}"
         ln = int(args["line_number"])
         new_str = args["new_str"]
+        if not isinstance(new_str, str):
+            return "Error: new_str must be a string"
         if not new_str.endswith("\n"):
             new_str += "\n"
+        if _uses_crlf(old_content):
+            # match the file's convention: inserting LF into a CRLF file
+            # would leave it with mixed line endings
+            new_str = _to_crlf(new_str)
         if ln < -1:
             return f"Error: line_number {ln} is invalid (use 0 for beginning, -1 for end)"
         if ln == -1 or ln >= len(lines):
@@ -53,7 +62,7 @@ class Insert(Tool):
             lines.insert(ln, new_str)
         new_content = "".join(lines)
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
                 f.write(new_content)
         except OSError as e:
             return f"Error: {e}"

@@ -18,6 +18,41 @@ import subprocess
 from ..diffrender import unified_diff
 from .base import Tool, ToolContext
 
+# Any line ending, as a single compiled pattern (CRLF first so a CRLF is
+# never rewritten as two endings).
+_NEWLINE_RE = re.compile(r"\r\n|\r|\n")
+
+
+def _uses_crlf(text: str) -> bool:
+    """Whether the FIRST line ending in TEXT is CRLF.
+
+    Files are read with ``newline=""`` so their endings are preserved
+    byte-for-byte; this detector decides how model-provided text (which
+    is almost always LF) must be translated to match the file's own
+    convention instead of silently rewriting it.
+    """
+    idx = text.find("\n")
+    return idx > 0 and text[idx - 1] == "\r"
+
+
+def _to_crlf(text: str) -> str:
+    """Rewrite every line ending in TEXT to CRLF."""
+    return _NEWLINE_RE.sub("\r\n", text)
+
+
+def _patch_cwd(raw: str, path: str) -> str:
+    """The working directory a diff applies in (Emacs `file-name-directory`).
+
+    A trailing-slash directory path -> that directory itself, so a
+    multi-file diff applies to files within it; otherwise the file's
+    parent.  Shared by `Edit.run` and the plan-mode diff guard
+    (``Session._plan_diff_verdict``) so both always agree on where a
+    patch's section paths resolve.
+    """
+    if raw.endswith("/") or raw.endswith(os.sep):
+        return path or "/"
+    return os.path.dirname(path) or "/"
+
 
 class Edit(Tool):
     name = "Edit"
@@ -73,13 +108,11 @@ class Edit(Tool):
         # gptel: string mode when `diff` is false OR `old_str` is provided.
         if diffp is False or old is not None:
             return self._string_replace(path, old, new_str, ctx)
-        # Diff mode runs `patch` in Emacs `file-name-directory' of the path:
-        # a trailing-slash directory path -> that directory itself, so a
-        # multi-file diff applies to files within it; otherwise the parent.
-        if raw.endswith("/") or raw.endswith(os.sep):
-            cwd = path or "/"
-        else:
-            cwd = os.path.dirname(path) or "/"
+        # Diff mode runs `patch` in Emacs `file-name-directory' of the path
+        # (see _patch_cwd): a trailing-slash directory path -> that
+        # directory itself, so a multi-file diff applies to files within
+        # it; otherwise the parent.
+        cwd = _patch_cwd(raw, path)
         return self._apply_patch(path, cwd, new_str, ctx)
 
     def _string_replace(self, path: str, old: str | None, new_str: str, ctx: ToolContext) -> str:
@@ -89,11 +122,23 @@ class Edit(Tool):
             )
         if old is None:
             return "Error: old_str is required for non-diff edits"
+        if not isinstance(old, str) or not isinstance(new_str, str):
+            return "Error: old_str and new_str must be strings"
+        # surrogateescape: invalid UTF-8 bytes (Latin-1, GBK, ...) survive
+        # the read/rewrite round trip — errors="replace" would silently
+        # persist U+FFFD for every such byte.  newline="": the file's own
+        # line endings are preserved instead of being rewritten to LF.
         try:
-            with open(path, encoding="utf-8", errors="replace") as f:
+            with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
                 content = f.read()
         except OSError as e:
             return f"Error: cannot read {path}: {e}"
+        if _uses_crlf(content):
+            # the file uses CRLF; the model's old_str/new_str are nearly
+            # always LF, so translate them to the file's convention —
+            # the match still works and the edit never mixes endings
+            old = _to_crlf(old)
+            new_str = _to_crlf(new_str)
         count = content.count(old)
         if count == 0:
             return f'Error: Could not find old_str "{old[:20]}" in file {path}'
@@ -104,7 +149,7 @@ class Edit(Tool):
             )
         new = content.replace(old, new_str, 1)
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
                 f.write(new)
         except OSError as e:
             return f"Error: {e}"

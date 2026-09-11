@@ -878,6 +878,7 @@ class TestAgentLoop(unittest.TestCase):
         from python_agent_harness.client import Client
 
         with tempfile.TemporaryDirectory() as d:
+            prev_session_dir = cfg.SESSION_DIR
             cfg.SESSION_DIR = Path(d)  # session store writes land in tmp
             data_file = Path(d) / "data.txt"
             data_file.write_text("hello data", encoding="utf-8")
@@ -941,6 +942,9 @@ class TestAgentLoop(unittest.TestCase):
                 # snapshot the bodies before resetting shared server state
                 bodies = list(fake_openai_server.REQUEST_BODIES)
             finally:
+                # undo the temp redirect: a dangling SESSION_DIR would
+                # make a later test's auto-save resurrect the deleted dir
+                cfg.SESSION_DIR = prev_session_dir
                 fake_openai_server.reset_state()  # don't leak server state
             self.assertEqual(result, "http non-streaming done")
             # the tool round really executed against the HTTP response
@@ -997,6 +1001,7 @@ class TestAgentLoop(unittest.TestCase):
                 pass
 
         with tempfile.TemporaryDirectory() as d:
+            prev_session_dir = cfg.SESSION_DIR
             cfg.SESSION_DIR = Path(d)
             server = ThreadingHTTPServer(("127.0.0.1", 0), StallHandler)
             _threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1020,6 +1025,7 @@ class TestAgentLoop(unittest.TestCase):
                 t.join(timeout=5)
                 self.assertFalse(t.is_alive(), "worker stuck after abort()")
             finally:
+                cfg.SESSION_DIR = prev_session_dir  # undo the temp redirect
                 server.shutdown()
                 client.close()
             # the unblocked read surfaces as a network error (the agent

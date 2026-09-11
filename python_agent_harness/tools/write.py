@@ -40,7 +40,11 @@ class Write(Tool):
         old_content = ""
         if existed:
             try:
-                with open(path, encoding="utf-8") as f:
+                # surrogateescape: a non-UTF-8 file (Latin-1, GBK, ...) must
+                # not make the read fail (UnicodeDecodeError used to escape
+                # this handler and abort the whole write); the old content
+                # is only used for the recorded diff
+                with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
                     old_content = f.read()
             except OSError:
                 old_content = ""

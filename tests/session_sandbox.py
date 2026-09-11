@@ -9,15 +9,16 @@ in the real ``~/.local/share/python-agent-harness/sessions/``.
 
 Mirrors the ``plan_cleanup.py`` pattern: imported (for side effects) by
 every test module that can build a session — it redirects
-``config.SESSION_DIR`` to a fresh temp dir for the whole test process
-and restores the original at exit.  Sticky by design (no per-test
-restore), so tests that save/restore ``SESSION_DIR`` around their own
-assignment (test_persistence, test_tui_run, ...) cannot leave it
-pointed at production afterwards.
+``config.SESSION_DIR`` to a fresh temp dir for the whole test process,
+restores the original at exit and removes the temp dir.  Sticky by
+design (no per-test restore), so tests that save/restore ``SESSION_DIR``
+around their own assignment (test_persistence, test_tui_run, ...) cannot
+leave it pointed at production afterwards.
 """
 
 import atexit
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -31,9 +32,13 @@ from python_agent_harness import config
 if os.environ.get("PYTHON_AGENT_HARNESS_TEST_KEEP_SESSIONS") != "1":
     _orig_session_dir = config.SESSION_DIR
     # Path, not str: persistence.session_dir() uses SESSION_DIR / SUBDIR
-    config.SESSION_DIR = Path(tempfile.mkdtemp(prefix="pah-sessions-guard-"))
+    _sandbox_dir = Path(tempfile.mkdtemp(prefix="pah-sessions-guard-"))
+    config.SESSION_DIR = _sandbox_dir
 
     def _restore() -> None:
         config.SESSION_DIR = _orig_session_dir
+        # remove the sandbox: a leaked dir per test run otherwise
+        # accumulates in the temp dir forever
+        shutil.rmtree(_sandbox_dir, ignore_errors=True)
 
     atexit.register(_restore)

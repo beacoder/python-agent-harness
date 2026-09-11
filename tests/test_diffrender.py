@@ -7,7 +7,22 @@ import unittest
 
 from rich.console import Console
 
-from python_agent_harness.diffrender import render_diff, unified_diff
+from python_agent_harness.diffrender import render_diff, sanitize_for_display, unified_diff
+
+
+class TestSanitizeForDisplay(unittest.TestCase):
+    """Recorded diffs of non-UTF-8 files carry surrogate-escaped bytes;
+    they must be printable (the TUI cannot encode a lone surrogate)."""
+
+    def test_surrogate_escaped_bytes_become_replacement_char(self):
+        self.assertEqual(sanitize_for_display("-caf\udce9\n"), "-caf\ufffd\n")
+
+    def test_plain_text_is_unchanged(self):
+        text = "-a\n+b\n caf\u00e9 \u4e2d\u6587\n"
+        self.assertEqual(sanitize_for_display(text), text)
+
+    def test_any_lone_surrogate_is_replaced(self):
+        self.assertEqual(sanitize_for_display("\ud800x\udfff"), "\ufffdx\ufffd")
 
 
 class TestUnifiedDiff(unittest.TestCase):

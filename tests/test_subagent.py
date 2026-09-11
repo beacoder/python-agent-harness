@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
 import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
 
+from python_agent_harness import config
 from python_agent_harness.models import Message, Usage
 from python_agent_harness.persistence import SessionPersistence
 from python_agent_harness.session import Session
@@ -75,8 +76,13 @@ def make_session(system_prompt, subagent_system_prompt, session_dir):
 class TestSubagentPromptSelection(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
+        # make_session() points SESSION_DIR at this temp dir; put the
+        # process-wide sandbox back after each test, or the deleted dir is
+        # resurrected by a later test's auto-save
+        self._session_dir = config.SESSION_DIR
 
     def tearDown(self):
+        config.SESSION_DIR = self._session_dir
         self._tmp.cleanup()
 
     def test_subagent_uses_its_own_prompt_not_parent(self):

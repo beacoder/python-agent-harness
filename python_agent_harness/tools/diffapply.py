@@ -53,9 +53,10 @@ class _Hunk:
 
 
 class _Section:
-    __slots__ = ("new_path", "hunks")
+    __slots__ = ("old_path", "new_path", "hunks")
 
-    def __init__(self, new_path: str, hunks: list[_Hunk]) -> None:
+    def __init__(self, old_path: str, new_path: str, hunks: list[_Hunk]) -> None:
+        self.old_path = old_path
         self.new_path = new_path
         self.hunks = hunks
 
@@ -82,6 +83,8 @@ def _parse(diff_text: str) -> list[_Section]:
             i += 1
             continue
         new_path = lines[i + 1][len("+++") :].strip()
+        # git-style "a/... b/..." header, old path on the `---` line
+        old_path = lines[i][len("---") :].strip()
         i += 2
         hunks: list[_Hunk] = []
         while i < n:
@@ -108,7 +111,7 @@ def _parse(diff_text: str) -> list[_Section]:
             if _section_header_at(lines, i):
                 break
             i += 1  # stray line (e.g. "diff --git", "index ...") — skip
-        sections.append(_Section(new_path, hunks))
+        sections.append(_Section(old_path, new_path, hunks))
     return sections
 
 
@@ -157,8 +160,36 @@ def _match_hunk(hunk: _Hunk, file_lines: list[str]) -> int | None:
     return None
 
 
-def _apply_hunk(hunk: _Hunk, pos: int, file_lines: list[str]) -> None:
-    """Replace the matched region with the hunk's new lines in place."""
+def _file_line_ending(file_lines: list[str]) -> str:
+    """The file's line-ending convention: ``"\\r\\n"``, ``"\\r"`` or ``"\\n"``.
+
+    Decided by the first ``"\\n"``-terminated line, so a classic-Mac
+    ``"\\r"`` terminator (or a stray carriage return, which universal
+    newline reading treats as a terminator) never flips a normal file's
+    convention.  ``"\\r"`` is returned only when the file has no
+    ``"\\n"`` terminator at all.  Files without any terminator (a
+    single unterminated line) default to ``"\\n"``.
+    """
+    saw_cr_only = False
+    for line in file_lines:
+        if line.endswith("\r\n"):
+            return "\r\n"
+        if line.endswith("\n"):
+            return "\n"
+        if line.endswith("\r"):
+            saw_cr_only = True
+    return "\r" if saw_cr_only else "\n"
+
+
+def _apply_hunk(hunk: _Hunk, pos: int, file_lines: list[str], ending: str) -> None:
+    """Replace the matched region with the hunk's new lines in place.
+
+    Context lines keep the file's original bytes; added lines adopt the
+    file's line-ending convention (*ending*) — the diff's own ``+``
+    lines usually carry LF (the model / git), and letting them through
+    verbatim would leave a CRLF file with mixed endings.  A line marked
+    ``\\ No newline at end of file`` gets no terminator at all.
+    """
     old_count = sum(1 for kind, _, _ in hunk.body if kind in (" ", "-"))
     new_block: list[str] = []
     p = pos
@@ -169,12 +200,8 @@ def _apply_hunk(hunk: _Hunk, pos: int, file_lines: list[str]) -> None:
         elif kind == "-":
             p += 1
         else:  # "+"
-            if no_newline:
-                new_block.append(content.rstrip("\n"))
-            elif content.endswith("\n"):
-                new_block.append(content)
-            else:
-                new_block.append(content + "\n")
+            body = content.rstrip("\r\n")
+            new_block.append(body if no_newline else body + ending)
     file_lines[pos : pos + old_count] = new_block
 
 
@@ -199,8 +226,12 @@ def _apply_section(section: _Section, cwd: str, fallback_path: str | None) -> tu
     target = _resolve_target(section.new_path, cwd, fallback_path)
     if not os.path.isfile(target):
         return False, f"target file does not exist: {target}"
+    # surrogateescape + newline="": invalid UTF-8 bytes and the file's own
+    # line endings survive untouched for every line the diff does not
+    # change (errors="replace" used to persist U+FFFD for such bytes, and
+    # universal newlines rewrote the whole file's endings).
     try:
-        with open(target, encoding="utf-8", errors="replace") as f:
+        with open(target, encoding="utf-8", errors="surrogateescape", newline="") as f:
             file_lines = f.readlines()
     except OSError as e:
         return False, f"cannot read {target}: {e}"
@@ -216,10 +247,11 @@ def _apply_section(section: _Section, cwd: str, fallback_path: str | None) -> tu
             )
         plan.append((hunk, pos))
     new_lines = list(file_lines)
+    ending = _file_line_ending(file_lines)
     for hunk, pos in reversed(plan):  # bottom-up: earlier positions stay valid
-        _apply_hunk(hunk, pos, new_lines)
+        _apply_hunk(hunk, pos, new_lines, ending)
     try:
-        with open(target, "w", encoding="utf-8") as f:
+        with open(target, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
             f.writelines(new_lines)
     except OSError as e:
         return False, f"cannot write {target}: {e}"
@@ -244,3 +276,27 @@ def apply_unified_diff(
         if not ok:
             return False, msg
     return True, f"applied {len(sections)} file section(s)"
+
+
+def diff_targets(diff_text: str, cwd: str, fallback_path: str | None = None) -> list[str] | None:
+    """Paths a patch could plausibly touch for this diff.
+
+    Includes every section's ``---`` (old) AND ``+++`` (new) path,
+    resolved exactly like the applier resolves the new path.  The
+    built-in applier only ever writes the new path, but external patch
+    engines (GNU patch) may consult the old path too, so a caller
+    gating writes must treat both as in scope.  Returns ``None`` when
+    the text yields no file section — the caller decides whether an
+    unverifiable diff is acceptable (the plan-mode guard treats it as a
+    refusal).
+    """
+    sections = _parse(diff_text)
+    if not sections:
+        return None
+    targets: list[str] = []
+    for section in sections:
+        for path in (section.old_path, section.new_path):
+            resolved = os.path.realpath(_resolve_target(path, cwd, fallback_path))
+            if resolved not in targets:
+                targets.append(resolved)
+    return targets

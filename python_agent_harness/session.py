@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import config
 from .client import Client, LLMClient
+from .diffrender import sanitize_for_display
 from .mcp.config import MCPConfig
 from .mcp.manager import MCPManager
 from .models import AgentMode
@@ -327,11 +328,16 @@ class Session:
         return result
 
     def record_diff(self, diff_text: str) -> None:
-        """Attach a unified diff to the tool call currently executing."""
+        """Attach a unified diff to the tool call currently executing.
+
+        Sanitized for display: file content read with
+        ``errors="surrogateescape"`` (non-UTF-8 files) carries lone
+        surrogates that a terminal cannot encode.
+        """
         call_id = getattr(self._active_call, "call_id", None)
         if call_id and diff_text:
             with self._tool_diffs_lock:
-                self._tool_diffs[call_id] = diff_text
+                self._tool_diffs[call_id] = sanitize_for_display(diff_text)
 
     def take_diff(self, call_id: str) -> str | None:
         """Pop and return the diff recorded for CALL_ID, if any."""
@@ -350,22 +356,49 @@ class Session:
                 "Error: blocked by plan mode (read-only phase); "
                 "Bash is disabled — use Read/Glob/Grep for read-only access"
             )
+        if name == "Edit" and args.get("old_str") is None and args.get("diff") is not False:
+            # diff/patch mode: the `path` argument is NOT enough — the
+            # patch applies to the paths inside the diff itself, and the
+            # macOS/Windows Python applier honors absolute `+++` targets.
+            content = args.get("new_str")
+            if isinstance(content, str) and content.strip():
+                return self._plan_diff_verdict(args)
+            # contentless diff call: Edit rejects a missing/invalid
+            # new_str before any patch engine runs, so the plain path
+            # check below is sufficient
         path = self._tool_path(name, args)
         if path and path != self.plan_mode.plan_file:
-            # Edit diff-mode (no old_str, diff not explicitly False) runs
-            # `patch` which can write to arbitrary files via relative paths
-            # in the diff content — block it even if the target path looks
-            # innocent, because patch follows paths within the diff.
-            if name == "Edit" and args.get("old_str") is None and args.get("diff") is not False:
-                return (
-                    "Error: blocked by plan mode (read-only phase); "
-                    "diff/patch mode cannot target files other than the plan "
-                    "file — use string replacement (old_str/new_str) instead"
-                )
             return (
                 "Error: blocked by plan mode (read-only phase); only the plan file may be modified"
             )
         return None
+
+    def _plan_diff_verdict(self, args: dict[str, Any]) -> str | None:
+        """Allow an Edit diff only when every section targets the plan file.
+
+        Resolution mirrors the Edit backends (same cwd/fallback rules,
+        same helpers as the built-in Python applier), so the sections
+        approved here are exactly the files the backend would write.  A
+        diff that cannot be parsed into file sections is refused (fail
+        closed): an unverifiable patch must never reach a patch engine.
+        """
+        from .tools.diffapply import diff_targets
+        from .tools.edit import _patch_cwd, _strip_diff_fence
+
+        plan_file = self.plan_mode.plan_file
+        raw = str(args.get("path", ""))
+        path = os.path.realpath(os.path.abspath(raw))
+        cwd = _patch_cwd(raw, path)
+        text = str(args.get("new_str"))
+        text = text if text.endswith("\n") else text + "\n"
+        targets = diff_targets(_strip_diff_fence(text), cwd, path if os.path.isfile(path) else None)
+        if plan_file and targets is not None and all(target == plan_file for target in targets):
+            return None
+        return (
+            "Error: blocked by plan mode (read-only phase); "
+            "diff/patch mode cannot target files other than the plan "
+            "file — use string replacement (old_str/new_str) instead"
+        )
 
     def _tool_path(self, name: str, args: dict[str, Any]) -> str | None:
         if name == "Write":

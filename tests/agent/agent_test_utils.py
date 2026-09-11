@@ -121,11 +121,16 @@ class RecordingSession(Session):
 
     def __init__(self, project_dir="/tmp/fakeproj", model_profiles=None, llm_settings=None):
         if RecordingSession._test_session_dir is None:
+            import atexit
+            import shutil
             import tempfile as _tf
 
-            RecordingSession._test_session_dir = _tf.mkdtemp(prefix="pah-test-sessions-")
             import python_agent_harness.config as cfg
 
+            RecordingSession._test_session_dir = _tf.mkdtemp(prefix="pah-test-sessions-")
+            # remove at process exit: a leaked dir per test run otherwise
+            # accumulates in the temp dir forever
+            atexit.register(shutil.rmtree, RecordingSession._test_session_dir, ignore_errors=True)
             cfg.SESSION_DIR = __import__("pathlib").Path(RecordingSession._test_session_dir)
         super().__init__(
             project_dir=project_dir,

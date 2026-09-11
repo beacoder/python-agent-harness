@@ -120,6 +120,38 @@ class TestPlanModeGuard(unittest.TestCase):
         plan_file = session.plan_mode.plan_file
         self.assertIsNone(session._plan_blocked("Edit", {"path": plan_file}))
 
+    def test_plan_diff_escape_blocked_even_when_path_is_the_plan_file(self):
+        """Regression: diff mode used to be allowed whenever `path` was
+        the plan file, but the patch applies to the paths INSIDE the
+        diff — the macOS/Windows Python applier honors absolute `+++`
+        targets, so the guard must verify every section."""
+        session = self.make_plan_session()
+        plan_file = session.plan_mode.plan_file
+        # gettempdir()-joined so the path is ABSOLUTE on every platform
+        # (a hardcoded "/tmp/..." is not absolute on Windows, where the
+        # applier would then resolve the section to the fallback)
+        victim = os.path.join(tempfile.gettempdir(), "pah-escape-victim.txt")
+        diff = f"--- a/victim.txt\n+++ {victim}\n@@ -1 +1 @@\n-old\n+HACKED\n"
+        msg = session._plan_blocked("Edit", {"path": plan_file, "new_str": diff, "diff": True})
+        self.assertIn("blocked by plan mode", msg)
+
+    def test_plan_diff_targeting_only_the_plan_file_allowed(self):
+        session = self.make_plan_session()
+        plan_file = session.plan_mode.plan_file
+        name = os.path.basename(plan_file)
+        diff = f"--- a/{name}\n+++ b/{name}\n@@ -1 +1 @@\n-old\n+new\n"
+        self.assertIsNone(
+            session._plan_blocked("Edit", {"path": plan_file, "new_str": diff, "diff": True})
+        )
+
+    def test_plan_diff_unparseable_content_fails_closed(self):
+        session = self.make_plan_session()
+        plan_file = session.plan_mode.plan_file
+        msg = session._plan_blocked(
+            "Edit", {"path": plan_file, "new_str": "not a diff", "diff": True}
+        )
+        self.assertIn("blocked by plan mode", msg)
+
     def test_plan_blocked_unknown_tool_no_path(self):
         session = self.make_plan_session()
         self.assertIsNone(session._plan_blocked("Read", {"path": "/x"}))
@@ -144,6 +176,30 @@ class TestPlanModeGuard(unittest.TestCase):
         self.assertIn("d", result3)
 
         self.assertIsNone(session._tool_path("Read", {"path": "/x"}))
+
+
+class TestRecordDiffSanitized(unittest.TestCase):
+    """A recorded diff must be display-safe: file content read with
+    errors="surrogateescape" (non-UTF-8 files) carries lone surrogates
+    that the terminal cannot encode."""
+
+    def test_surrogates_replaced_with_replacement_char(self):
+        session = RecordingSession()
+        session._active_call.call_id = "c1"
+        try:
+            session.record_diff("-caf\udce9\n+cafe\n")
+        finally:
+            session._active_call.call_id = None
+        self.assertEqual(session.take_diff("c1"), "-caf\ufffd\n+cafe\n")
+
+    def test_plain_diff_unchanged(self):
+        session = RecordingSession()
+        session._active_call.call_id = "c1"
+        try:
+            session.record_diff("-a\n+b\n")
+        finally:
+            session._active_call.call_id = None
+        self.assertEqual(session.take_diff("c1"), "-a\n+b\n")
 
 
 class TestFindSkill(unittest.TestCase):

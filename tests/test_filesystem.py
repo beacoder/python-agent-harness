@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 from python_agent_harness.tools.base import ToolContext, ToolRuntime
+from python_agent_harness.tools.diffapply import apply_unified_diff, diff_targets
 from python_agent_harness.tools.edit_mac import EditMac
 from python_agent_harness.tools.filesystem import (
     Edit,
@@ -783,6 +784,59 @@ class TestEditTool(unittest.TestCase):
             with open(path) as f:
                 self.assertEqual(f.read(), "a\nb\nc\n")  # untouched
 
+    def test_string_edit_preserves_non_utf8_bytes(self):
+        """Regression: reading with errors="replace" persisted U+FFFD for
+        every invalid byte of a Latin-1/GBK file on an unrelated edit."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "latin1.txt")
+            with open(path, "wb") as f:
+                f.write(b"line one\ncaf\xe9 l\xe9on\nline three\n")
+            ctx, _ = make_ctx()
+            result = Edit().run(
+                {"path": path, "old_str": "line three", "new_str": "LINE THREE"}, ctx
+            )
+            self.assertIn("Successfully replaced", result)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"line one\ncaf\xe9 l\xe9on\nLINE THREE\n")
+
+    def test_string_edit_preserves_crlf_line_endings(self):
+        """Regression: universal newlines rewrote the whole file to LF on
+        a single-line edit (a whole-file diff in git)."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "win.txt")
+            with open(path, "wb") as f:
+                f.write(b"line one\r\nline two\r\nline three\r\n")
+            ctx, _ = make_ctx()
+            result = Edit().run({"path": path, "old_str": "line two", "new_str": "LINE TWO"}, ctx)
+            self.assertIn("Successfully replaced", result)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"line one\r\nLINE TWO\r\nline three\r\n")
+
+    def test_string_edit_matches_multiline_lf_old_str_in_crlf_file(self):
+        """The model's old_str (LF) is translated to the file's CRLF
+        convention before matching, so multi-line edits still apply."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ml.txt")
+            with open(path, "wb") as f:
+                f.write(b"a\r\nb\r\nc\r\n")
+            ctx, _ = make_ctx()
+            result = Edit().run({"path": path, "old_str": "a\nb", "new_str": "AB"}, ctx)
+            self.assertIn("Successfully replaced", result)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"AB\r\nc\r\n")
+
+    def test_string_edit_normalizes_new_str_to_file_convention(self):
+        """LF replacement text lands as CRLF in a CRLF file — the edit
+        must not leave the file with mixed line endings."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "multi.txt")
+            with open(path, "wb") as f:
+                f.write(b"one\r\ntwo\r\n")
+            ctx, _ = make_ctx()
+            Edit().run({"path": path, "old_str": "two", "new_str": "TWO\nEXTRA"}, ctx)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"one\r\nTWO\r\nEXTRA\r\n")
+
 
 class TestWriteTool(unittest.TestCase):
     def test_new_file_shows_all_lines_added(self):
@@ -814,6 +868,20 @@ class TestWriteTool(unittest.TestCase):
             Write().run({"path": d, "filename": "f.txt", "content": "same\n"}, ctx)
             self.assertEqual(sess.recorded_diffs, [])
 
+    def test_overwrite_non_utf8_file_does_not_fail(self):
+        """Regression: reading the old content with strict UTF-8 raised
+        UnicodeDecodeError, so the write itself never happened."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "latin1.txt")
+            with open(path, "wb") as f:
+                f.write(b"caf\xe9 l\xe9on\n")
+            ctx, sess = make_ctx()
+            result = Write().run({"path": d, "filename": "latin1.txt", "content": "new\n"}, ctx)
+            self.assertIn("Created file", result)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"new\n")
+            self.assertEqual(len(sess.recorded_diffs), 1)
+
 
 class TestInsertTool(unittest.TestCase):
     def setUp(self):
@@ -844,6 +912,15 @@ class TestInsertTool(unittest.TestCase):
         Insert().run({"path": self.path, "line_number": 1, "new_str": "X"}, ToolContext())
         with open(self.path) as f:
             self.assertEqual(f.read(), "a\nX\nb\nc\n")
+
+    def test_insert_preserves_crlf_and_non_utf8_bytes(self):
+        """Regression: the whole file used to be rewritten to LF with
+        invalid bytes replaced."""
+        with open(self.path, "wb") as f:
+            f.write(b"a\r\ncaf\xe9\r\nb\r\n")
+        Insert().run({"path": self.path, "line_number": 1, "new_str": "X"}, ToolContext())
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), b"a\r\nX\r\ncaf\xe9\r\nb\r\n")
 
 
 class TestMkdirTool(unittest.TestCase):
@@ -1426,6 +1503,91 @@ class TestEditMac(unittest.TestCase):
             self.assertIn("Diff successfully applied", result)
             with open(path) as f:
                 self.assertEqual(f.read(), "a\nb")
+
+    def test_crlf_file_keeps_crlf_for_added_and_untouched_lines(self):
+        """Regression: errors="replace" + universal newlines corrupted
+        every line the diff did not change; added lines (usually LF from
+        the model's diff) must adopt the file's CRLF convention instead
+        of leaving the file with mixed endings."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "wb") as f:
+                f.write(b"one\r\ntwo\r\nthree\r\n")
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n"
+            ok, msg = apply_unified_diff(diff, cwd=d, fallback_path=path)
+            self.assertTrue(ok, msg)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"one\r\nTWO\r\nthree\r\n")
+
+    def test_lf_file_keeps_lf_when_diff_lines_carry_crlf(self):
+        """The convention is the FILE's, not the diff's: a + line that
+        carries CRLF must not inject it into an LF file."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "wb") as f:
+                f.write(b"one\ntwo\n")
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+TWO\r\n"
+            ok, msg = apply_unified_diff(diff, cwd=d, fallback_path=path)
+            self.assertTrue(ok, msg)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"one\nTWO\n")
+
+    def test_cr_only_file_keeps_cr_ending(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "wb") as f:
+                f.write(b"one\rtwo\r")
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n"
+            ok, msg = apply_unified_diff(diff, cwd=d, fallback_path=path)
+            self.assertTrue(ok, msg)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"one\rTWO\r")
+
+    def test_untouched_lines_keep_invalid_utf8_bytes(self):
+        """Regression: errors="replace" persisted U+FFFD for every
+        invalid byte of an untouched line."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "wb") as f:
+                f.write(b"alpha\ncaf\xe9 x\n")
+            # \udce9 is the surrogate-escaped form of the raw byte 0xe9
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n-alpha\n+ALPHA\n caf\udce9 x\n"
+            ok, msg = apply_unified_diff(diff, cwd=d, fallback_path=path)
+            self.assertTrue(ok, msg)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"ALPHA\ncaf\xe9 x\n")
+
+    def test_diff_targets_mirrors_applier_resolution(self):
+        """The plan-mode guard relies on diff_targets resolving sections
+        exactly like the applier does (fallback included)."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("x\n")
+            # target name does not exist -> the single-file fallback wins
+            # for both the old and the new path (deduplicated)
+            diff = "--- a/other.txt\n+++ b/other.txt\n@@ -1 +1 @@\n-x\n+y\n"
+            self.assertEqual(
+                diff_targets(diff, cwd=d, fallback_path=path), [os.path.realpath(path)]
+            )
+            # an absolute header resolves on its own
+            absolute = f"--- {path}\n+++ {path}\n@@ -1 +1 @@\n-x\n+y\n"
+            self.assertEqual(
+                diff_targets(absolute, cwd=os.path.join(d, "sub"), fallback_path=None),
+                [os.path.realpath(path)],
+            )
+            # BOTH headers are in scope: external patch engines may pick
+            # the old name, so a gating caller must see it too
+            both = "--- a/old.txt\n+++ b/new.txt\n@@ -1 +1 @@\n-x\n+y\n"
+            self.assertEqual(
+                diff_targets(both, cwd=d, fallback_path=None),
+                [
+                    os.path.realpath(os.path.join(d, "old.txt")),
+                    os.path.realpath(os.path.join(d, "new.txt")),
+                ],
+            )
+            # unparseable content yields no targets (the guard fails closed)
+            self.assertIsNone(diff_targets("not a diff at all", cwd=d, fallback_path=path))
 
 
 if __name__ == "__main__":

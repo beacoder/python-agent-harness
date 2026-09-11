@@ -827,6 +827,53 @@ class TestPlanModeWriteGuard(unittest.TestCase):
                 r = session.execute_tool(name, args, call_id=name.lower())
                 self.assertNotIn("blocked by plan mode", r)
 
+    def test_plan_mode_diff_mode_cannot_escape_via_section_paths(self):
+        """Regression: an Edit diff whose `path` was the plan file but
+        whose `+++` header named another file used to be applied by the
+        macOS/Windows Python applier — the guard only checked `path`."""
+        with (
+            tempfile.TemporaryDirectory(prefix="pah-prop-plan-") as tmpdir,
+            tempfile.TemporaryDirectory(prefix="pah-prop-plan-out-") as outside,
+        ):
+            session = self.make_plan_session(tmpdir)
+            plan_file = session.plan_mode.plan_file
+            victim = os.path.join(outside, "victim.txt")
+            with open(victim, "w") as f:
+                f.write("old content\n")
+            diff = f"--- a/victim.txt\n+++ {victim}\n@@ -1 +1 @@\n-old content\n+HACKED\n"
+            result = session.execute_tool(
+                "Edit", {"path": plan_file, "new_str": diff, "diff": True}, call_id="d1"
+            )
+            self.assertIn("blocked by plan mode", result)
+            with open(victim) as f:
+                self.assertEqual(f.read(), "old content\n")
+
+    def test_plan_mode_diff_mode_still_patches_the_plan_file(self):
+        """The guard must not over-block: a diff whose sections all
+        target the plan file still applies (every Edit backend)."""
+        with tempfile.TemporaryDirectory(prefix="pah-prop-plan-") as tmpdir:
+            session = self.make_plan_session(tmpdir)
+            plan_file = session.plan_mode.plan_file
+            with open(plan_file, "w") as f:
+                f.write("step 1\n")
+            name = os.path.basename(plan_file)
+            diff = f"--- a/{name}\n+++ b/{name}\n@@ -1 +1 @@\n-step 1\n+step 1 done\n"
+            result = session.execute_tool(
+                "Edit", {"path": plan_file, "new_str": diff, "diff": True}, call_id="d2"
+            )
+            self.assertIn("Diff successfully applied", result)
+            with open(plan_file) as f:
+                self.assertEqual(f.read(), "step 1 done\n")
+
+    def test_plan_mode_diff_mode_fails_closed_on_unparseable_content(self):
+        with tempfile.TemporaryDirectory(prefix="pah-prop-plan-") as tmpdir:
+            session = self.make_plan_session(tmpdir)
+            plan_file = session.plan_mode.plan_file
+            result = session.execute_tool(
+                "Edit", {"path": plan_file, "new_str": "not a diff", "diff": True}, call_id="d3"
+            )
+            self.assertIn("blocked by plan mode", result)
+
     def test_build_mode_executes_the_same_calls(self):
         """The guard is plan-mode-specific: in build mode the same
         mutating calls execute and their side effects land."""
@@ -1226,24 +1273,31 @@ class TestRetryNoDuplication(unittest.TestCase):
         ]
         DropHandler.stream_count = 0
         with tempfile.TemporaryDirectory(prefix="pah-prop-retry-") as d:
+            # restore SESSION_DIR after the test: leaving it pointing at
+            # the (deleted) temp dir makes a later test's auto-save
+            # resurrect the dir and leak session files into the temp dir
+            prev_session_dir = config.SESSION_DIR
             config.SESSION_DIR = Path(d)
-            with serve_drop_server() as (host, port):
-                client = make_fast_client(f"http://{host}:{port}/v1")
-                session = Session(
-                    project_dir=d,
-                    client=client,
-                    model="fake",
-                    registry=default_registry(),
-                    stream=True,
-                )
-                session.tools_enabled = False
-                notified = []
-                session.notify_fn = lambda kind, data=None: notified.append(kind)
-                try:
-                    loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
-                    result = loop.run()
-                finally:
-                    session.close()
+            try:
+                with serve_drop_server() as (host, port):
+                    client = make_fast_client(f"http://{host}:{port}/v1")
+                    session = Session(
+                        project_dir=d,
+                        client=client,
+                        model="fake",
+                        registry=default_registry(),
+                        stream=True,
+                    )
+                    session.tools_enabled = False
+                    notified = []
+                    session.notify_fn = lambda kind, data=None: notified.append(kind)
+                    try:
+                        loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
+                        result = loop.run()
+                    finally:
+                        session.close()
+            finally:
+                config.SESSION_DIR = prev_session_dir
         self.assertEqual(result, "the retried final answer")
         self.assertEqual(loop.state, AgentLoop.DONE)
         self.assertEqual(DropHandler.stream_count, 2)
@@ -1265,26 +1319,32 @@ class TestRetryExhaustionTerminates(unittest.TestCase):
 
     def test_unrecoverable_drops_end_in_errs_not_hang(self):
         with tempfile.TemporaryDirectory(prefix="pah-prop-retry-") as d:
+            # restore SESSION_DIR after the test (see the sibling test):
+            # a dangling pointer resurrects the deleted temp dir
+            prev_session_dir = config.SESSION_DIR
             config.SESSION_DIR = Path(d)
-            with serve_drop_server() as (host, port):
-                client = make_fast_client(f"http://{host}:{port}/v1")
-                session = Session(
-                    project_dir=d,
-                    client=client,
-                    model="fake",
-                    registry=default_registry(),
-                    stream=True,
-                )
-                session.tools_enabled = False
-                try:
-                    DropHandler.script = [("drop", ["x-part-"])] * 8
-                    DropHandler.stream_count = 0
-                    loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
-                    start = time.monotonic()
-                    result = loop.run()
-                    elapsed = time.monotonic() - start
-                finally:
-                    session.close()
+            try:
+                with serve_drop_server() as (host, port):
+                    client = make_fast_client(f"http://{host}:{port}/v1")
+                    session = Session(
+                        project_dir=d,
+                        client=client,
+                        model="fake",
+                        registry=default_registry(),
+                        stream=True,
+                    )
+                    session.tools_enabled = False
+                    try:
+                        DropHandler.script = [("drop", ["x-part-"])] * 8
+                        DropHandler.stream_count = 0
+                        loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
+                        start = time.monotonic()
+                        result = loop.run()
+                        elapsed = time.monotonic() - start
+                    finally:
+                        session.close()
+            finally:
+                config.SESSION_DIR = prev_session_dir
         self.assertEqual(loop.state, AgentLoop.ERRS)
         self.assertTrue(result.startswith("Error:"), result)
         # retry_max=5 -> exactly 5 attempts (the failing attempt at the
