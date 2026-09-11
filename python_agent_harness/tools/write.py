@@ -52,7 +52,14 @@ class Write(Tool):
             parent = os.path.dirname(path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
+            # newline="": write the model's content byte-for-byte.  The
+            # default text-mode write translates "\n" to os.linesep on
+            # Windows, which (a) made the written bytes platform-dependent
+            # and (b) broke the symmetric byte-exact read above (the same
+            # logical content no longer compared equal).  surrogateescape
+            # mirrors the read side; both together keep Write's behavior
+            # identical on every platform.
+            with open(path, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
                 f.write(content)
         except OSError as e:
             return f"Error: {e}"

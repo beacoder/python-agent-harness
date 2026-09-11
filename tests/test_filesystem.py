@@ -862,11 +862,24 @@ class TestWriteTool(unittest.TestCase):
     def test_overwrite_with_identical_content_no_diff(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "f.txt")
-            with open(path, "w") as f:
-                f.write("same\n")
+            # byte-exact fixture: a text-mode "w" writes CRLF on Windows,
+            # which would genuinely differ from the LF content below
+            # (same bytes on every platform = same bytes after the write)
+            with open(path, "wb") as f:
+                f.write(b"same\n")
             ctx, sess = make_ctx()
             Write().run({"path": d, "filename": "f.txt", "content": "same\n"}, ctx)
             self.assertEqual(sess.recorded_diffs, [])
+
+    def test_write_content_bytes_are_exact(self):
+        """Regression: the default text-mode write translated LF to CRLF
+        on Windows, so the same content produced platform-dependent bytes."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "mixed.txt")
+            ctx, _ = make_ctx()
+            Write().run({"path": d, "filename": "mixed.txt", "content": "a\r\nb\n"}, ctx)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"a\r\nb\n")
 
     def test_overwrite_non_utf8_file_does_not_fail(self):
         """Regression: reading the old content with strict UTF-8 raised
