@@ -12,6 +12,7 @@ import json
 import os
 import random
 import socket as _socket
+import ssl
 import sys
 import tempfile
 import threading
@@ -276,6 +277,26 @@ def _resolve_ca_bundle() -> str | bool:
     return True
 
 
+def _httpx_verify(verify: str | bool) -> ssl.SSLContext | bool:
+    """Translate a ``verify`` setting into what ``httpx`` accepts.
+
+    ``httpx`` 0.28 deprecated ``verify=<str>`` (a CA-bundle path); it now
+    wants an :class:`ssl.SSLContext`.  We keep the public ``verify``
+    surface as ``str | bool`` (an env-var/system path or on/off toggle)
+    and build the context here, at the single point the value is handed
+    to ``httpx.Client``:
+
+    - a path string -> a default-context loaded with that CA file, so an
+      internal CA chain still verifies (the reason ``_resolve_ca_bundle``
+      prefers a system bundle);
+    - ``True`` / ``False`` -> passed through unchanged (httpx's default
+      verification, or disabled).
+    """
+    if isinstance(verify, str):
+        return ssl.create_default_context(cafile=verify)
+    return verify
+
+
 class Client:
     def __init__(
         self,
@@ -303,7 +324,7 @@ class Client:
             config.API_RETRY_MAX_DELAY if retry_max_delay is None else retry_max_delay
         )
         self._config_path = config_path
-        self._http = httpx.Client(timeout=timeout, verify=self.verify)
+        self._http = httpx.Client(timeout=timeout, verify=_httpx_verify(self.verify))
         # True while the in-flight request was aborted (Ctrl-C): a
         # connection error on an aborted request must NOT be retried —
         # the user asked to stop.  Cleared at the start of each chat()
@@ -382,7 +403,7 @@ class Client:
         """
         self._aborted = True
         old = self._http
-        self._http = httpx.Client(timeout=self.timeout, verify=self.verify)
+        self._http = httpx.Client(timeout=self.timeout, verify=_httpx_verify(self.verify))
         with contextlib.suppress(Exception):  # best effort
             _abort_inflight_sockets(old)
         with contextlib.suppress(Exception):  # best effort
@@ -396,7 +417,7 @@ class Client:
         retry itself or every subsequent request in the session.
         """
         old = self._http
-        self._http = httpx.Client(timeout=self.timeout, verify=self.verify)
+        self._http = httpx.Client(timeout=self.timeout, verify=_httpx_verify(self.verify))
         with contextlib.suppress(Exception):  # best effort
             old.close()
 
