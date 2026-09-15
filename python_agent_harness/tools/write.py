@@ -10,6 +10,24 @@ from .base import Tool, ToolContext
 
 class Write(Tool):
     name = "Write"
+    instructions = """\
+**When to use `Write`:**
+- Creating new files that don't exist yet
+- Completely replacing the contents of an existing file
+- Generating new code, configuration, or documentation files
+
+**When NOT to use `Write`:**
+- Modifying existing files → use `Edit` instead (more precise and safer)
+- The file already exists and you only need to change part of it → use `Edit`
+- You haven't read the file first (if it exists) → `Read` first, then use `Edit`
+
+**How to use `Write`:**
+- Will overwrite existing files completely - use with caution
+- MUST use `Read first if the file already exists (tool will error otherwise)
+- Always prefer editing existing files rather than creating new ones
+- Provide complete file content as a string
+- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
+"""
     description = (
         "Create a new file with the given content. Overwrites an existing file — use with care!"
     )

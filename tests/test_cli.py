@@ -48,7 +48,14 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
     def test_defaults_to_main_agent_prompt_when_system_not_given(self):
         session = cli.make_session(self._tmp.name, config_path=self._config_path)
         try:
-            main = _load(config.DEFAULT_AGENT_PROMPT_FILE, project_dir=self._tmp.name)
+            from python_agent_harness.tools import default_registry
+
+            ti = default_registry().tool_instructions()
+            main = _load(
+                config.DEFAULT_AGENT_PROMPT_FILE,
+                project_dir=self._tmp.name,
+                tool_instructions=ti,
+            )
             self.assertIn(main, session.system_prompt)  # agent prompt present
             self.assertIn("Task Completion Rules", session.system_prompt)  # rules injected
             self.assertLess(  # rules are the last context piece, before the prompt
@@ -66,7 +73,15 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
             config_path=self._config_path,
         )
         try:
-            expected = _load(config.DEFAULT_SUBAGENT_PROMPT_FILE, project_dir=self._tmp.name)
+            from python_agent_harness.tools import default_registry
+
+            ti = default_registry().tool_instructions()
+            expected = _load(
+                config.DEFAULT_SUBAGENT_PROMPT_FILE,
+                project_dir=self._tmp.name,
+                tool_instructions=ti,
+                excluded_tools=config.SUBAGENT_EXCLUDED_TOOLS,
+            )
             self.assertEqual(session.subagent_system_prompt, expected)
             self.assertNotIn("Task Completion Rules", session.subagent_system_prompt)
             self.assertNotIn("Request context:", session.subagent_system_prompt)
@@ -463,12 +478,17 @@ class TestCliEntryPoints(unittest.TestCase):
         self.assertEqual(calls, [None])
 
 
-def _load(path, project_dir=None, with_context=False):
+def _load(path, project_dir=None, with_context=False, tool_instructions=None, excluded_tools=()):
     from python_agent_harness.prompts import load_agent_prompt, load_context_files
     from python_agent_harness.session import find_context_dir, find_skill_dir
 
     skill_dir = find_skill_dir(project_dir) if project_dir else None
-    prompt = load_agent_prompt(path, skill_dir=skill_dir)
+    prompt = load_agent_prompt(
+        path,
+        skill_dir=skill_dir,
+        tool_instructions=tool_instructions,
+        excluded_tools=excluded_tools,
+    )
     if with_context:
         context_dir = find_context_dir(project_dir) if project_dir else None
         context_block = load_context_files(context_dir)

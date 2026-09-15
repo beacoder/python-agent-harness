@@ -47,6 +47,27 @@ All position-based operations use 1-based line and character numbers, as shown i
 workspaceSymbol uses file_path only to select the workspace/LSP server and query is optional.
 """
 
+INSTRUCTIONS = """\
+**When to use `LSP` (PREFER over `Grep` for code symbols):**
+- Finding where a symbol is defined → `goToDefinition`
+- Finding every usage of a symbol → `findRefers`
+- Getting type info / documentation for a symbol → `hover`
+- Listing symbols in a file → `documentSymbol`; project-wide → `workspaceSymbol`
+- Finding implementations of an interface/abstract method → `goToImplementation`
+- Understanding who calls / is called by a function → `prepareCallHierarchy`, then `incomingCalls` / `outgoingCalls`
+- Any time you have a concrete symbol and a source position: `LSP` returns semantically correct results, whereas `Grep` only finds text that looks alike (mies/shadowing; hits comments and strings).
+
+**When NOT to use `LSP`:**
+- The symbol or location is unknown, or you are searching comments, strings, config, or free text → use `Grep`
+- Searching for files by name → use `Glob`
+- No LSP server is configured/installed for the file's language → the tool returns a "No LSP server ..." error; fall back to `Grep`
+
+**How to use `LSP`:**
+- Positions are 1-based `line`/`character` (as shown in editors); the tool converts to LSP's 0-based form
+- `workspace` uses `file_path` only to select the workspace and takes a `query`; it ignores `line`/`character`
+- Read-only: it never modifies files, so it is safe to run concurrently with other read-only tools
+"""
+
 PARAMETERS = {
     "type": "object",
     "properties": {
@@ -218,6 +239,7 @@ _DISPATCH: dict[str, Callable[..., Any]] = {
 class LSP(Tool):
     name = "LSP"
     description = DESCRIPTION
+    instructions = INSTRUCTIONS
     parameters = PARAMETERS
     is_readonly = True
 

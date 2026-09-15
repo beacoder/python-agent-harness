@@ -19,6 +19,27 @@ from .filesystem import _git_root, _spool
 class Grep(Tool):
     name = "Grep"
     is_readonly = True
+    instructions = """\
+**When to use `Grep`:**
+- Fast content search tool that works with any codebase size
+- Searches file contents using regular expressions
+- Supports full regex syntax (eg. "log.*Error", "function\\s+\\w+", etc.)
+- Filter files by pattern with the include parameter (eg. "*.js", "*.{ts,tsx}")
+- Returns file paths and line numbers with matching lines
+- Quick, focused searches with expected results <20 matches
+
+**When NOT to use `Grep`:**
+- Searching for files by name → use `Glob`
+- Reading known file contents → use `Read`
+- Navigating a known code symbol (its definition, references, implementations, type info, or call hierarchy) → use `LSP` (semantically correct; `Grep` matches text, not symbols)
+- open-ended search that may require multiple rounds of globbing and grepping → use `Agent`
+
+**How to use `Grep`:**
+- Supports full regex syntax (ripgrep-based)
+- Can specify directory path and glon to narrow scope
+- Use `context_lines` parameter to see surrounding lines
+- Can perform multiple focused grep searches in parallel
+"""
     description = (
         "Search file contents with a regular expression. "
         "Use this for content search; use Glob for filename search. "

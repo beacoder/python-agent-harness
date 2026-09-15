@@ -559,5 +559,132 @@ class TestStandaloneToolWithFakeRuntime(unittest.TestCase):
         self.assertEqual(json.loads(out), {"todos": todos, "count": 1})
 
 
+class TestToolInstructions(unittest.TestCase):
+    """Tests for the Tool.instructions attribute and
+    Registry.tool_instructions() method."""
+
+    def test_default_tool_has_empty_instructions(self):
+        """The base Tool class defaults instructions to empty string."""
+        # PlanExit and Mkdir don't have per-tool instructions in the
+        # prompt template, so they keep the empty default
+        self.assertEqual(PlanExit().instructions, "")
+
+    def test_registry_tool_instructions_returns_non_empty(self):
+        """The default registry should have at least some tools with
+        non-empty instructions."""
+        from python_agent_harness.tools import default_registry
+
+        reg = default_registry()
+        ti = reg.tool_instructions()
+        self.assertGreater(len(ti), 0)
+
+    def test_registry_tool_instructions_keys(self):
+        """All tools that had <tool> blocks in the original agent.md
+        must have non-empty instructions in the default registry."""
+        from python_agent_harness.tools import default_registry
+
+        reg = default_registry()
+        ti = reg.tool_instructions()
+        expected = {
+            "Agent",
+            "TodoWrite",
+            "Glob",
+            "LSP",
+            "Grep",
+            "Read",
+            "Insert",
+            "Bash",
+            "Edit",
+            "Write",
+            "Skill",
+        }
+        self.assertEqual(set(ti.keys()), expected)
+
+    def test_registry_tool_instructions_excludes_empty(self):
+        """Tools without instructions (Mkdir, Question, PlanExit) must
+        not appear in the tool_instructions dict."""
+        from python_agent_harness.tools import default_registry
+
+        reg = default_registry()
+        ti = reg.tool_instructions()
+        for name in ("Mkdir", "Question", "PlanExit"):
+            self.assertNotIn(name, ti)
+
+    def test_registry_tool_instructions_names_filter(self):
+        """When *names* is given, only those tools are included."""
+        from python_agent_harness.tools import default_registry
+
+        reg = default_registry()
+        ti = reg.tool_instructions(names=["Read", "Bash"])
+        self.assertEqual(set(ti.keys()), {"Read", "Bash"})
+
+    def test_registry_tool_instructions_preserves_registration_order(self):
+        """The dict should preserve the registration order of the
+        default registry (Agent first, then TodoWrite, etc.)."""
+        from python_agent_harness.tools import default_registry
+
+        reg = default_registry()
+        ti = reg.tool_instructions()
+        keys = list(ti.keys())
+        # Agent is registered first in default_registry()
+        self.assertEqual(keys[0], "Agent")
+        # TodoWrite is second
+        self.assertEqual(keys[1], "TodoWrite")
+
+    def test_skill_tool_instructions_contains_skills_placeholder(self):
+        """The Skill tool's instructions must contain {{SKILLS}} so the
+        skills listing is resolved after tool instructions are assembled."""
+        self.assertIn("{{SKILLS}}", Skill().instructions)
+
+    def test_agent_tool_instructions_has_delegation_guidance(self):
+        """The Agent tool's instructions should contain the mandatory
+        delegation scenarios text."""
+        self.assertIn("MANDATORY delegation", AgentTool().instructions)
+
+    def test_bash_tool_instructions_has_git_guidance(self):
+        """The Bash tool's instructions should contain the Git and
+        GitHub guidance."""
+        from python_agent_harness.tools.bash import Bash
+
+        self.assertIn("Git and GitHub", Bash().instructions)
+
+    def test_read_tool_instructions_has_edit_warning(self):
+        """The Read tool's instructions should mention that Edit requires
+        reading first."""
+        from python_agent_harness.tools.read import Read
+
+        self.assertIn("Edit", Read().instructions)
+
+    def test_platform_variant_inherits_instructions(self):
+        """Platform-specific tool variants (Mac/Windows) must inherit
+        the instructions from their base class."""
+        from python_agent_harness.tools.edit import Edit
+        from python_agent_harness.tools.glob import GlobTool
+        from python_agent_harness.tools.grep import Grep
+
+        # Check that the instructions attribute is the same class-level
+        # value (inherited, not overridden) on at least one platform
+        # variant — we can't test Mac/Windows variants directly on Linux,
+        # but we can verify the base classes have non-empty instructions
+        self.assertTrue(Edit.instructions)
+        self.assertTrue(GlobTool.instructions)
+        self.assertTrue(Grep.instructions)
+
+    def test_tool_instructions_empty_registry(self):
+      """An empty registry returns an empty dict."""
+        self.assertEqual(Registry().tool_instructions(), {})
+
+    def test_tool_instructions_after_unregister(self):
+        """Unregistering a tool removes it from tool_instructions."""
+        from python_agent_harness.tools import default_registry
+
+        reg = default_registry()
+        ti_before = reg.tool_instructions()
+        self.assertIn("Read", ti_before)
+        reg.unregister("Read")
+        ti_after = reg.tool_instructions()
+        self.assertNotIn("Read", ti_after)
+
+
 if __name__ == "__main__":
     unittest.main()

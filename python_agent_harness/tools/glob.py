@@ -20,6 +20,26 @@ from .filesystem import _git_root, _natnump, _spool
 class GlobTool(Tool):
     name = "Glob"
     is_readonly = True
+    instructions = """\
+**When to use `Glob`:**
+- Searching for files by name patterns or extensions
+- You know the file pattern but not exact location
+- Finding all files of a certain type
+- Exploring project or directory structure
+
+**When NOT to use `Glob`:**
+- Searching file contents → use `Grep`
+- You know the exact file path → use `Read`
+- Doing open-ended multi-round searches → use `Agent` tool with general-purpose agent
+- Use shell commands like find → use `Glob` instead
+
+**How to use `Glob`:**
+- Supports standard glob patterns: `**/*.js`, `*.{ts,tsx}`, `src/**/*.py`
+- List all files with glob pattern `*`
+- Returns files sorted by modification time (most recent first)
+- Can specify ary path to narrow search scope
+- Can perform multiple glob searches in parallel for different patterns
+"""
     description = (
         "Recursively find files matching a provided glob pattern.\n\n"
         '- Supports glob patterns like "*.md" or "*test*.py".\n'

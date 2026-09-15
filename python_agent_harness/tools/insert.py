@@ -15,6 +15,22 @@ from .edit import _to_crlf, _uses_crlf
 
 class Insert(Tool):
     name = "Insert"
+    instructions = """\
+**When to use `Insert`:**
+- When you only need to add new content to a file.
+- When you know the exact line number for the insertion.
+- For purely additive actions that don't require changing surrounding context.
+
+**When NOT to use `Insert`:**
+- When you need to replace or modify existing text → use `Edit`.
+- When you need to create a new file entirely → use `Write`.
+
+**How to use `In`:**
+- The `line_number` parameter specifies the line *after* which to insert `new_str`.
+- Use `line_number: 0` to insert at the very beginning of the file.
+- Use `line_number: -1` to insert at the very end of the file.
+- This tool is preferred over `Edit` when only insertion is required.
+"""
     description = (
         "Insert text at a specific line number in an existing file. "
         "line_number 0 = beginning, -1 = end."

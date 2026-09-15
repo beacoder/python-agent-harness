@@ -20,12 +20,22 @@ def _subagent_system_prompt(session: object) -> str | None:
     Never falls back to the parent's `system_prompt` (which carries the
     parent's project context and task-completion rules) — a sub-agent
     must not inherit any context from the parent.  When the session has
-    no sub-agent prompt configured, the default bundled one is used.
+    no sub-agent prompt configured, the default bundled one is used
+    (with tool instructions from the session's registry, filtered by
+    the sub-agent excluded tools).
     """
     own = getattr(session, "subagent_system_prompt", None)
     if own:
         return own
-    return load_agent_prompt(config.DEFAULT_SUBAGENT_PROMPT_FILE)
+    registry = getattr(session, "registry", None)
+    tool_instructions = registry.tool_instructions() if registry else None
+    skill_dir = getattr(session, "_skill_dir", None)
+    return load_agent_prompt(
+        config.DEFAULT_SUBAGENT_PROMPT_FILE,
+        skill_dir=skill_dir,
+        tool_instructions=tool_instructions,
+        excluded_tools=config.SUBAGENT_EXCLUDED_TOOLS,
+    )
 
 
 def run_subagent(

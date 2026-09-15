@@ -99,7 +99,12 @@ class TestSubagentPromptSelection(unittest.TestCase):
         from python_agent_harness import config as cfg
         from python_agent_harness.prompts import load_agent_prompt
 
-        default_sub = load_agent_prompt(cfg.DEFAULT_SUBAGENT_PROMPT_FILE)
+        ti = session.registry.tool_instructions()
+        default_sub = load_agent_prompt(
+            cfg.DEFAULT_SUBAGENT_PROMPT_FILE,
+            tool_instructions=ti,
+            excluded_tools=cfg.SUBAGENT_EXCLUDED_TOOLS,
+        )
         self.assertEqual(session.client.systems, [default_sub])
         self.assertNotIn("MAIN AGENT PROMPT", session.client.systems[0])
 

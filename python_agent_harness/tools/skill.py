@@ -10,6 +10,7 @@ from .base import Tool, ToolContext
 class Skill(Tool):
     name = "Skill"
     is_readonly = True
+    instructions = "{{SKILLS}}"
     description = (
         "Load a skill to get detailed instructions for a specific task. "
         "Use this when a task matches an available skill's description. "

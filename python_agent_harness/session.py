@@ -9,7 +9,6 @@ provide interactive confirmations.
 from __future__ import annotations
 
 import contextlib
-import fnmatch
 import os
 import threading
 import time
@@ -24,7 +23,7 @@ from .mcp.manager import MCPManager
 from .models import AgentMode
 from .persistence import SessionPersistence, escape_role_headers
 from .planmode import PlanMode
-from .prompts import RESERVED_AGENT_NAME, discover_agents, index_skills
+from .prompts import RESERVED_AGENT_NAME, _tool_excluded, discover_agents, index_skills
 from .subagent import run_subagent
 from .token_estimator import TokenCalibrator
 from .tools import Registry, ToolContext
@@ -34,21 +33,6 @@ from .tools.mcp import mcp_tools_from_manager
 
 if TYPE_CHECKING:
     from .tools.base import ToolRuntime
-
-
-def _tool_excluded(pattern: str, name: str) -> bool:
-    """True when *pattern* excludes tool *name*.
-
-    A pattern matches when it is the exact tool name, a glob pattern
-    (``mcp__git__*``), or a prefix delimited by ``__`` (``mcp__git``
-    hides ``mcp__git__list_repos`` but ``Write`` does NOT hide
-    ``TodoWrite``).
-    """
-    if "*" in pattern:
-        return fnmatch.fnmatchcase(name, pattern)
-    if pattern == name:
-        return True
-    return name.startswith(pattern + "__")
 
 
 def find_skill_dir(project_dir: str, configured: str | None = None) -> str | None:
@@ -818,10 +802,16 @@ class Session:
             return False, f"unknown agent: {name} (available: {available})"
         from .prompts import agent_exclude_tools, assemble_agent_prompt, load_agent_prompt
 
-        agent_prompt = load_agent_prompt(prompt_file, skill_dir=self._skill_dir)
+        new_exclusions = agent_exclude_tools(prompt_file)
+        tool_instructions = self.registry.tool_instructions()
+        agent_prompt = load_agent_prompt(
+            prompt_file,
+            skill_dir=self._skill_dir,
+            tool_instructions=tool_instructions,
+            excluded_tools=new_exclusions,
+        )
         if agent_prompt is None:
             return False, f"agent {name}: prompt file not found or empty: {prompt_file}"
-        new_exclusions = agent_exclude_tools(prompt_file)
         self.system_prompt = assemble_agent_prompt(
             self.project_dir,
             agent_prompt,

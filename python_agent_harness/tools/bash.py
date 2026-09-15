@@ -213,6 +213,38 @@ def _collect_output(proc: subprocess.Popen, cancel: threading.Event | None) -> t
 
 class Bash(Tool):
     name = "Bash"
+    instructions = """\
+**When to use `Bash`:**
+- Terminal operations: git, npm, docker, cargo, etc.
+- Commands that truly require shell execution
+- Running builds, tests, or development servers
+- System administration tasks
+
+**When NOT to use `Bash`:**
+- File operations → use `Read`, `Write`, `Edit`, `Glob`, `Grep` instead
+- Finding files → use `Glob`, not find
+- Searching contents → use `Grep`, not grep/rg
+- Reading files → use `Read`, not cat/head/tail
+- Editing files → use `Edit`, not sed/awk
+- Writing files → use `Write`, not echo or heredocs
+- Communication with user → output text directly, not echo
+
+**How to use `Bash`:**
+- Quote file paths with spaces using double quotes
+- Chain dependent commands with && (or ; if failures are OK)
+- Use absotead of cd when possible
+- For parallel commands, make multiple `Bash` calls in one message
+
+**Git and GitHub:**
+- Only commit, amend, push, or create PRs when explicitly requested.
+- Before committing, inspect `git status`, `git diff`, and `git log --oneline -10`; stage only intended files and never commit secrets.
+- Write a concise commit message that matches the repo style.
+- Do not update git config, skip hooks, use interactive `-i`, force-push, or create empty commits unless explicitly requested.
+- If a commit fails or hooks reject it, fix the issue and create a new commit; do not amend the failed commit.
+- Before creating a PR, inspect status, diff, remote tracking, recent commits, and the diff from the base branch.
+- Review all commits included in the PR, not just the latest commit.
+- Use `gh` for GitHub tasks, including PRs, issues, checks, and releases; return the PR URL when done.
+"""
     _timeout_silence = BASH_TIMEOUT_SILENCE
     _timeout_note = (
         f"A command silent for {_timeout_silence:.0f}s is killed and reported as timed out. "

@@ -19,6 +19,26 @@ from .filesystem import READ_SIZE_LIMIT, _spool
 class Read(Tool):
     name = "Read"
     is_readonly = True
+    instructions = """\
+**When to use `Read`:**
+- You need to examine file contents
+- Before editing any file (required)
+- You know the exact file path
+- Viewing images, PDFs, or Jupyter notebooks
+- Understanding code structure and implementation
+
+**When NOT to use `Read`:**
+- Searching for files by name → use `Glob`
+- Searching file contents across multiple files → use `Grep`
+- You want to use shell commands like cat → use `Read` instead
+
+**How to use `Read`:**
+- Default behavior reads up to 2000 lines from the beginning
+- For large files, use offset and limit parameters to read specific sections
+- Recommended to read the whole file by omitting offset/limit when possible
+- Always read beforing - the `Edit` tool will error otherwise
+- Can read multiple files in parallel by making multiple `Read` calls
+"""
     description = (
         "Read file contents between specified line numbers `start_line` and "
         "`end_line`, with both ends included.\n\n"

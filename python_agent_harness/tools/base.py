@@ -163,6 +163,11 @@ class ToolContext:
 class Tool(ABC):
     name: str = ""
     description: str = ""
+    # Detailed usage instructions injected into the system prompt for
+    # this tool (when to use / not use / how).  An empty string means
+    # no per-tool instructions are emitted (the ``description`` field
+    # in the tool spec is the only guidance the model receives).
+    instructions: str = ""
     # True for tools that only read state (Read, Glob, Grep, Skill):
     # when EVERY call in a round is readonly, the runner dispatches
     # them concurrently via a thread pool instead of one-at-a-time,
@@ -213,6 +218,19 @@ class Registry:
             items = list(self._tools.items())
         wanted = set(names) if names is not None else {n for n, _ in items}
         return [t.spec() for name, t in items if name in wanted]
+
+    def tool_instructions(self, names: list[str] | None = None) -> dict[str, str]:
+        """Return ``{tool_name: instructions}`` for tools with non-empty
+        ``instructions``.  When *names* is given, only those tools are
+        included; otherwise every registered tool with instructions is
+        returned.  Tools are returned in registration order.
+        """
+        with self._lock:
+            items = list(self._tools.items())
+        wanted = set(names) if names is not None else {n for n, _ in items}
+        return {
+            name: tool.instructions for name, tool in items if name in wanted and tool.instructions
+        }
 
     def execute(self, name: str, args: dict[str, Any], ctx: ToolContext) -> str | PendingToolResult:
         tool = self._tools.get(name)

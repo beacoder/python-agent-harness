@@ -34,6 +34,51 @@ DESCRIPTION = (
     "tasks in parallel for efficiency."
 )
 
+INSTRUCTIONS = """\
+**MANDATORY delegation scenarios (use Agent immediately):**
+- **Searching codebase for code understanding or information gathering** → DELEGATE to `subagent`
+- **Exploring unfamiliar code with uncertain search paths** → DELEGATE to `subagent`
+- **Expected to search 3+ files or get many search results** → DELEGATE to `subagent`
+- **Well-defined multi-step task that will bloat your context** → DELEGATE to `subagent`
+- **Creating/modifying 3+ files with clear requirements** → DELEGATE to `subagent`
+
+**When NOT to use `Agent`:**
+- You know exact file paths and just need to read 1-2 specific files → use `Read`
+- Searching for ONE specific, well-defined string in known location → use `Grep`
+- User provides specific file paths to examine → handle inline
+- Simple, focused task with all information available → handle inline
+- Quick edits to 1-2 files → handle inline
+- Finding a specific item (e.g., "read the config in settings.py") → Handle inline
+
+**How to use the `Agent` tool:**
+- Agents run autonomously and return a single summary message
+- Review the result, then proactively integrate it into your reply to user
+
+**Context isolation (CRITICAL):**
+- Subagents have NO access to prior conversation history
+- Include all necessary context in the prompt: file paths, requirements, constraints, coding conventions
+- Reference specific file paths rather than "the file we discussed earlier"
+- Be detailed and comprehensive in the prompt — the subagent starts from scratch
+
+**Parallel vs Sequential:**
+- Use parallel agents for independent tasks (e.g., searching two unrelated areas)
+- Use sequential when one result feeds the next (e.g., find files → then edit them)
+- Parallel agents cannot communicate with each other
+
+**Result handling:**
+- Trust subagent results for information gathering and exploration
+- Verify subagent file modifications by reading key files if the change is complex or safety-critical
+- If a subagent returns an error or incomplete result, retry with refined instructions
+
+**Available agent types:**
+`subagent`: Autonomous subagent for well-defined, multi-step tasks. Can read, write, and modify files. Use when you know what needs to be done but want to keep the main context clean.
+
+**Examples of good prompts:**
+- "Search for all files under src/auth/ that import SessionManager. Read each file and summarize how session expiry is handled."
+- "Create unit tests for src/utils/parser.ts. Follow the test patterns in src/utils/__tests__/formatter.test.ts. Use vitest as the test framework."
+- "Find all usages of the deprecated `fetchData()` API in the project and replace them with `queryData()`. Preserve all existing arguments."
+"""
+
 PARAMETERS = {
     "type": "object",
     "properties": {
@@ -51,6 +96,7 @@ PARAMETERS = {
 class AgentTool(Tool):
     name = "Agent"
     description = DESCRIPTION
+    instructions = INSTRUCTIONS
     parameters = PARAMETERS
 
     def run(self, args: dict, ctx: ToolContext) -> str | PendingToolResult:

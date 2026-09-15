@@ -56,6 +56,26 @@ def _patch_cwd(raw: str, path: str) -> str:
 
 class Edit(Tool):
     name = "Edit"
+    instructions = """\
+**When to use `Edit`:**
+- Modifying existing files with surgical precision
+- Making targeted changes to code or configuration
+- Replacing specific strings, functions, or sections
+- Any time you need to change part of an existing file
+
+**When NOT to use `Edit`:**
+- Creating brand new files → use `Write`
+- You haven't read the file yet → must `Read` first (tool will error)
+- The old_string is not unique and you want to replace all occurrences → use `replace_all: true`
+
+**How to use `Edit`:**
+- MUST `Read` the file first (required, tool will error otherwise)
+- Provide exact `old_string` to match (including proper inion from file content, not line number prefixes)
+- Provide `new_string` as replacement (must be different from old_string)
+- The edit will FAIL if old_string is not unique
+- Preserve exact indentation from the file content (ignore line number prefixes from `Read` output)
+- Always prefer editing existing files over creating new ones
+"""
     description = (
         "Replace text in one or more files.\n\n"
         "To edit a single file, provide the file `path`.\n\n"

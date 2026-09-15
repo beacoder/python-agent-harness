@@ -13,6 +13,9 @@ from python_agent_harness.models import Message
 from python_agent_harness.prompts import (
     _SKILLS_FALLBACK,
     _parse_skill_frontmatter,
+    agent_exclude_tools,
+    assemble_tool_instructions,
+    discover_agents,
     discover_skills,
     index_skills,
     load_agent_prompt,
@@ -438,6 +441,320 @@ class TestUserPromptTexts(unittest.TestCase):
             }
         ]
         self.assertEqual(user_prompt_texts(msgs), ["hello world"])
+
+
+class TestAssembleToolInstructions(unittest.TestCase):
+    """Tests for assemble_tool_instructions and load_agent_prompt's
+    {{TOOL_INSTRUCTIONS}} placeholder substitution."""
+
+    def test_none_dict_returns_empty(self):
+        self.assertEqual(assemble_tool_instructions(None), "")
+
+    def test_empty_dict_returns_empty(self):
+        self.assertEqual(assemble_tool_instructions({}), "")
+
+    def test_single_tool_rendered_as_block(self):
+        result = assemble_tool_instructions({"Read": "Use Read to read files."})
+        self.assertIn('<tool name="Read">', result)
+        self.assertIn("Use Read to read files.", result)
+        self.assertIn("</tool>", result)
+
+    def test_multiple_tools_separated_by_blank_lines(self):
+        result = assemble_tool_instructions(
+            {
+                "Read": "Read instructions.",
+                "Bash": "Bash instructions.",
+            }
+        )
+        self.assertEqual(result.count('<tool name="'), 2)
+        self.assertIn('<tool name="Read">', result)
+        self.assertIn('<tool name="Bash">', result)
+        # blocks are separated by a blank line
+        self.assertIn("</tool>\n\n<tool name=", result)
+
+    def test_preserves_insertion_order(self):
+        result = assemble_tool_instructions(
+            {
+                "Zebra": "z",
+                "Alpha": "a",
+                "Mid": "m",
+            }
+        )
+        idx_zebra = result.index("Zebra")
+        idx_alpha = result.index("Alpha")
+        idx_mid = result.index("Mid")
+        self.assertLess(idx_zebra, idx_alpha)
+        self.assertLess(idx_alpha, idx_mid)
+
+    def test_excluded_tools_dropped(self):
+        result = assemble_tool_instructions(
+            {"Read": "read", "Bash": "bash", "Agent": "agent"},
+            excluded=("Agent", "Bash"),
+        )
+        self.assertNotIn('<tool name="Agent">', result)
+        self.assertNotIn('<tool name="Bash">', result)
+        self.assertIn('<tool name="Read">', result)
+
+    def test_excluded_glob_pattern_drops_matching_tools(self):
+        """Glob patterns like ``mcp__git__*`` must exclude matching tools,
+        mirroring ``session._tool_excluded``."""
+        result = assemble_tool_instructions(
+            {
+                "Read": "read",
+                "mcp__git__list": "git list",
+                "mcp__git__search": "git search",
+                "mcp__fs__read": "fs read",
+            },
+            excluded=("mcp__git__*",),
+        )
+        self.assertNotIn('<tool name="mcp__git__list">', result)
+        self.assertNotIn('<tool name="mcp__git__search">', result)
+        self.assertIn('<tool name="mcp__fs__read">', result)
+        self.assertIn('<tool name="Read">', result)
+
+    def test_excluded_prefix_drops_matching_tools(self):
+        """``__``-delimited prefix exclusion (``mcp__git`` hides
+        ``mcp__git__list``) must work, mirroring ``session._tool_excluded``."""
+        result = assemble_tool_instructions(
+            {
+                "Read": "read",
+                "mcp__git__list": "git list",
+                "mcp__git__search": "git search",
+                "mcp__fs__read": "fs read",
+            },
+            excluded=("mcp__git",),
+        )
+        self.assertNotIn('<tool name="mcp__git__list">', result)
+        self.assertNotIn('<tool name="mcp__git__search">', result)
+        self.assertIn('<tool name="mcp__fs__read">', result)
+
+    def test_excluded_exact_name_does_not_match_prefix(self):
+        """Excluding ``Write`` must NOT exclude ``TodoWrite`` — the
+        ``__``-delimited prefix rule prevents this false match."""
+        result = assemble_tool_instructions(
+            {"Write": "w", "TodoWrite": "tw"},
+            excluded=("Write",),
+        )
+        self.assertNotIn('<tool name="Write">', relt)
+        self.assertIn('<tool name="TodoWrite">', result)
+
+    def test_backslashes_in_instructions_preserved(self):
+        """re.sub must not interpret backslashes in tool instruction text
+        as escape sequences (e.g. regex examples like \\s, \\w)."""
+        result = assemble_tool_instructions({"Grep": r"Use \s+ and \w+ patterns."})
+        self.assertIn(r"\s+", result)
+        self.assertIn(r"\w+", result)
+
+    def test_placeholder_substituted_when_tool_instructions_given(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "agent.md"
+            path.write_text(
+                "# Role\n\n{{TOOL_INSTRUCTIONS}}\n\n# End",
+                encoding="utf-8",
+            )
+            result = load_agent_prompt(path, tool_instructions={"Read": "Read files."})
+        self.assertIsNotNone(result)
+        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", result)
+        self.assertIn('<tool name="Read">', result)
+        self.assertIn("Read files.", result)
+
+    def test_placeholder_removed_when_no_tool_instructions(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "agent.md"
+            path.write_text(
+                "# Role\n\n{{TOOL_INSTRUCTIONS}}\n\n# End",
+                encoding="utf-8",
+            )
+            result = load_agent_prompt(path, tool_instructions=None)
+        self.assertIsNotNone(result)
+        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", result)
+        self.assertNotIn("<tool name=", result)
+
+    def test_placeholder_removed_when_empty_dict(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "agent.md"
+            path.write_text(
+                "# Role\n\n{{TOOL_INSTRUCTIONS}}\n\n# End",
+                encoding="utf-8",
+            )
+            result = load_agent_prompt(path, tool_instructions={})
+        self.assertIsNotNone(result)
+        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", result)
+
+    def test_excluded_tools_passed_to_load_agent_prompt(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "agent.md"
+            path.write_text("{{TOOL_INSTRUCTIONS}}", encoding="utf-8")
+            result = load_agent_prompt(
+                path,
+                tool_instructions={"Read": "read", "Agent": "agent"},
+                excluded_tools=("Agent",),
+            )
+        self.assertIsNotNone(result)
+        self.assertIn('<tool name="Read">', result)
+        self.assertNotIn('<tool name="Agent">', result)
+
+    def test_tool_instructions_substituted_before_skills(self):
+        """{{TOOL_INSTRUCTIONS}} is resolved before {{SKILLS}} so that
+        a tool whose instructions contain {{SKILLS}} (the Skill tool)
+        has the placeholder resolved correctly."""
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "agent.md"
+            path.write_text("{{TOOL_INSTRUCTIONS}}", encoding="utf-8")
+            result = load_agent_prompt(
+                path,
+                skill_dir=None,
+                tool_instructions={"Skill": "Skills: {{SKILLS}}"},
+            )
+        self.assertIsNotNone(result)
+        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", result)
+        self.assertNotIn("{{SKILLS}}", result)
+        self.assertIn("Skills:", result)
+        self.assertIn(_SKILLS_FALLBACK, result)
+
+    def test_bundled_agent_md_has_placeholder(self):
+        """The bundled agent.md must contain the {{TOOL_INSTRUCTIONS}}
+        placeholder (not hardcoded tool blocks)."""
+        text = config.DEFAULT_AGENT_PROMPT_FILE.read_text(encoding="utf-8")
+        self.assertIn("{{TOOL_INSTRUCTIONS}}", text)
+
+    def test_bundled_subagent_md_has_placeholder(self):
+        """The bundled subagent.md must contain the {{TOOL_INSTRUCTIONS}}
+        placeholder (not hardcoded tool blocks)."""
+        text = config.DEFAULT_SUBAGENT_PROMPT_FILE.read_text(encoding="utf-8")
+        self.assertIn("{{TOOL_INSTRUCTIONS}}", text)
+
+    def test_bundled_prompts_no_hardcoded_tool_blocks(self):
+        """Neither bundled prompt should contain hardcoded <tool name=...>
+        blocks — those are now assembled dynamically."""
+        for prompt_file in (
+            config.DEFAULT_AGENT_PROMPT_FILE,
+            config.DEFAULT_SUBAGENT_PROMPT_FILE,
+        ):
+            text = prompt_file.read_text(encoding="utf-8")
+            self.assertNotIn('<tool name="', text)
+
+    def test_bundled_prompts_load_with_tool_instructions(self):
+        """Loading the bundled prompts with realool instructions from
+        the default registry must produce a fully resolved prompt with
+        all tool blocks and no leftover placeholders."""
+        from python_agent_harness.tools import default_registry
+
+        ti = default_registry().tool_instructions()
+        for prompt_file in (
+            config.DEFAULT_AGENT_PROMPT_FILE,
+            config.DEFAULT_SUBAGENT_PROMPT_FILE,
+        ):
+            result = load_agent_prompt(prompt_file, tool_instructions=ti)
+            self.assertIsNotNone(result)
+            self.assertNotIn("{{TOOL_INSTRUCTIONS}}", result)
+            self.assertNotIn("{{SKILLS}}", result)
+            # at least some tool blocks should be present
+            self.assertIn('<tool name="', result)
+
+    def test_subagent_prompt_excludes_subagent_tools(self):
+        """Loading subagent.md with SUBAGENT_EXCLUDED_TOOLS must not
+        include instructions for Agent, TodoWrite, Question, PlanExit."""
+        from python_agent_harness.tools import default_registry
+
+        ti = default_registry().tool_instructions()
+        result = load_agent_prompt(
+            config.DEFAULT_SUBAGENT_PROMPT_FILE,
+            tool_instructions=ti,
+            excluded_tools=config.SUBAGENT_EXCLUDED_TOOLS,
+        )
+        self.assertIsNotNone(result)
+        for excluded in config.SUBAGENT_EXCLUDED_TOOLS:
+            self.assertNotIn(f'<tool name="{excluded}">', result)
+        # but Read and Bash should still be present
+        self.assertIn('<tool name="Read">', result)
+        self.assertIn('<tool name="Bash">', result)
+
+    def test_tool_instructions_consistent_with_tool_specs_main_agent(self):
+        """Every tool with instructions in the main agent prompt must
+        also have a tool spec in the default registry (no instructions
+        for non-existent or excluded tools)."""
+        from python_agent_harness.tools import default_registry
+
+        reg = default_registry()
+        ti = reg.tool_instructions()
+        prompt = load_agent_prompt(
+            config.DEFAULT_AGENT_PROMPT_FILE,
+            tool_instructions=ti,
+        )
+        spec_names = {s.name for s in reg.specs()}
+        for name in ti:
+            if f'<tool name="{name}">' in prompt:
+                self.assertIn(
+                    name,
+                    spec_names,
+                    f"Tool {name} has instructions in prompt but no spec",
+                )
+
+    def test_tool_instructions_consistent_with_tool_specs_subagent(self):
+        """Every tool with instructions in the subagent prompt must NOT
+        be in SUBAGENT_EXCLUDED_TOOLS, and every non-excluded tool with
+        instructions must appear in the prompt."""
+        from python_agent_harness.tools import default_registry
+
+        reg = default_registry()
+        ti = reg.tool_instructions()
+        excluded = set(config.SUBAGENT_EXCLUDED_TOOLS)
+        prompt = load_agent_prompt(
+            config.DEFAULT_SUBAGENT_PROMPT_FILE,
+            tool_instructions=ti,
+            excluded_tools=config.SUBAGENT_EXCLUDED_TOOLS,
+        )
+        for name in ti:
+            has_block = f'<tool name="{name}">' in prompt
+            if name in excluded:
+                self.assertFalse(
+                    has_block,
+                    f"Excluded tool {name} should not have instructions in subagent prompt",
+                )
+            else:
+                self.assertTrue(
+                    has_block,
+                    f"Non-excluded tool {name} should have instructions in subagent prompt",
+                )
+
+    def test_tool_instructions_consistent_with_reviewer_exclusions(self):
+        """The reviewer agent profile's ``exclude_tools`` must be honored:
+        excluded tools must not appear in the assembled prompt, and every
+        other tool with instructions must.  Exclusions are read from the
+        real ``reviewer.md`` (via ``agent_exclude_tools``) so this test
+        tracks the agent file instead of a hardcoded copy."""
+        from python_agent_harness.tools import default_registry
+
+        agents = discover_agents()
+        self.assertIn("reviewer", agents, "reviewer agent profile not found")
+        reviewer_exclusions = agent_exclude_tools(agents["reviewer"])
+        self.assertTrue(
+            reviewer_exclusions,
+            "reviewer.md declares no exclude_tools; test would be vacuous",
+        )
+
+        reg = default_registry()
+        ti = reg.tool_instructions()
+        prompt = load_agent_prompt(
+            config.DEFAULT_AGENT_PROMPT_FILE,
+            tool_instructions=ti,
+            excluded_tools=reviewer_exclusions,
+        )
+        for name in reviewer_exclusions:
+            self.assertNotIn(
+                f'<tool name="{name}">',
+                prompt,
+                f"Excluded tool {name} should not have instructions in reviewer prompt",
+            )
+        # non-excluded tools with instructions should still be present
+        for name in ti:
+            if name not in reviewer_exclusions:
+                self.assertIn(
+                    f'<tool name="{name}">',
+                    prompt,
+                    f"Non-excluded tool {name} should have instructions in reviewer prompt",
+                )
 
 
 if __name__ == "__main__":

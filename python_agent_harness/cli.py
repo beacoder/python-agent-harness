@@ -82,15 +82,25 @@ def make_session(
 
     abs_project = os.path.abspath(project_dir)
     skill_dir = find_skill_dir(abs_project, paths.get("skill_path"))
+    registry = default_registry()
+    tool_instructions = registry.tool_instructions()
     system_prompt = assemble_agent_prompt(
         abs_project,
-        load_agent_prompt(config.DEFAULT_AGENT_PROMPT_FILE, skill_dir=skill_dir),
+        load_agent_prompt(
+            config.DEFAULT_AGENT_PROMPT_FILE,
+            skill_dir=skill_dir,
+            tool_instructions=tool_instructions,
+        ),
         context_path=paths.get("context_path"),
     )
     # sub-agents get ONLY their own system prompt — no parent project
-    # context and no task-completion rules injected
+    # context and no task-completion rules injected.  Tool instructions
+    # are filtered to exclude tools sub-agents cannot use.
     subagent_system_prompt = load_agent_prompt(
-        config.DEFAULT_SUBAGENT_PROMPT_FILE, skill_dir=skill_dir
+        config.DEFAULT_SUBAGENT_PROMPT_FILE,
+        skill_dir=skill_dir,
+        tool_instructions=tool_instructions,
+        excluded_tools=config.SUBAGENT_EXCLUDED_TOOLS,
     )
     # Resolve the effective stream once: the CLI --no-stream flag wins
     # over the config file for the whole session, sub-agents included
@@ -119,7 +129,7 @@ def make_session(
         subagent_max_tokens=subagent_settings["max_tokens"],
         subagent_reasoning_effort=subagent_settings["reasoning_effort"],
         subagent_stream=(effective_stream if stream is not None else subagent_settings["stream"]),
-        registry=default_registry(),
+        registry=registry,
         context_path=paths.get("context_path"),
         skill_path=paths.get("skill_path"),
         mcp=mcp_config,

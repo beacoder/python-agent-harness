@@ -12,6 +12,7 @@ preserved verbatim), shared by the in-loop compaction and the manual
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import subprocess
@@ -37,6 +38,7 @@ def read_prompt_file(name: str) -> str:
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n?", re.DOTALL)
 _SKILLS_PLACEHOLDER_RE = re.compile(r"\{\{\s*SKILLS\s*\}\}")
+_TOOL_INSTRUCTIONS_PLACEHOLDER_RE = re.compile(r"\{\{\s*TOOL_INSTRUCTIONS\s*\}\}")
 _SKILLS_FALLBACK = (
     "Invoke with a skill name and optional args; the tool reports an "
     "error if no matching skill is found."
@@ -132,13 +134,73 @@ def discover_skills(skill_dir: Path | str | None) -> str:
     return "\n".join(lines)
 
 
-def load_agent_prompt(path: Path | str | None, skill_dir: Path | str | None = None) -> str | None:
+def _tool_excluded(pattern: str, name: str) -> bool:
+    """True when *pattern* excludes tool *name*.
+
+    Canonical tool-exclusion matcher, shared by prompt assembly here and
+    by runtime tool-spec filtering in ``session.tool_specs`` (which
+    imports this function).  A pattern matches when it is the exact tool
+    name, a glob pattern (``mcp__git__*``), or a prefix delimited by
+    ``__`` (``mcp__git`` hides ``mcp__git__list_repos`` but ``Write``
+    does NOT hide ``TodoWrite``).
+    """
+    if "*" in pattern:
+        return fnmatch.fnmatchcase(name, pattern)
+    if pattern == name:
+        return True
+    return name.startswith(pattern + "__")
+
+
+def assemble_tool_instructions(
+    tool_instructions: dict[str, str] | None,
+    excluded: tuple[str, ...] = (),
+) -> str:
+    """Assemble per-tool instruction blocks from a registry.
+
+    *tool_instructions* is ``{tool_name: instructions_text}`` as returned
+    by ``Registry.tool_instructions()``.  Each tool with non-empty
+    instructions is rendered as a ``<tool name="...">`` block, in the
+    dict's insertion order (which mirrors registration order).
+
+    *excluded* drops tools by name or pattern (exact name, glob
+    ``mcp__git__*``, or ``__``-delimited prefix ``mcp__git``) via the
+    shared ``_tool_excluded`` matcher, the same one ``session.tool_specs``
+    uses for runtime filtering, so the prompt only documents the tools
+    the model can actually call.
+
+    Returns an empty string when no tools have instructions (the
+    placeholder is removed cleanly).
+    """
+    if not tool_instructions:
+        return ""
+    blocks: list[str] = []
+    for name, text in tool_instructions.items():
+        if any(_tool_excluded(p, name) for p in excluded):
+            continue
+        blocks.append(f'<tool name="{name}">\n{text.rstrip()}\n</tool>')
+    return "\n\n".join(blocks)
+
+
+def load_agent_prompt(
+    path: Path | str | None,
+    skill_dir: Path | str | None = None,
+    tool_instructions: dict[str, str] | None = None,
+    excluded_tools: tuple[str, ...] = (),
+) -> str | None:
     """Load an opencode-style agent prompt file, or None if unavailable.
 
     Strips the YAML frontmatter header (name/description/tools) since
-    that metadata isn't part of the prompt text, and substitutes the
-    ``{{SKILLS}}`` placeholder with the discovered skill listing from
-    *skill_dir* (or a static fallback if no skills are found).
+    that metadata isn't part of the prompt text, substitutes the
+    ``{{TOOL_INSTRUCTIONS}}`` placeholder with per-tool instruction
+    blocks assembled from *tool_instructions* (filtered by
+    *excluded_tools*), and substitutes the ``{{SKILLS}}`` placeholder
+    with the discovered skill listing from *skill_dir* (or a static
+    fallback if no skills are found).
+
+    The ``{{TOOL_INSTRUCTIONS}}`` substitution happens before
+    ``{{SKILLS}}``: a tool's instructions may itself contain
+    ``{{SKILLS}}`` (the Skill tool does), so the skills placeholder is
+    resolved last to catch it wherever it appears.
 
     Missing files, unreadable files, and empty files all resolve to None
     so callers can fall back cleanly to no system prompt.
@@ -151,8 +213,13 @@ def load_agent_prompt(path: Path | str | None, skill_dir: Path | str | None = No
     except OSError:
         return None
     text = strip_frontmatter(text)
+    tool_blocks = assemble_tool_instructions(tool_instructions, excluded_tools)
+    # Use a lambda replacement to avoid re.sub interpreting backslashes
+    # in tool instruction text (e.g. regex examples like \s, \w) as
+    # escape sequences.
+    text = _TOOL_INSTRUCTIONS_PLACEHOLDER_RE.sub(lambda _: tool_blocks, text)
     skills_text = discover_skills(skill_dir)
-    text = _SKILLS_PLACEHOLDER_RE.sub(skills_text, text)
+    text = _SKILLS_PLACEHOLDER_RE.sub(lambda _: skills_text, text)
     text = text.strip()
     return text or None
 
@@ -331,6 +398,10 @@ def assemble_agent_prompt(
     files and no task-completion rules (see ``cli.make_session`` and
     ``subagent._subagent_system_prompt``).  ``context_path`` overrides
     the default context directory discovery.
+
+    *agent_prompt* is already fully resolved (``{{TOOL_INSTRUCTIONS}}``
+    and ``{{SKILLS}}`` substituted by ``load_agent_prompt``); this
+    function only layers context and rules around it.
     Returns None if every part is empty/missing.
     """
     parts: list[str] = []
