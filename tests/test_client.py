@@ -2,6 +2,7 @@
 
 import json
 import os
+import ssl
 import sys
 import tempfile
 import time
@@ -683,6 +684,53 @@ class TestClientHelpers(unittest.TestCase):
             mock.patch("python_agent_harness.client.os.path.isfile", return_value=False),
         ):
             self.assertIs(_resolve_ca_bundle(), True)
+
+    def test_httpx_verify_string_becomes_ssl_context(self):
+        """A CA-bundle path string is turned into an ssl.SSLContext.
+
+        httpx 0.28 deprecated ``verify=<str>``; the helper must build a
+        context so no deprecation warning is emitted at the httpx
+        boundary.  The bundle file is loaded (create_default_context
+        rejects a missing/invalid cafile), so a real temp cert path is
+        used."""
+        from python_agent_harness.client import _httpx_verify
+
+        # A valid PEM the SSL layer accepts as a CA file: reuse certifi's
+        # bundle when available, else the system default context's certs.
+        ctx_default = ssl.create_default_context()
+        with tempfile.NamedTemporaryFile("w", prefix="pah-ca-", suffix=".pem", delete=False) as f:
+            # A self-contained CA bundle written from the default trust store.
+            pems = [
+                ssl.DER_cert_to_PEM_cert(der) for der in ctx_default.get_ca_certs(binary_form=True)
+            ]
+            f.write("".join(pems))
+            ca_path = f.name
+        try:
+            result = _httpx_verify(ca_path)
+            self.assertIsInstance(result, ssl.SSLContext)
+        finally:
+            os.unlink(ca_path)
+
+    def test_httpx_verify_bool_passthrough(self):
+        """True/False are httpx's own on/off toggles and pass through
+        unchanged (no SSLContext wrapping)."""
+        from python_agent_harness.client import _httpx_verify
+
+        self.assertIs(_httpx_verify(True), True)
+        self.assertIs(_httpx_verify(False), False)
+
+    def test_httpx_verify_no_deprecation_warning(self):
+        """Constructing httpx.Client with the helper's output must not
+        emit the ``verify=<str>`` DeprecationWarning (the regression
+        this guards)."""
+        import warnings
+
+        from python_agent_harness.client import _httpx_verify
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            # True path: httpx default verification, no warning.
+            httpx.Client(verify=_httpx_verify(True)).close()
 
 
 class TestClientLogging(unittest.TestCase):
