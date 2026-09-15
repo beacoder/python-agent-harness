@@ -535,7 +535,7 @@ class TestAssembleToolInstructions(unittest.TestCase):
             {"Write": "w", "TodoWrite": "tw"},
             excluded=("Write",),
         )
-        self.assertNotIn('<tool name="Write">', relt)
+        self.assertNotIn('<tool name="Write">', result)
         self.assertIn('<tool name="TodoWrite">', result)
 
     def test_backslashes_in_instructions_preserved(self):

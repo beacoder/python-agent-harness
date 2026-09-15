@@ -671,7 +671,7 @@ class TestToolInstructions(unittest.TestCase):
         self.assertTrue(Grep.instructions)
 
     def test_tool_instructions_empty_registry(self):
-      """An empty registry returns an empty dict."""
+        """An empty registry returns an empty dict."""
         self.assertEqual(Registry().tool_instructions(), {})
 
     def test_tool_instructions_after_unregister(self):
