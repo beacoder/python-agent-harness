@@ -60,16 +60,16 @@ class TestTuiCommands(unittest.TestCase):
 
         with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
             self.assertFalse(tui._handle_slash("/init"))
-            self.assertIn("AGENTS.md", captured["text"])
+            self.assertIn("AGENTS.md", captured["text"].text())
             self.assertIn("Create or update", captured["system"])
 
             tui._handle_slash("/review main")
-            self.assertIn("Review the requested code changes", captured["text"])
+            self.assertIn("Review the requested code changes", captured["text"].text())
             self.assertIn("code reviewer", captured["system"])
             self.assertIn("main", captured["system"])  # $ARGUMENTS substituted
 
             tui._handle_slash("/explain client.py")
-            self.assertIn("instructions", captured["text"])  # custom kickoff
+            self.assertIn("instructions", captured["text"].text())  # custom kickoff
             self.assertIn("client.py", captured["system"])
             self.assertIn("explain", captured["system"])
 
@@ -87,9 +87,11 @@ class TestTuiCommands(unittest.TestCase):
 
         with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
             tui._handle_slash("/explain client.py")
-        self.assertIn("NEW /explain request: client.py", captured["text"])
-        self.assertIn("background context", captured["text"])
-        self.assertIn("Proceed with the task described in your instructions.", captured["text"])
+        self.assertIn("NEW /explain request: client.py", captured["text"].text())
+        self.assertIn("background context", captured["text"].text())
+        self.assertIn(
+            "Proceed with the task described in your instructions.", captured["text"].text()
+        )
 
         # empty conversation: kickoff stays the plain generic message
         tui.conversation_history = []
@@ -97,7 +99,7 @@ class TestTuiCommands(unittest.TestCase):
         with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
             tui._handle_slash("/explain client.py")
         self.assertEqual(
-            captured["text"].strip(),
+            captured["text"].text().strip(),
             "Proceed with the task described in your instructions.",
         )
 
@@ -113,8 +115,8 @@ class TestTuiCommands(unittest.TestCase):
 
         with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
             tui._handle_slash("/review")
-        self.assertIn("NEW /review request", captured["text"])
-        self.assertNotIn("NEW /review request:", captured["text"])
+        self.assertIn("NEW /review request", captured["text"].text())
+        self.assertNotIn("NEW /review request:", captured["text"].text())
 
     def test_slash_command_project_borrowed_and_restored(self):
         """A project given to a slash command borrows the session's
@@ -141,7 +143,7 @@ class TestTuiCommands(unittest.TestCase):
 
         with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
             tui._handle_slash("/init")
-        self.assertIn("/tmp/fakeproj", captured["text"])
+        self.assertIn("/tmp/fakeproj", captured["text"].text())
         self.assertIsNone(captured["restore"])
 
     def test_slash_init_hides_planexit_in_plan_mode(self):
