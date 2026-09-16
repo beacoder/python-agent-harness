@@ -1,7 +1,6 @@
 """python-agent-harness: a Python port of the gptel-agent-harness."""
 
 from .client import Client, LLMClient
-from .config import ModelInfo
 from .lsp.config import LSPConfig, LSPServerConfig
 from .mcp.config import MCPConfig, MCPServerConfig
 from .mcp.manager import MCPManager
@@ -20,7 +19,6 @@ __all__ = [
     "MCPConfig",
     "MCPManager",
     "MCPServerConfig",
-    "ModelInfo",
     "Message",
     "TextPart",
     "ImagePart",
