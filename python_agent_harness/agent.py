@@ -463,12 +463,14 @@ class AgentLoop:
                 max_tokens = session.max_tokens
                 reasoning_effort = session.reasoning_effort
                 stream = session.stream
+                supports_image_input = session.supports_image_input
             else:
                 client = self._client or session.subagent_client
                 temperature = session.subagent_temperature
                 max_tokens = session.subagent_max_tokens
                 reasoning_effort = session.subagent_reasoning_effort
                 stream = session.subagent_stream
+                supports_image_input = session.subagent_supports_image_input
             assistant, usage = client.chat(
                 self.messages,
                 tools=tools if session.tools_enabled else None,
@@ -477,6 +479,7 @@ class AgentLoop:
                 max_tokens=max_tokens,
                 reasoning_effort=reasoning_effort,
                 stream=stream,
+                supports_image_input=supports_image_input,
                 # sub-agents must not stream into the parent's live
                 # stream row — their text is private until returned
                 on_delta=(safe_delta if self.top_level else None),
