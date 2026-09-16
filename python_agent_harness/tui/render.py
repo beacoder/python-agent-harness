@@ -22,6 +22,7 @@ from rich.text import Text
 
 from .. import config
 from ..diffrender import render_diff
+from ..models import ImagePart
 from ..prompts import _is_mode_reminder_text
 
 if TYPE_CHECKING:
@@ -121,6 +122,22 @@ def _is_injected_user_text(text: str) -> bool:
     if text == config.NUDGE_MESSAGE:
         return True
     return _is_mode_reminder_text(text)
+
+
+def _image_indicator(msg: Any) -> str:
+    """A short ``[📎 N image(s)]`` suffix for user messages with images.
+
+    ``Message.text()`` skips ``ImagePart`` objects, so without this the
+    conversation panel gives no visual cue that an image was attached.
+    """
+    content = getattr(msg, "content", None)
+    if not isinstance(content, list):
+        return ""
+    count = sum(1 for p in content if isinstance(p, ImagePart))
+    if not count:
+        return ""
+    noun = "image" if count == 1 else "images"
+    return f" [📎 {count} {noun}]"
 
 
 def _strip_final_check(text: str) -> str:
@@ -252,8 +269,9 @@ class RenderMixin:
                 if m.injected or _is_injected_user_text(m.text()):
                     continue
                 body = m.text() if full else _tail_lines(m.text(), 12)
-                if body.strip():
-                    rows.append(Markdown(f"**user:** {body}", style=USER_STYLE))
+                indicator = _image_indicator(m)
+                if body.strip() or indicator:
+                    rows.append(Markdown(f"**user:** {body.strip()}{indicator}", style=USER_STYLE))
             elif m.role == "assistant":
                 body = m.text()
                 collapsed_reasoning = False
