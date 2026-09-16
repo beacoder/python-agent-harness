@@ -74,7 +74,6 @@ class RecClient:
 
 AGENT_CALL = json.dumps(
     {
-        "subagent_type": "subagent",
         "description": "explore",
         "prompt": "find stuff",
     }
@@ -254,7 +253,7 @@ class TestSubagentIsolation(unittest.TestCase):
                 "build-switch": "B",
             },
         )
-        result = s.run_subagent("subagent", "explore", "find stuff")
+        result = s.run_subagent("explore", "find stuff")
         self.assertIn("sub done", result)
         payloads = client.sent
         self.assertTrue(payloads)
@@ -316,7 +315,7 @@ class TestSubagentIsolation(unittest.TestCase):
         structurally different, so its usage would skew the parent's
         compaction decisions."""
         s = make_session(RecClient([]))
-        s.run_subagent("subagent", "explore", "find stuff")
+        s.run_subagent("explore", "find stuff")
         self.assertIsNone(s.context_ratio)
         self.assertEqual(s.calibrator.factor, 1.0)
         self.assertIsNone(s.calibrator.last_raw_estimate)

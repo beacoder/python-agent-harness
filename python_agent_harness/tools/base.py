@@ -91,7 +91,7 @@ class ToolRuntime(Protocol):
 
     def find_skill(self, name: str) -> str | None: ...
 
-    def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str: ...
+    def run_subagent(self, description: str, prompt: str) -> str: ...
 
     def plan_exit(self) -> str: ...
 
@@ -130,9 +130,9 @@ class ToolContext:
             return self.session.find_skill(name)
         return None
 
-    def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str:
+    def run_subagent(self, description: str, prompt: str) -> str:
         if self.session:
-            return self.session.run_subagent(subagent_type, description, prompt)
+            return self.session.run_subagent(description, prompt)
         return f"Error: Task {description!r} returned an unexpected response — no session"
 
     def plan_exit(self) -> str:

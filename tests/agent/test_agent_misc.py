@@ -148,7 +148,7 @@ class TestBashAsync(unittest.TestCase):
             def find_skill(self, name: str) -> str | None:
                 return None
 
-            def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str:
+            def run_subagent(self, description: str, prompt: str) -> str:
                 return f"ran {description}"
 
             def plan_exit(self) -> str:

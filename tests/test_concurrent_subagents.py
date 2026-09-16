@@ -205,7 +205,7 @@ class TestConcurrentSubagents(unittest.TestCase):
         prompt = f"BEHAVIOR:{behavior} ID:{sid} HOLD:{hold} N:{n}"
         t = threading.Thread(
             target=lambda: self.results.__setitem__(
-                sid, self.session.run_subagent("subagent", f"desc-{sid}", prompt)
+                sid, self.session.run_subagent(f"desc-{sid}", prompt)
             ),
             daemon=True,
         )

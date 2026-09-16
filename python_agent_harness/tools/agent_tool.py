@@ -70,9 +70,6 @@ INSTRUCTIONS = """\
 - Verify subagent file modifications by reading key files if the change is complex or safety-critical
 - If a subagent returns an error or incomplete result, retry with refined instructions
 
-**Available agent types:**
-`subagent`: Autonomous subagent for well-defined, multi-step tasks. Can read, write, and modify files. Use when you know what needs to be done but want to keep the main context clean.
-
 **Examples of good prompts:**
 - "Search for all files under src/auth/ that import SessionManager. Read each file and summarize how session expiry is handled."
 - "Create unit tests for src/utils/parser.ts. Follow the test patterns in src/utils/__tests__/formatter.test.ts. Use vitest as the test framework."
@@ -82,14 +79,10 @@ INSTRUCTIONS = """\
 PARAMETERS = {
     "type": "object",
     "properties": {
-        "subagent_type": {
-            "type": "string",
-            "description": "Type of sub-agent: 'subagent' or 'gptel-opencode-agent'",
-        },
         "description": {"type": "string", "description": "Short 3-5 word description of the task"},
         "prompt": {"type": "string", "description": "The detailed task for the sub-agent"},
     },
-    "required": ["subagent_type", "description", "prompt"],
+    "required": ["description", "prompt"],
 }
 
 
@@ -102,7 +95,6 @@ class AgentTool(Tool):
     def run(self, args: dict, ctx: ToolContext) -> str | PendingToolResult:
         prompt = args.get("prompt", "")
         description = args.get("description", "task")
-        subagent_type = args.get("subagent_type", "subagent")
         if not prompt:
             return "Error: prompt must not be empty"
 
@@ -112,7 +104,7 @@ class AgentTool(Tool):
             # containment boundary: a sub-agent failure becomes an error
             # string for the parent, never a crash in the delivery thread
             try:
-                result = ctx.run_subagent(subagent_type, description, prompt)
+                result = ctx.run_subagent(description, prompt)
             except Exception as e:  # noqa: BLE001 - error string for the parent
                 result = f"Error: Task {description!r} failed — {e}"
             pending.deliver(result)

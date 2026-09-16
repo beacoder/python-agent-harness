@@ -283,7 +283,6 @@ def agent_call(call_id, description, prompt="do it"):
         name="Agent",
         arguments=json.dumps(
             {
-                "subagent_type": "subagent",
                 "description": description,
                 "prompt": prompt,
             }

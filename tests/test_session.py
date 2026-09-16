@@ -420,7 +420,7 @@ class TestSubagentDedicatedClient(unittest.TestCase):
 
         with mock.patch("python_agent_harness.session.run_subagent", side_effect=fake_run_subagent):
             threads = [
-                threading.Thread(target=lambda i=i: session.run_subagent("subagent", f"t{i}", "p"))
+                threading.Thread(target=lambda i=i: session.run_subagent(f"t{i}", "p"))
                 for i in range(n)
             ]
             for t in threads:
@@ -481,7 +481,7 @@ class TestSubagentDedicatedClient(unittest.TestCase):
             with mock.patch(
                 "python_agent_harness.session.run_subagent", side_effect=fake_run_subagent
             ):
-                t = threading.Thread(target=lambda: session.run_subagent("subagent", "t0", "p"))
+                t = threading.Thread(target=lambda: session.run_subagent("t0", "p"))
                 t.start()
                 self.assertTrue(entered.wait(timeout=5))
                 clone = seen[0]
@@ -526,7 +526,7 @@ class TestSubagentDedicatedClient(unittest.TestCase):
             with mock.patch(
                 "python_agent_harness.session.run_subagent", side_effect=fake_run_subagent
             ):
-                t = threading.Thread(target=lambda: session.run_subagent("subagent", "t0", "p"))
+                t = threading.Thread(target=lambda: session.run_subagent("t0", "p"))
                 t.start()
                 self.assertTrue(entered.wait(timeout=5))
                 clone = seen[0]
@@ -555,7 +555,7 @@ class TestSubagentDedicatedClient(unittest.TestCase):
             return "done"
 
         with mock.patch("python_agent_harness.session.run_subagent", side_effect=fake_run_subagent):
-            result = session.run_subagent("subagent", "t0", "p")
+            result = session.run_subagent("t0", "p")
         self.assertEqual(result, "done")
         self.assertIs(seen[0], stub)
         self.assertEqual(session._active_subagent_clients, [])

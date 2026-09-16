@@ -51,7 +51,7 @@ class FakeSession:
     def find_skill(self, name: str) -> str | None:
         return None
 
-    def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str:
+    def run_subagent(self, description: str, prompt: str) -> str:
         return f"ran {description}"
 
     def plan_exit(self) -> str:
@@ -100,7 +100,7 @@ class TestToolContext(unittest.TestCase):
         self.assertIsNone(ToolContext().find_skill("x"))
 
     def test_run_subagent_defaults_to_error(self):
-        out = ToolContext().run_subagent("subagent", "do it", "p")
+        out = ToolContext().run_subagent("do it", "p")
         self.assertIn("no session", out)
         self.assertIn("do it", out)
 
@@ -269,9 +269,9 @@ class TestAgentTool(unittest.TestCase):
 
     def test_run_subagent_delivers_result(self):
         sess = FakeSession()
-        sess.run_subagent = lambda t, d, p: f"result for {d}"
+        sess.run_subagent = lambda d, p: f"result for {d}"
         result = AgentTool().run(
-            {"subagent_type": "subagent", "description": "do it", "prompt": "work"},
+            {"description": "do it", "prompt": "work"},
             ToolContext(sess),
         )
         self.assertIsInstance(result, PendingToolResult)
@@ -282,7 +282,7 @@ class TestAgentTool(unittest.TestCase):
         self.assertIn("unexpected response — no session", result.wait())
 
     def test_agent_tool_contained_subagent_exception(self):
-        def boom(t, d, p):
+        def boom(d, p):
             raise RuntimeError("subagent crashed")
 
         sess = FakeSession()

@@ -484,7 +484,7 @@ class Session:
     def _find_skill_dir(self) -> str | None:
         return find_skill_dir(self.project_dir, self._configured_skill_path)
 
-    def run_subagent(self, subagent_type: str, description: str, prompt: str) -> str:
+    def run_subagent(self, description: str, prompt: str) -> str:
         """Run a delegated sub-agent task.
 
         The sub-agent has no TodoWrite (parent-only), so it can never
