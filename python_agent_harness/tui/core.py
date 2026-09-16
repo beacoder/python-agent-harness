@@ -281,12 +281,17 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         # ImagePart attachments, text files become TextPart attachments.
         # The @path token is stripped from the text (the content lives
         # in the attachment), and validation errors are shown to the user.
+        has_images = False
         if isinstance(text, Message):
             user_msg = text
             cleaned_text = text.text()
             attachments: list[Any] = []
             errors: list[Any] = []
             display_text = cleaned_text.strip() or "(attachment)"
+            has_images = (
+                isinstance(text.content, list)
+                and any(isinstance(p, ImagePart) for p in text.content)
+            )
         else:
             cleaned_text, attachments, errors = parse_at_references(
                 text, str(self.session.project_dir)
@@ -327,7 +332,10 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         # will be silently stripped before the request is sent (see
         # Client._payload), so the user should know the image never
         # reaches the model.
-        if attachments and any(isinstance(a.part, ImagePart) for a in attachments):
+        has_image_parts = has_images or (
+            attachments and any(isinstance(a.part, ImagePart) for a in attachments)
+        )
+        if has_image_parts:
             from ..config import get_model_info
 
             # A malformed image_input_models config must not break the
