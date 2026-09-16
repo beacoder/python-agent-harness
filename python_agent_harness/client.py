@@ -25,7 +25,7 @@ from typing import Any, Protocol, runtime_checkable
 import httpx
 
 from . import config
-from .models import Message, ToolCall, ToolSpec, Usage
+from .models import ImagePart, Message, TextPart, ToolCall, ToolSpec, Usage
 
 
 @runtime_checkable
@@ -297,6 +297,73 @@ def _httpx_verify(verify: str | bool) -> ssl.SSLContext | bool:
     return verify
 
 
+def _strip_image_parts(msg: Message) -> Message:
+    """Remove image content from a message for text-only models.
+
+    Used when the target model does not support image input: the API
+    would reject the request, so image parts are silently dropped and
+    only text parts are kept.  Returns a shallow copy; the original
+    message is not mutated.
+
+    Handles both ``ImagePart`` objects and raw dict parts shaped like
+    OpenAI's multimodal content (``{"type": "image_url", ...}``), which
+    can arrive from callers that build content dicts directly.
+    """
+    if not isinstance(msg.content, list):
+        return msg
+
+    def _is_image(p: Any) -> bool:
+        return isinstance(p, ImagePart) or (isinstance(p, dict) and p.get("type") == "image_url")
+
+    filtered = [p for p in msg.content if not _is_image(p)]
+    dropped = len(msg.content) - len(filtered)
+    if dropped == 0:
+        return msg
+    # If only text parts remain (or none), collapse to a plain string
+    # for text-only models (avoids sending a list with a single text
+    # part when the model expects a string).  Dict text parts
+    # ({"type": "text", "text": ...}) collapse too.
+    if all(
+        isinstance(p, (str, TextPart)) or (isinstance(p, dict) and p.get("type") == "text")
+        for p in filtered
+    ):
+        text_parts: list[str] = []
+        for p in filtered:
+            if isinstance(p, TextPart):
+                text_parts.append(p.text)
+            elif isinstance(p, dict):
+                text_parts.append(str(p.get("text", "")))
+            elif isinstance(p, str):
+                text_parts.append(p)
+        text = "".join(text_parts)
+        # An image-only message (no accompanying text) would collapse to
+        # an empty string, which some OpenAI-compatible backends reject
+        # or treat as a confusing blank turn.  Substitute a short
+        # placeholder so the turn still carries meaningful content and
+        # the model knows an image was present but could not be shown.
+        if not text.strip():
+            noun = "image" if dropped == 1 else "images"
+            text = f"[{dropped} {noun} omitted: model does not support image input]"
+        return Message(
+            role=msg.role,
+            content=text,
+            tool_calls=msg.tool_calls,
+            tool_call_id=msg.tool_call_id,
+            reasoning=msg.reasoning,
+            name=msg.name,
+            injected=msg.injected,
+        )
+    return Message(
+        role=msg.role,
+        content=filtered,
+        tool_calls=msg.tool_calls,
+        tool_call_id=msg.tool_call_id,
+        reasoning=msg.reasoning,
+        name=msg.name,
+        injected=msg.injected,
+    )
+
+
 class Client:
     def __init__(
         self,
@@ -493,6 +560,19 @@ class Client:
         system: str | None = None,
         reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
+        # Check if the current model supports image input; if not,
+        # strip ImagePart from message content to avoid API errors.
+        # A malformed image_input_models config section must not break
+        # the request path: fall back to the built-in table (via a
+        # None config_path), matching the defensive context_window
+        # property above; the loader stays strict for explicit
+        # config-validation contexts (e.g. session startup).
+        try:
+            model_info = config.get_model_info(self.model, config_path=self._config_path)
+        except Exception:  # noqa: BLE001 - config error must not break a request
+            model_info = config.get_model_info(self.model)
+        if not model_info.supports_image_input:
+            messages = [_strip_image_parts(m) for m in messages]
         msgs = [m.to_api() for m in messages]
         if system:
             msgs = [{"role": "system", "content": system}] + msgs
