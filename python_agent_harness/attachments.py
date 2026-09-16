@@ -158,43 +158,6 @@ def image_placeholder(count: int, paths: list[str] | None = None) -> str:
     return f"[{count} image attachment(s){loc} — not available in restored session]"
 
 
-# Visual marker inserted into the input buffer when a clipboard image is
-# captured on paste.  The image itself is tracked out-of-band (not via an
-# @path token), so this marker is purely cosmetic and is stripped from
-# the text before the message is built.  Kept here so the producer (TUI
-# paste handler) and consumer (submit path) agree on one format.
-def clipboard_image_marker(path: str) -> str:
-    """The buffer marker for a pasted clipboard image at PATH."""
-    return f"[image #{os.path.basename(path)}] "
-
-
-def strip_clipboard_markers(text: str, paths: list[str]) -> str:
-    """Remove the clipboard-image markers for PATHS from TEXT.
-
-    Only the exact marker strings for the given pending paths are
-    removed (one occurrence per path), so text a user literally typed
-    that merely resembles a marker (e.g. ``data[image #2]`` in prose) is
-    never touched.  Markers are stripped in path order; a trailing space
-    left dangling by the removal is not collapsed (the surrounding text
-    is otherwise preserved verbatim).
-    """
-    for path in paths:
-        marker = clipboard_image_marker(path)
-        idx = text.find(marker)
-        if idx != -1:
-            text = text[:idx] + text[idx + len(marker) :]
-    return text
-
-
-def load_clipboard_image(path: str) -> ParsedAttachment | AttachmentError:
-    """Validate a captured clipboard image PATH into a ``ParsedAttachment``.
-
-    Reuses the same validation as ``@file`` images (existence, size cap,
-    image signature) so a pasted image is held to the same standard.
-    """
-    return _validate_and_create(path, os.path.basename(path))
-
-
 @dataclass
 class AttachmentError:
     """A validation error for a file attachment."""

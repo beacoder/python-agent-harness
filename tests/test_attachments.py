@@ -516,7 +516,7 @@ class TestSessionPersistenceMultimodal(unittest.TestCase):
         self.assertIn("image attachment", text)
 
     def test_image_without_path_placeholder_has_no_location(self):
-        """An image with no path (clipboard etc.) gets a bare placeholder."""
+        """An image with no path (e.g. a URL image) gets a bare placeholder."""
         from python_agent_harness.session import Session
 
         messages = [
@@ -641,82 +641,6 @@ class TestRestoreReattach(unittest.TestCase):
         new_text, parts = reattach_images(text)
         self.assertEqual(len(parts), 1)
         self.assertIn("re-attached on restore", new_text)
-
-
-class TestClipboardImageHelpers(unittest.TestCase):
-    def test_marker_and_strip_roundtrip(self):
-        from python_agent_harness.attachments import (
-            clipboard_image_marker,
-            strip_clipboard_markers,
-        )
-
-        marker = clipboard_image_marker("/tmp/my dir/clip-abc.png")
-        # marker uses the basename only and is not an @token
-        self.assertEqual(marker, "[image #clip-abc.png] ")
-        self.assertNotIn("@", marker)
-        paths = ["/tmp/my dir/clip-abc.png", "/x/y.png"]
-        text = f"look at {marker}and here {clipboard_image_marker('/x/y.png')}please"
-        self.assertEqual(strip_clipboard_markers(text, paths), "look at and here please")
-
-    def test_strip_no_marker_unchanged(self):
-        from python_agent_harness.attachments import strip_clipboard_markers
-
-        self.assertEqual(strip_clipboard_markers("no markers here", []), "no markers here")
-
-    def test_strip_only_removes_markers_for_pending_paths(self):
-        """Text a user literally typed that resembles a marker must be
-        left intact when it is not for a pending path."""
-        from python_agent_harness.attachments import strip_clipboard_markers
-
-        # prose that looks marker-ish, no pending paths -> untouched
-        self.assertEqual(
-            strip_clipboard_markers("the array is data[image #2] here", []),
-            "the array is data[image #2] here",
-        )
-        # a typed literal marker whose basename doesn't match a pending
-        # path is NOT stripped
-        self.assertEqual(
-            strip_clipboard_markers("look at [image #foo.png] please", ["/tmp/clip-real.png"]),
-            "look at [image #foo.png] please",
-        )
-        # only the pending path's exact marker is removed
-        self.assertEqual(
-            strip_clipboard_markers(
-                "a [image #foo.png] b [image #clip-real.png] c", ["/tmp/clip-real.png"]
-            ),
-            "a [image #foo.png] b c",
-        )
-
-    def test_load_clipboard_image_valid_png_with_spaces_in_path(self):
-        """M1 regression: a temp path containing spaces must load fine
-        (it is validated directly, not routed through the @file parser)."""
-        from python_agent_harness.attachments import ParsedAttachment, load_clipboard_image
-        from python_agent_harness.models import ImagePart
-
-        with tempfile.TemporaryDirectory(prefix="my dir ") as d:
-            p = os.path.join(d, "python-agent-harness-clip-x.png")
-            with open(p, "wb") as f:
-                f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
-            result = load_clipboard_image(p)
-            self.assertIsInstance(result, ParsedAttachment)
-            assert isinstance(result, ParsedAttachment)
-            self.assertIsInstance(result.part, ImagePart)
-
-    def test_load_clipboard_image_rejects_non_image(self):
-        from python_agent_harness.attachments import AttachmentError, load_clipboard_image
-
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "fake.png")
-            with open(p, "wb") as f:
-                f.write(b"not a png")
-            result = load_clipboard_image(p)
-            self.assertIsInstance(result, AttachmentError)
-
-    def test_load_clipboard_image_missing_file(self):
-        from python_agent_harness.attachments import AttachmentError, load_clipboard_image
-
-        result = load_clipboard_image("/no/such/clip.png")
-        self.assertIsInstance(result, AttachmentError)
 
 
 if __name__ == "__main__":

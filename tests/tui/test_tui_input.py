@@ -340,180 +340,19 @@ class TestTuiInput(unittest.TestCase):
         self.assertIn("dim", styles)
 
 
-class _FakeBuffer:
-    def __init__(self):
-        self.text = ""
+class TestPasteFallsBackToDefault(unittest.TestCase):
+    """The custom BracketedPaste binding was removed along with the
+    clipboard-image feature; pasting is handled by prompt_toolkit's
+    default handler (inserts text with normalised line endings)."""
 
-    def insert_text(self, s):
-        self.text += s
+    def test_no_custom_bracketed_paste_binding(self):
+        from prompt_toolkit.keys import Keys
 
+        from python_agent_harness.tui import _make_key_bindings
 
-class _FakeEvent:
-    def __init__(self, data, buffer):
-        self.data = data
-        self.current_buffer = buffer
-
-
-def _paste_handler(on_image_paste=None):
-    from prompt_toolkit.keys import Keys
-
-    from python_agent_harness.tui.input import _make_key_bindings
-
-    kb = _make_key_bindings(on_image_paste)
-    for b in kb.bindings:
-        if Keys.BracketedPaste in b.keys:
-            return b.handler
-    raise AssertionError("no BracketedPaste binding found")
-
-
-class TestPasteBinding(unittest.TestCase):
-    """The BracketedPaste binding hands a captured clipboard image to the
-    on_image_paste callback and inserts a marker; a text paste inserts
-    the text."""
-
-    def test_image_paste_calls_callback_and_inserts_marker(self):
-        handler = _paste_handler()
-        buf = _FakeBuffer()
-        captured = []
-        handler = _paste_handler(on_image_paste=captured.append)
-        with mock.patch(
-            "python_agent_harness.clipboard.grab_clipboard_image",
-            return_value="/tmp/my dir/clip-abc.png",
-        ) as grab:
-            handler(_FakeEvent(data="", buffer=buf))
-        grab.assert_called_once()
-        # the FULL path (even with a space) is handed to the callback,
-        # NOT routed through the whitespace-sensitive @file parser
-        self.assertEqual(captured, ["/tmp/my dir/clip-abc.png"])
-        # a cosmetic, non-@ marker is inserted (basename only)
-        self.assertEqual(buf.text, "[image #clip-abc.png] ")
-        self.assertNotIn("@", buf.text)
-
-    def test_image_paste_without_callback_falls_back_to_text(self):
-        """No callback wired (e.g. in a headless context) -> the paste
-        is treated as text, never routed as an image."""
-        handler = _paste_handler(on_image_paste=None)
-        buf = _FakeBuffer()
-        with mock.patch("python_agent_harness.clipboard.grab_clipboard_image") as grab:
-            handler(_FakeEvent(data="", buffer=buf))
-        grab.assert_not_called()
-        self.assertEqual(buf.text, "")
-
-    def test_text_paste_inserts_text_without_clipboard_check(self):
-        buf = _FakeBuffer()
-        handler = _paste_handler(on_image_paste=lambda p: None)
-        # non-empty text paste must NOT spawn a clipboard subprocess
-        with mock.patch("python_agent_harness.clipboard.grab_clipboard_image") as grab:
-            handler(_FakeEvent(data="hello world", buffer=buf))
-        grab.assert_not_called()
-        self.assertEqual(buf.text, "hello world")
-
-    def test_text_paste_normalises_newlines(self):
-        buf = _FakeBuffer()
-        handler = _paste_handler(on_image_paste=lambda p: None)
-        with mock.patch("python_agent_harness.clipboard.grab_clipboard_image"):
-            handler(_FakeEvent(data="a\r\nb\rc", buffer=buf))
-        self.assertEqual(buf.text, "a\nb\nc")
-
-    def test_empty_paste_no_image_inserts_nothing(self):
-        buf = _FakeBuffer()
-        handler = _paste_handler(on_image_paste=lambda p: None)
-        with mock.patch("python_agent_harness.clipboard.grab_clipboard_image", return_value=None):
-            handler(_FakeEvent(data="", buffer=buf))
-        self.assertEqual(buf.text, "")
-
-    def test_capture_failure_falls_back_to_text(self):
-        """A clipboard-capture exception must never break paste; the
-        pasted text is inserted instead."""
-        buf = _FakeBuffer()
-        handler = _paste_handler(on_image_paste=lambda p: None)
-        with mock.patch(
-            "python_agent_harness.clipboard.grab_clipboard_image",
-            side_effect=RuntimeError("boom"),
-        ):
-            handler(_FakeEvent(data="", buffer=buf))
-        # empty data + failed capture -> empty buffer, no crash
-        self.assertEqual(buf.text, "")
-
-
-class TestDrainClipboardImages(unittest.TestCase):
-    """Tui._drain_clipboard_images validates pending pasted images and
-    strips their markers from the text."""
-
-    def _make_png(self, d, name):
-        p = os.path.join(d, name)
-        with open(p, "wb") as f:
-            f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
-        return p
-
-    def test_capture_callback_survives_multiple_submits(self):
-        """Regression: the paste callback appends to the SAME list the
-        drain reads across cycles.  A naive reassign-to-clear orphans the
-        callback so only the first paste ever attaches — this guards it.
-
-        Simulates the real wiring: the callback captured at __init__ is
-        ``_pending_clipboard_images.append``; the drain must clear the
-        list IN PLACE, not rebind it.
-        """
-        tui, _buf = make_tui()
-        from python_agent_harness.attachments import clipboard_image_marker
-
-        # the callback as wired in Tui.__init__
-        on_image_paste = tui._pending_clipboard_images.append
-
-        with tempfile.TemporaryDirectory() as d:
-            p1 = self._make_png(d, "clip-1.png")
-            p2 = self._make_png(d, "clip-2.png")
-
-            # ---- first paste + submit ----
-            on_image_paste(p1)
-            atts1, _ = tui._drain_clipboard_images(clipboard_image_marker(p1))
-            self.assertEqual(len(atts1), 1)
-
-            # ---- second paste (after a drain) + submit ----
-            on_image_paste(p2)
-            atts2, _ = tui._drain_clipboard_images(clipboard_image_marker(p2))
-            # the bug dropped this to 0; must be 1
-            self.assertEqual(len(atts2), 1)
-
-    def test_drain_attaches_valid_image_with_spaces_in_path(self):
-        """M1 end-to-end: a captured temp path with spaces attaches
-        correctly and its marker is stripped."""
-        tui, _buf = make_tui()
-        with tempfile.TemporaryDirectory(prefix="my dir ") as d:
-            p = os.path.join(d, "python-agent-harness-clip-x.png")
-            with open(p, "wb") as f:
-                f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
-            tui._pending_clipboard_images.append(p)
-            from python_agent_harness.attachments import clipboard_image_marker
-            from python_agent_harness.models import ImagePart
-
-            text = f"describe {clipboard_image_marker(p)}please"
-            atts, cleaned = tui._drain_clipboard_images(text)
-        self.assertEqual(cleaned, "describe please")
-        self.assertEqual(len(atts), 1)
-        self.assertIsInstance(atts[0].part, ImagePart)
-        # pending list is always drained
-        self.assertEqual(tui._pending_clipboard_images, [])
-
-    def test_drain_reports_and_drops_invalid_image(self):
-        tui, _buf = make_tui()
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "bad.png")
-            with open(p, "wb") as f:
-                f.write(b"not an image")
-            tui._pending_clipboard_images.append(p)
-            atts, cleaned = tui._drain_clipboard_images("hi")
-        self.assertEqual(atts, [])
-        self.assertEqual(cleaned, "hi")
-        self.assertEqual(tui._pending_clipboard_images, [])
-
-    def test_drain_no_pending_is_noop(self):
-        tui, _buf = make_tui()
-        self.assertEqual(tui._pending_clipboard_images, [])
-        atts, cleaned = tui._drain_clipboard_images("just text")
-        self.assertEqual(atts, [])
-        self.assertEqual(cleaned, "just text")
+        kb = _make_key_bindings()
+        for b in kb.bindings:
+            self.assertNotIn(Keys.BracketedPaste, b.keys)
 
 
 if __name__ == "__main__":

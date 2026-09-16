@@ -24,13 +24,7 @@ from rich.text import Text
 
 from .. import config
 from ..agent import run_agent_loop
-from ..attachments import (
-    AttachmentError,
-    ParsedAttachment,
-    load_clipboard_image,
-    parse_at_references,
-    strip_clipboard_markers,
-)
+from ..attachments import parse_at_references
 from ..models import ImagePart, Message, TextPart
 from ..session import Session
 from .commands import CommandMixin
@@ -84,16 +78,9 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         # prompts/agents/ directory; refreshed on each /agent call so files
         # added at runtime are picked up.
         self._discovered_agents: dict[str, str] = {}
-        # Clipboard images captured on paste, pending until the next
-        # submit.  The paste handler appends the temp-file path here
-        # (out-of-band, not via an @path text token, so a temp path with
-        # spaces isn't truncated by the @file parser); _submit_text
-        # drains and attaches them.
-        self._pending_clipboard_images: list[str] = []
         self.prompt_session = _make_prompt_session(
             FileHistory(_history_path()),
             SlashCompleter(lambda: str(self.session.project_dir)),
-            on_image_paste=self._pending_clipboard_images.append,
         )
 
         session.on_delta = self._on_delta
@@ -221,13 +208,6 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
                 if not text.strip():
                     continue
                 if text.startswith("/"):
-                    # A slash command isn't a normal submit: discard any
-                    # clipboard images captured on paste so they don't
-                    # silently attach to a later message.  Cleared in
-                    # place (not reassigned) so the paste callback bound
-                    # to this list keeps targeting it.  Files remain
-                    # tracked for cleanup on session close.
-                    self._pending_clipboard_images.clear()
                     if self._handle_slash(text):
                         break
                     continue
@@ -235,31 +215,6 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             except KeyboardInterrupt:
                 # stray Ctrl-C outside input/execution: stay in the app
                 self.console.print("[dim]cancelled — Ctrl-D or /exit to quit[/dim]")
-
-    def _drain_clipboard_images(self, text: str) -> tuple[list[ParsedAttachment], str]:
-        """Consume clipboard images captured on paste since the last submit.
-
-        Returns ``(attachments, cleaned_text)``: each pending temp-file
-        path is validated (same checks as ``@file`` images) into a
-        ``ParsedAttachment``; validation errors are shown to the user and
-        dropped.  Only the markers for the *actually pending* paths are
-        stripped (so text a user literally typed that resembles a marker
-        is left intact).  The pending list is cleared in place — never
-        reassigned — so the paste callback bound to it keeps working.
-        """
-        pending = list(self._pending_clipboard_images)
-        self._pending_clipboard_images.clear()
-        if not pending:
-            return [], text
-        cleaned = strip_clipboard_markers(text, pending)
-        atts: list[ParsedAttachment] = []
-        for path in pending:
-            result = load_clipboard_image(path)
-            if isinstance(result, AttachmentError):
-                self.console.print(f"[red]clipboard image: {result.message}[/red]")
-                continue
-            atts.append(result)
-        return atts, cleaned
 
     def _start_agent(
         self,
@@ -297,13 +252,6 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             )
             for err in errors:
                 self.console.print(f"[red]@{err.path}: {err.message}[/red]")
-
-            # Drain clipboard images captured on paste since the last
-            # submit and append them as attachments.  They are validated
-            # through the same path as @file images (size, PNG signature)
-            # and their "[image #...]" markers are stripped from the text.
-            clip_atts, cleaned_text = self._drain_clipboard_images(cleaned_text)
-            attachments = attachments + clip_atts
 
             if errors and not attachments and not cleaned_text.strip():
                 # All references failed and nothing else to send

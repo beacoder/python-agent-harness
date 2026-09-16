@@ -40,7 +40,7 @@ class ImagePart:
     from.  It is metadata only — never sent to the API — and lets
     session persistence record where the image came from so a restored
     session can re-attach it.  Images that did not originate from a
-    path (clipboard, drag-drop, URLs) leave it None.
+    path (drag-drop, URLs) leave it None.
     """
 
     data: bytes | None = None

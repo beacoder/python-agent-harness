@@ -16,7 +16,6 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.keys import Keys
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.text import Text
@@ -79,20 +78,13 @@ def _history_path() -> str:
     return str(d / "input_history")
 
 
-def _make_key_bindings(on_image_paste: Callable[[str], None] | None = None) -> KeyBindings:
+def _make_key_bindings() -> KeyBindings:
     """Esc+Enter (or Alt+Enter) submits; plain Enter inserts a newline.
 
     Tab triggers completion explicitly (first Tab inserts the common
     part / opens the menu, further Tabs cycle), Shift+Tab cycles
     backwards — prompt_toolkit's defaults don't reliably bind Tab in
     every mode/version.
-
-    ``on_image_paste`` (when given) is called with the temp-file path of
-    a clipboard image captured on paste; the TUI records it as a pending
-    attachment and a human-readable marker is inserted into the buffer.
-    Passing the path via the callback (not an ``@path`` text token)
-    avoids the whitespace-delimited ``@file`` parser truncating a temp
-    path that contains spaces (e.g. macOS ``/var/folders/.../T/``).
     """
     kb = KeyBindings()
 
@@ -116,56 +108,12 @@ def _make_key_bindings(on_image_paste: Callable[[str], None] | None = None) -> K
         else:
             b.start_completion(select_first=True)
 
-    @kb.add(Keys.BracketedPaste)
-    def _paste(event: Any) -> None:
-        """Handle a terminal paste.
-
-        A terminal paste delivers text, never image bytes.  So on paste
-        we check the OS clipboard out-of-band: if it holds an image, it
-        is written to a temp file and handed to ``on_image_paste`` (the
-        TUI records it as a pending attachment); a short marker is
-        inserted so the user sees the image was captured.  Otherwise the
-        pasted text is inserted as usual, preserving default paste
-        behavior.
-
-        Image capture is best-effort and must never break paste: any
-        failure falls back to inserting the pasted text.
-        """
-        buffer = event.current_buffer
-        data = event.data or ""
-        # Only inspect the clipboard for an image when the paste carried
-        # no text: an image paste delivers empty/whitespace bracketed
-        # data, while a text paste delivers the text.  This keeps text
-        # pastes (the common case) from spawning a clipboard subprocess.
-        if on_image_paste is not None and not data.strip():
-            try:
-                from ..clipboard import grab_clipboard_image
-
-                path = grab_clipboard_image()
-            except Exception:  # noqa: BLE001 - capture must never break paste
-                path = None
-            if path:
-                on_image_paste(path)
-                # A non-@ marker: the path is tracked out-of-band, so it
-                # need not (and must not) survive the @file parser.  The
-                # trailing space lets the user keep typing a prompt.
-                from ..attachments import clipboard_image_marker
-
-                buffer.insert_text(clipboard_image_marker(path))
-                return
-        # Normal text paste: normalise line endings exactly like
-        # prompt_toolkit's default BracketedPaste handler (some terminals
-        # paste \r\n / \r), which this binding overrides.
-        data = data.replace("\r\n", "\n").replace("\r", "\n")
-        buffer.insert_text(data)
-
     return kb
 
 
 def _make_prompt_session(
     history: FileHistory,
     completer: Completer,
-    on_image_paste: Callable[[str], None] | None = None,
     **kwargs: Any,
 ) -> PromptSession:
     """Create the TUI's input session.
@@ -175,9 +123,6 @@ def _make_prompt_session(
     the completion state just before the Tab-triggered task runs, which
     then bails out without inserting the common part).  Tab must be the
     single, deterministic trigger.
-
-    ``on_image_paste`` is forwarded to the key bindings so a clipboard
-    image captured on paste is recorded as a pending attachment.
 
     ``enable_suspend`` is off on Windows: Ctrl-Z (suspend) is a Unix
     terminal feature with no Windows equivalent.
@@ -192,7 +137,7 @@ def _make_prompt_session(
     try:
         return PromptSession(
             history=history,
-            key_bindings=_make_key_bindings(on_image_paste),
+            key_bindings=_make_key_bindings(),
             completer=completer,
             complete_while_typing=False,
             multiline=True,
@@ -205,7 +150,7 @@ def _make_prompt_session(
 
         return PromptSession(
             history=history,
-            key_bindings=_make_key_bindings(on_image_paste),
+            key_bindings=_make_key_bindings(),
             completer=completer,
             complete_while_typing=False,
             multiline=True,
