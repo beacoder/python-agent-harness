@@ -1997,12 +1997,11 @@ class TestContextWindow(unittest.TestCase):
 
 
 class TestImageInputModelResolution(unittest.TestCase):
-    """_payload consults image_input_models config to decide whether to
-    strip image parts, and a malformed section must not crash the
-    request path (mirrors the defensive context_window property)."""
+    """_payload uses the supports_image_input flag to decide whether to
+    strip image parts."""
 
-    def _client(self, model: str, config_path: str | None = None) -> Client:
-        c = Client(base_url="http://x/v1", api_key="k", model=model, config_path=config_path)
+    def _client(self, model: str = "test-model") -> Client:
+        c = Client(base_url="http://x/v1", api_key="k", model=model)
         self.addCleanup(c.close)
         return c
 
@@ -2011,86 +2010,23 @@ class TestImageInputModelResolution(unittest.TestCase):
 
         return Message(role="user", content=[ImagePart(data=b"\x89PNG", media_type="image/png")])
 
-    def test_config_declared_model_keeps_images(self):
-        """A model listed in image_input_models keeps its image parts."""
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"image_input_models": ["my-vlm"]}', encoding="utf-8")
-            c = self._client("my-vlm-v2", str(p))
-            payload = c._payload([self._img_msg()])
-            content = payload["messages"][0]["content"]
-            self.assertIsInstance(content, list)
-            self.assertEqual(content[0]["type"], "image_url")
+    def test_supports_image_input_keeps_images(self):
+        """When supports_image_input is True, image parts are kept."""
+        c = self._client()
+        payload = c._payload([self._img_msg()], supports_image_input=True)
+        content = payload["messages"][0]["content"]
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0]["type"], "image_url")
 
-    def test_unlisted_model_strips_images(self):
-        """A model not in config nor built-in table strips image parts
-        (image-only content collapses to the placeholder)."""
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"image_input_models": ["my-vlm"]}', encoding="utf-8")
-            c = self._client("some-text-model", str(p))
-            payload = c._payload([self._img_msg()])
-            self.assertEqual(
-                payload["messages"][0]["content"],
-                "[1 image omitted: model does not support image input]",
-            )
-
-    def test_malformed_config_does_not_crash_payload(self):
-        """A broken image_input_models section must not break _payload:
-        it falls back to the built-in table instead of raising."""
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            # object instead of array -> loader raises ValueError
-            p.write_text('{"image_input_models": {"x": 1}}', encoding="utf-8")
-            # gpt-4o is image-capable via the BUILT-IN table, so a
-            # successful fallback keeps its image parts (no crash).
-            c = self._client("gpt-4o", str(p))
-            payload = c._payload([self._img_msg()])
-            content = payload["messages"][0]["content"]
-            self.assertIsInstance(content, list)
-            self.assertEqual(content[0]["type"], "image_url")
-
-    def test_malformed_config_text_model_still_strips(self):
-        """Fallback path for a text-only model still strips images
-        rather than crashing on the malformed config."""
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"image_input_models": [123]}', encoding="utf-8")
-            c = self._client("plain-text-model", str(p))
-            payload = c._payload([self._img_msg()])
-            self.assertEqual(
-                payload["messages"][0]["content"],
-                "[1 image omitted: model does not support image input]",
-            )
-
-    def test_strip_image_parts_handles_raw_dict_parts(self):
-        """_strip_image_parts also drops raw OpenAI-shaped dict parts
-        ({"type": "image_url", ...}) and collapses the remaining text
-        parts to a plain string."""
-        from python_agent_harness.client import _strip_image_parts
-
-        msg = Message(
-            role="user",
-            content=[
-                {"type": "text", "text": "look at "},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}},
-                "this",
-            ],
+    def test_no_support_strips_images(self):
+        """When supports_image_input is False (default), image parts
+        are stripped (image-only content collapses to the placeholder)."""
+        c = self._client()
+        payload = c._payload([self._img_msg()])
+        self.assertEqual(
+            payload["messages"][0]["content"],
+            "[1 image omitted: model does not support image input]",
         )
-        out = _strip_image_parts(msg)
-        self.assertEqual(out.content, "look at this")
-        # the original message is not mutated
-        self.assertEqual(len(msg.content), 3)
-
-    def test_strip_image_parts_dict_only_collapses_to_placeholder(self):
-        from python_agent_harness.client import _strip_image_parts
-
-        msg = Message(
-            role="user",
-            content=[{"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}],
-        )
-        out = _strip_image_parts(msg)
-        self.assertEqual(out.content, "[1 image omitted: model does not support image input]")
 
 
 if __name__ == "__main__":
