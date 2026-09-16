@@ -16,11 +16,12 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from . import config
+from .attachments import image_placeholder
 from .client import Client, LLMClient
 from .diffrender import sanitize_for_display
 from .mcp.config import MCPConfig
 from .mcp.manager import MCPManager
-from .models import AgentMode
+from .models import AgentMode, ImagePart
 from .persistence import SessionPersistence, escape_role_headers
 from .planmode import PlanMode
 from .prompts import RESERVED_AGENT_NAME, _tool_excluded, discover_agents, index_skills
@@ -650,6 +651,18 @@ class Session:
             # escaped: a body line that looks like a `**role**: ` block
             # header would otherwise split the message on restore
             body = escape_role_headers(m.text())
+            # Mark messages that contained image attachments: the image
+            # data itself cannot be persisted in the markdown format, so
+            # a placeholder notes what was attached.  The original file
+            # path (when the image came from a path) is recorded so a
+            # restored session can re-attach it.  On restore, the
+            # placeholder text survives so the user/agent knows an image
+            # was present but is no longer available.
+            if isinstance(m.content, list):
+                image_count = sum(1 for p in m.content if isinstance(p, ImagePart))
+                if image_count:
+                    paths = [p.path for p in m.content if isinstance(p, ImagePart) and p.path]
+                    body = f"{image_placeholder(image_count, paths)}\n{body}"
             if m.role == "assistant" and m.tool_calls:
                 calls = ", ".join(tc.name for tc in m.tool_calls)
                 body = (body + f"\n[tool calls: {calls}]").strip()
