@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
 from tui_test_utils import make_tui
 
-from python_agent_harness.models import Message
+from python_agent_harness.models import ImagePart, Message, TextPart
 from python_agent_harness.tui import UiQuestion
 
 
@@ -565,6 +565,34 @@ class TestTuiRun(unittest.TestCase):
         ):
             tui._start_agent("next task")
         self.assertEqual(tui.session.todos, [])
+
+    def test_start_agent_message_with_image_warns_on_text_only_model(self):
+        """A pre-built Message (slash command path) with an ImagePart must
+        trigger the 'model does not support image input' warning — the
+        string path already did, but the Message path skipped it."""
+        tui, buf = make_tui()
+        msg = Message(
+            role="user",
+            content=[TextPart(text="review this"), ImagePart(data=b"\x89PNG")],
+        )
+        with (
+            mock.patch.object(tui, "_run_agent"),
+            mock.patch.object(tui, "_run_live", return_value=False),
+        ):
+            tui._start_agent(msg)
+        self.assertIn("does not support image input", buf.getvalue())
+
+    def test_start_agent_message_without_image_no_warning(self):
+        """A pre-built Message with no ImagePart must NOT trigger the
+        image warning."""
+        tui, buf = make_tui()
+        msg = Message(role="user", content=[TextPart(text="just text")])
+        with (
+            mock.patch.object(tui, "_run_agent"),
+            mock.patch.object(tui, "_run_live", return_value=False),
+        ):
+            tui._start_agent(msg)
+        self.assertNotIn("does not support image input", buf.getvalue())
 
 
 if __name__ == "__main__":
