@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from python_agent_harness import config
-from python_agent_harness.models import Message
+from python_agent_harness.models import ImagePart, Message, TextPart
 from python_agent_harness.prompts import (
     _SKILLS_FALLBACK,
     _parse_skill_frontmatter,
@@ -441,6 +441,37 @@ class TestUserPromptTexts(unittest.TestCase):
             }
         ]
         self.assertEqual(user_prompt_texts(msgs), ["hello world"])
+
+    def test_image_part_gets_placeholder_note(self):
+        """A multimodal user message must survive compaction with a note
+        that an image was attached — otherwise the model loses all
+        indication the image ever existed."""
+        msgs = [
+            Message(
+                role="user",
+                content=[
+                    TextPart(text="what is this?"),
+                    ImagePart(data=b"\x89PNG", media_type="image/png", path="/tmp/shot.png"),
+                ],
+            ),
+        ]
+        self.assertEqual(
+            user_prompt_texts(msgs),
+            ["what is this?\n[image was attached: /tmp/shot.png]"],
+        )
+
+    def test_image_only_message_dropped(self):
+        """An image-only prompt has no text; the image's content is
+        already captured in the summary, so the prompt is dropped (the
+        existing empty-text guard) rather than kept as a bare note."""
+        msgs = [
+            Message(role="user", content=[ImagePart(data=b"\x89PNG", media_type="image/png")]),
+        ]
+        self.assertEqual(user_prompt_texts(msgs), [])
+
+    def test_no_image_part_no_note(self):
+        msgs = [Message(role="user", content=[TextPart(text="plain text")])]
+        self.assertEqual(user_prompt_texts(msgs), ["plain text"])
 
 
 class TestAssembleToolInstructions(unittest.TestCase):
