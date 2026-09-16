@@ -36,11 +36,11 @@ DESCRIPTION = (
 
 INSTRUCTIONS = """\
 **MANDATORY delegation scenarios (use Agent immediately):**
-- **Searching codebase for code understanding or information gathering** → DELEGATE to `subagent`
-- **Exploring unfamiliar code with uncertain search paths** → DELEGATE to `subagent`
-- **Expected to search 3+ files or get many search results** → DELEGATE to `subagent`
-- **Well-defined multi-step task that will bloat your context** → DELEGATE to `subagent`
-- **Creating/modifying 3+ files with clear requirements** → DELEGATE to `subagent`
+- **Searching codebase for code understanding or information gathering** → DELEGATE to `Agent`
+- **Exploring unfamiliar code with uncertain search paths** → DELEGATE to `Agent`
+- **Expected to search 3+ files or get many search results** → DELEGATE to `Agent`
+- **Well-defined multi-step task that will bloat your context** → DELEGATE to `Agent`
+- **Creating/modifying 3+ files with clear requirements** → DELEGATE to `Agent`
 
 **When NOT to use `Agent`:**
 - You know exact file paths and just need to read 1-2 specific files → use `Read`
