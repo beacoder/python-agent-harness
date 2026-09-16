@@ -38,6 +38,7 @@ class SpyClient:
         stream=True,
         cancel_check=None,
         on_retry=None,
+        supports_image_input=False,
     ):
         self.systems.append(system)
         return Message(role="assistant", content="sub-agent done"), Usage(input_tokens=10)
