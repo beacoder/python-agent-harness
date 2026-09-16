@@ -75,6 +75,7 @@ class LLMClient(Protocol):
         stream: bool = ...,
         cancel_check: Callable[[], bool] | None = ...,
         on_retry: Callable[[], None] | None = ...,
+        supports_image_input: bool = ...,
     ) -> tuple[Message, Usage]: ...
 
     def chat_sync(
@@ -559,19 +560,11 @@ class Client:
         max_tokens: int | None = None,
         system: str | None = None,
         reasoning_effort: str | None = None,
+        supports_image_input: bool = False,
     ) -> dict[str, Any]:
-        # Check if the current model supports image input; if not,
-        # strip ImagePart from message content to avoid API errors.
-        # A malformed image_input_models config section must not break
-        # the request path: fall back to the built-in table (via a
-        # None config_path), matching the defensive context_window
-        # property above; the loader stays strict for explicit
-        # config-validation contexts (e.g. session startup).
-        try:
-            model_info = config.get_model_info(self.model, config_path=self._config_path)
-        except Exception:  # noqa: BLE001 - config error must not break a request
-            model_info = config.get_model_info(self.model)
-        if not model_info.supports_image_input:
+        # When the target model does not accept image input, strip
+        # ImagePart from message content to avoid API errors.
+        if not supports_image_input:
             messages = [_strip_image_parts(m) for m in messages]
         msgs = [m.to_api() for m in messages]
         if system:
@@ -607,6 +600,7 @@ class Client:
         stream: bool = True,
         cancel_check: Callable[[], bool] | None = None,
         on_retry: Callable[[], None] | None = None,
+        supports_image_input: bool = False,
     ) -> tuple[Message, Usage]:
         """Send a chat request, return (assistant msg, usage).
 
@@ -640,6 +634,7 @@ class Client:
             max_tokens=max_tokens,
             system=system,
             reasoning_effort=reasoning_effort,
+            supports_image_input=supports_image_input,
         )
         # a fresh turn may retry connection errors even if a previous
         # in-flight request was aborted (see abort/_aborted)
@@ -999,6 +994,7 @@ class Client:
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        supports_image_input: bool = False,
     ) -> tuple[Message, Usage]:
         """Non-streaming request; used for compaction, titles, summary."""
         return self.chat(
@@ -1010,6 +1006,7 @@ class Client:
             reasoning_effort=reasoning_effort,
             stream=False,
             cancel_check=cancel_check,
+            supports_image_input=supports_image_input,
         )
 
 
