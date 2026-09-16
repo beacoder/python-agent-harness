@@ -152,6 +152,13 @@ class TestTuiInput(unittest.TestCase):
             )
             names = [x.text for x in completions]
             self.assertIn("ME.md", names)
+            # @ inside a slash command also completes (regression: the
+            # @ was not stripped, so no file matched)
+            completions = list(
+                c.get_completions(Document(text="/review @scr", cursor_position=12), None)
+            )
+            names = [x.text for x in completions]
+            self.assertIn("eenshot.png", names)
 
     def test_completer_unlistable_directory_no_crash(self):
         """A path whose directory cannot be listed yields no completions
