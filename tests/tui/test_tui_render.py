@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.live import Live
 from tui_test_utils import make_tui
 
-from python_agent_harness.models import Message, ToolCall
+from python_agent_harness.models import ImagePart, Message, TextPart, ToolCall
 
 
 class TestTuiRender(unittest.TestCase):
@@ -224,6 +224,33 @@ class TestTuiRender(unittest.TestCase):
         styles = [getattr(r, "style", None) for r in rows]
         self.assertIn(USER_STYLE, styles)
         self.assertIn(ASSISTANT_STYLE, styles)
+
+    def test_image_indicator_shown_for_multimodal_user_message(self):
+        """A user message with an ImagePart must show a [📎 N image(s)]
+        indicator — Message.text() skips ImagePart, so without it the
+        panel gives no cue an image was attached."""
+        tui, _ = make_tui()
+        tui.session.last_messages = [
+            Message(
+                role="user",
+                content=[TextPart(text="what is this?"), ImagePart(data=b"\x89PNG")],
+            ),
+            Message(role="assistant", content="a screenshot"),
+        ]
+        rows = tui._build_history_rows(full=True)
+        user_rows = [r for r in rows if getattr(r, "markup", "").startswith("**user:**")]
+        self.assertTrue(any("📎" in r.markup for r in user_rows))
+        self.assertTrue(any("1 image" in r.markup for r in user_rows))
+
+    def test_no_image_indicator_for_text_only_message(self):
+        tui, _ = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="plain text"),
+            Message(role="assistant", content="hi"),
+        ]
+        rows = tui._build_history_rows(full=True)
+        user_rows = [r for r in rows if getattr(r, "markup", "").startswith("**user:**")]
+        self.assertFalse(any("📎" in r.markup for r in user_rows))
 
     def test_injected_user_prompts_hidden(self):
         """Auto-injected user prompts (plan / plan-mode / build-switch
