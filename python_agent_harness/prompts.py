@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .models import Message
+from .models import ImagePart, Message
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 AGENTS_DIR = PROMPTS_DIR / "agents"
@@ -529,8 +529,33 @@ def user_prompt_texts(messages: list) -> list[str]:
             continue
         if is_reminder[i] and not (batch_start <= i <= last_reminder):
             continue
+        image_note = _image_placeholder_text(msg)
+        if image_note:
+            text = f"{text}\n{image_note}" if text else image_note
         prompts.append(text)
     return prompts
+
+
+def _image_placeholder_text(msg: object) -> str:
+    """Build a text note for any image parts in MSG.
+
+    Compaction flattens messages to plain text (``_message_text`` calls
+    ``Message.text()``, which skips ``ImagePart``).  Without this note
+    the model would have no indication an image was ever present, so a
+    follow-up like "what about the screenshot I sent?" would be
+    unanswerable after compaction.
+    """
+    content = getattr(msg, "content", None)
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for p in content:
+        if isinstance(p, ImagePart):
+            if p.path:
+                parts.append(f"[image was attached: {p.path}]")
+            else:
+                parts.append("[image was attached]")
+    return "\n".join(parts)
 
 
 def compact_summary(
