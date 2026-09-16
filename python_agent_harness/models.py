@@ -2,15 +2,59 @@
 
 from __future__ import annotations
 
+import base64
 import enum
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Union
 
 
 class AgentMode(enum.Enum):
     BUILD = "build"
     PLAN = "plan"
+
+
+@dataclass
+class TextPart:
+    """A plain-text content part in a multimodal message."""
+
+    text: str
+
+    def to_api(self) -> dict[str, Any]:
+        return {"type": "text", "text": self.text}
+
+
+@dataclass
+class ImagePart:
+    """A provider-neutral image attachment in a multimodal message.
+
+    ``data`` is raw image bytes; ``media_type`` is the MIME type
+    (e.g. ``"image/png"``).  The conversion to a provider-specific
+    format (e.g. OpenAI's ``image_url`` with a data URL) happens in
+    ``to_api()``, which is only called at the API serialization boundary
+    (``Message.to_api()`` → ``Client._payload``), never in the agent core.
+
+    ``path`` (when set) is the filesystem path the image was attached
+    from.  It is metadata only — never sent to the API — and lets
+    session persistence record where the image came from so a restored
+    session can re-attach it.  Images that did not originate from a
+    path (clipboard, drag-drop, URLs) leave it None.
+    """
+
+    data: bytes
+    media_type: str = "image/png"
+    path: str | None = None
+
+    def to_api(self) -> dict[str, Any]:
+        b64 = base64.b64encode(self.data).decode("ascii")
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{self.media_type};base64,{b64}"},
+        }
+
+
+# Type alias for the individual parts a Message.content list may contain.
+ContentPart = Union[TextPart, ImagePart, str, "dict[str, Any]"]
 
 
 @dataclass
@@ -30,14 +74,15 @@ class Message:
     """One conversation message in OpenAI-compatible format.
 
     ``role`` is one of system/user/assistant/tool.
-    ``content`` may be a str or a list of parts (multimodal).
+    ``content`` may be a str, a list of parts (multimodal:
+    ``TextPart``, ``ImagePart``, plain strings, or dicts), or None.
     ``tool_calls`` carries requested tool invocations on assistant messages.
     ``tool_call_id`` links a tool message to its assistant tool call.
     ``reasoning`` holds reasoning content if the backend reports it.
     """
 
     role: str
-    content: str | list[Any] | None = None
+    content: str | list[ContentPart] | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
     reasoning: str | None = None
@@ -79,6 +124,11 @@ class Message:
         confuse the model, so it is stripped here at the API boundary.
         The stored ``content`` is left untouched (the TUI collapses the
         reasoning for display via its own helper).
+
+        For multimodal content (a list of parts), each part is
+        serialized to its provider-specific dict representation via
+        ``to_api()`` when the part is a ``TextPart`` or ``ImagePart``;
+        strings and dicts pass through unchanged.
         """
         content = self.content
         if self.reasoning and isinstance(content, str):
@@ -87,7 +137,16 @@ class Message:
             stripped = content.lstrip()
             if stripped.startswith(self.reasoning):
                 return stripped[len(self.reasoning) :].lstrip("\n")
+        if isinstance(content, list):
+            return [self._part_to_api(p) for p in content]
         return content
+
+    @staticmethod
+    def _part_to_api(part: ContentPart) -> Any:
+        """Serialize one content part to its provider-specific dict."""
+        if isinstance(part, (TextPart, ImagePart)):
+            return part.to_api()
+        return part
 
     def text(self) -> str:
         """Plain text of the message; empty when no text parts exist."""
@@ -98,6 +157,8 @@ class Message:
             for p in self.content:
                 if isinstance(p, str):
                     parts.append(p)
+                elif isinstance(p, TextPart):
+                    parts.append(p.text)
                 elif isinstance(p, dict):
                     if isinstance(p.get("text"), str):
                         parts.append(p["text"])
