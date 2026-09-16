@@ -290,7 +290,10 @@ class SlashCompleter(Completer):
                 yield from self._complete_paths(text)  # absolute path
                 return
             arg = text.split(" ", 1)[1]
-            yield from self._complete_paths(arg)
+            if arg.startswith("@"):
+                yield from self._complete_paths(arg[1:])
+            else:
+                yield from self._complete_paths(arg)
             return
         token = text.rsplit(" ", 1)[-1] if " " in text else text
         if token.startswith("@"):
