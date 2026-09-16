@@ -28,9 +28,11 @@ class TextPart:
 class ImagePart:
     """A provider-neutral image attachment in a multimodal message.
 
-    ``data`` is raw image bytes; ``media_type`` is the MIME type
-    (e.g. ``"image/png"``).  The conversion to a provider-specific
-    format (e.g. OpenAI's ``image_url`` with a data URL) happens in
+    The image source is either ``data`` (raw image bytes, with
+    ``media_type`` as the MIME type, e.g. ``"image/png"``) or ``url``
+    (an http(s) URL the provider fetches).  At least one of the two must
+    be set; when both are, ``url`` wins.  The conversion to a provider-specific format (e.g.
+    OpenAI's ``image_url`` with a data URL or a plain URL) happens in
     ``to_api()``, which is only called at the API serialization boundary
     (``Message.to_api()`` → ``Client._payload``), never in the agent core.
 
@@ -41,11 +43,20 @@ class ImagePart:
     path (clipboard, drag-drop, URLs) leave it None.
     """
 
-    data: bytes
+    data: bytes | None = None
     media_type: str = "image/png"
     path: str | None = None
+    url: str | None = None
+
+    @classmethod
+    def from_url(cls, url: str) -> ImagePart:
+        return cls(url=url)
 
     def to_api(self) -> dict[str, Any]:
+        if self.url:
+            return {"type": "image_url", "image_url": {"url": self.url}}
+        if self.data is None:
+            raise ValueError("ImagePart requires either data or url")
         b64 = base64.b64encode(self.data).decode("ascii")
         return {
             "type": "image_url",
