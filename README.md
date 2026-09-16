@@ -71,6 +71,7 @@ Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_
 
 - **FSM-driven execution** — explicit `WAIT` / `TOOL` / `TRET` / `SUPERVISE` / `DONE` / `ERRS` / `ABRT` states. Completion supervision nudges the model when it stops early, while failed tool calls are sanitized so they never strand the agent. Transient API failures (`429` / `5xx`) retry with exponential backoff and jitter. Auth-expired status codes (configurable via `AUTH_REFRESH_STATUS_CODES` in `config.py`; defaults to `[401, 502]`) trigger automatic API key re-read from config/env — some API gateways return `502` instead of `401` when the backend auth token has expired. Note: codes in this list are treated as auth-expired exclusively and will not be retried with backoff, so only include codes that are unambiguously auth-related in your environment.
 - **Context management** — CJK-aware token estimation, per-model context windows, and automatic compaction at 70% usage.
+- **Image & text attachments** — attach an image or a text file with `@path` in your message (e.g. `@screenshot.png`, `@README.md`): images (PNG/JPEG/GIF/WebP, up to 20 MB, magic-byte validated) become multimodal `image_url` parts, text files are inlined as text. Only images and text files are supported as input. Paste an image from the clipboard to attach it too (macOS `pngpaste`, Wayland `wl-paste`, X11 `xclip`, Windows PowerShell — no extra dependencies).
 - **Coding tools** — `Agent`, `TodoWrite`, `Glob`, `Grep`, `Read`, `Insert`, `Edit` (including unified diffs), `Write`, `Mkdir`, `Bash`, `Skill`, `Question`, `LSP`, and `PlanExit`. Synchronous tools execute sequentially, but a round made up entirely of read-only tools (`Read`, `Glob`, `Grep`, `Skill`, `LSP`) is dispatched concurrently via a bounded thread pool; asynchronous tools such as `Bash` and `Agent` can run concurrently as well. Results are always delivered in the model's emitted order.
 - **Plan / Build modes** — plan mode is read-only except for the per-session plan file.
 - **Persistent sessions** — sessions are automatically saved after every response to `~/.local/share/python-agent-harness/sessions/`, with LLM-generated titles and support for `/restore --latest` and `/sessions`.
@@ -128,6 +129,10 @@ All LLM settings live in a single JSON configuration file. Environment variables
     "_comment": "Optional per-model context-window overrides (tokens). Keys are model names or substrings (e.g. deepseek-v4 = 1000000); matched in file order, first match wins. Overrides the built-in CONTEXT_WINDOWS table in config.py.",
     "deepseek-v4": 1000000
   },
+  "image_input_models": [
+    "_comment: Optional list of additional image-capable model names or substrings (matched case-insensitively), layered on top of the built-in IMAGE_INPUT_MODELS table in config.py. Add models here so images are sent instead of stripped. Remove this section to use only the built-in table.",
+    "qwen3.8-27b"
+  ],
   "subagent_llm": {
     "profile": null,
     "base_url": null,
@@ -179,6 +184,7 @@ All LLM settings live in a single JSON configuration file. Environment variables
 - **`llm`** — main LLM configuration. Optional keys include `temperature`, `max_tokens`, `timeout`, `reasoning_effort`, and `stream`. Values such as `reasoning_effort` are passed to the API as-is when set. `run --no-stream` overrides `stream`.
 - **`models`** — named LLM profiles for runtime switching with `/model`. A profile is a partial settings dictionary; unset keys inherit from the main `llm`. `default` restores the main LLM configuration.
 - **`context_windows`** — optional per-model context-window overrides (tokens). Keys are model names or substrings (e.g., `deepseek-v4`); matched in file order, first match wins. Overrides the built-in `CONTEXT_WINDOWS` table in `config.py`.
+- **`image_input_models`** — optional list of additional model names or substrings (matched case-insensitively) that accept image input, layered on top of the built-in `IMAGE_INPUT_MODELS` table in `config.py`. Add a model here so `@path` image attachments are sent to it instead of stripped with a warning.
 - **`subagent_llm`** — LLM configuration for `Agent` tool requests. Unset values inherit from the main `llm`. Set `profile` to reuse a profile from `models`. Precedence is: profile settings > explicit `subagent_llm` settings > main `llm` > environment variables.
 - **`default_agent`** — name of the agent to use at session start (instead of the built-in `agent.md`). The agent must exist as a `.md` file in the `prompts/agents/` directory. When unset or `null`, the built-in default agent is used. Use `/agent default` in the TUI to switch back to the built-in at any time.
 - **`paths.context_path` / `paths.skill_path`** — locations from which to load context files and skills. When unset, the project-local `<project>/contexts` and `<project>/skills` directories are used.
@@ -256,20 +262,18 @@ python_agent_harness/
 ├── tool_runner.py     # Tool-call execution/delivery + history salvage
 ├── context_manager.py # Context-ratio tracking + compaction
 ├── client.py          # OpenAI-compatible streaming client (httpx)
-├── models.py          # Message / ToolCall / ToolSpec data classes
 ├── token_estimator.py # CJK-aware token estimation + calibration
 ├── planmode.py        # Plan/build modes + plan-file lifecycle
 ├── prompts.py         # Prompt loading + system-prompt assembly
 ├── persistence.py     # Session persistence + titles
 ├── session.py         # Session wiring hub + MCP lifecycle
-├── subagent.py        # Sub-agent runner + error containment
 ├── commands.py        # Init/review/custom command definitions
 ├── cli.py             # CLI entry points
 ├── tui/               # Rich + prompt_toolkit TUI (package)
-├── diffrender.py      # Unified diff generation + Rich rendering
 ├── lsp/               # Built-in LSP client
 ├── mcp/               # Optional MCP client
-└── tools/             # Tool implementations + registry
+├── tools/             # Tool implementations + registry
+└── ...                # Other modules
 ```
 
 ## Development
