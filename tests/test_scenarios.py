@@ -62,6 +62,7 @@ class ScriptedClient:
         stream=True,
         cancel_check=None,
         on_retry=None,
+        supports_image_input=False,
     ):
         self.calls.append([m.to_api() for m in messages])
         if not self.script:
