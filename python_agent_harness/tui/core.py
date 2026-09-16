@@ -24,7 +24,14 @@ from rich.text import Text
 
 from .. import config
 from ..agent import run_agent_loop
-from ..models import Message
+from ..attachments import (
+    AttachmentError,
+    ParsedAttachment,
+    load_clipboard_image,
+    parse_at_references,
+    strip_clipboard_markers,
+)
+from ..models import ImagePart, Message, TextPart
 from ..session import Session
 from .commands import CommandMixin
 from .input import InputMixin, SlashCompleter, UiQuestion, _history_path, _make_prompt_session
@@ -70,13 +77,23 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         # wall-clock start of the current run, used to report the total
         # time spent once the run finishes
         self._run_start: float | None = None
+        # Pre-built user message (with @file attachments) passed from
+        # _start_agent to _run_agent
+        self._pending_user_msg: Message | None = None
         # Discovered agent profiles (name -> prompt file path) from the
         # prompts/agents/ directory; refreshed on each /agent call so files
         # added at runtime are picked up.
         self._discovered_agents: dict[str, str] = {}
+        # Clipboard images captured on paste, pending until the next
+        # submit.  The paste handler appends the temp-file path here
+        # (out-of-band, not via an @path text token, so a temp path with
+        # spaces isn't truncated by the @file parser); _submit_text
+        # drains and attaches them.
+        self._pending_clipboard_images: list[str] = []
         self.prompt_session = _make_prompt_session(
             FileHistory(_history_path()),
             SlashCompleter(lambda: str(self.session.project_dir)),
+            on_image_paste=self._pending_clipboard_images.append,
         )
 
         session.on_delta = self._on_delta
@@ -178,7 +195,8 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
                     "Ctrl-C cancels the current execution (the app stays open); "
                     "Ctrl-D or /exit quits.\n"
                     "Type a message — Enter for a new line, Esc then Enter "
-                    "(or Alt+Enter) to submit. Up/Down recall history.\n\n"
+                    "(or Alt+Enter) to submit. Up/Down recall history.\n"
+                    "Use @path to attach files (e.g. @screenshot.png, @README.md).\n\n"
                     "[dim]Type [bold]/help[/bold] for the full command reference.[/dim]"
                 ),
                 title="[bold cyan]python-agent-harness — interactive AI coding agent[/bold cyan]",
@@ -203,6 +221,13 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
                 if not text.strip():
                     continue
                 if text.startswith("/"):
+                    # A slash command isn't a normal submit: discard any
+                    # clipboard images captured on paste so they don't
+                    # silently attach to a later message.  Cleared in
+                    # place (not reassigned) so the paste callback bound
+                    # to this list keeps targeting it.  Files remain
+                    # tracked for cleanup on session close.
+                    self._pending_clipboard_images.clear()
                     if self._handle_slash(text):
                         break
                     continue
@@ -211,9 +236,34 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
                 # stray Ctrl-C outside input/execution: stay in the app
                 self.console.print("[dim]cancelled — Ctrl-D or /exit to quit[/dim]")
 
+    def _drain_clipboard_images(self, text: str) -> tuple[list[ParsedAttachment], str]:
+        """Consume clipboard images captured on paste since the last submit.
+
+        Returns ``(attachments, cleaned_text)``: each pending temp-file
+        path is validated (same checks as ``@file`` images) into a
+        ``ParsedAttachment``; validation errors are shown to the user and
+        dropped.  Only the markers for the *actually pending* paths are
+        stripped (so text a user literally typed that resembles a marker
+        is left intact).  The pending list is cleared in place — never
+        reassigned — so the paste callback bound to it keeps working.
+        """
+        pending = list(self._pending_clipboard_images)
+        self._pending_clipboard_images.clear()
+        if not pending:
+            return [], text
+        cleaned = strip_clipboard_markers(text, pending)
+        atts: list[ParsedAttachment] = []
+        for path in pending:
+            result = load_clipboard_image(path)
+            if isinstance(result, AttachmentError):
+                self.console.print(f"[red]clipboard image: {result.message}[/red]")
+                continue
+            atts.append(result)
+        return atts, cleaned
+
     def _start_agent(
         self,
-        text: str,
+        text: str | Message,
         system: str | None = None,
         restore: Callable[[], None] | None = None,
     ) -> None:
@@ -222,7 +272,81 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         SYSTEM overrides the session's system prompt for this run only.
         RESTORE (if given) runs when the run finishes — used by the
         slash commands to put back state they borrowed (e.g. project_dir).
+
+        TEXT may be a plain string (parsed for @file references here) or
+        a pre-built Message (slash commands that already parsed their
+        kickoff's @file references pass the Message directly).
         """
+        # Parse @file references before submitting: images become
+        # ImagePart attachments, text files become TextPart attachments.
+        # The @path token is stripped from the text (the content lives
+        # in the attachment), and validation errors are shown to the user.
+        if isinstance(text, Message):
+            user_msg = text
+            cleaned_text = text.text()
+            attachments: list[Any] = []
+            errors: list[Any] = []
+            display_text = cleaned_text.strip() or "(attachment)"
+        else:
+            cleaned_text, attachments, errors = parse_at_references(
+                text, str(self.session.project_dir)
+            )
+            for err in errors:
+                self.console.print(f"[red]@{err.path}: {err.message}[/red]")
+
+            # Drain clipboard images captured on paste since the last
+            # submit and append them as attachments.  They are validated
+            # through the same path as @file images (size, PNG signature)
+            # and their "[image #...]" markers are stripped from the text.
+            clip_atts, cleaned_text = self._drain_clipboard_images(cleaned_text)
+            attachments = attachments + clip_atts
+
+            if errors and not attachments and not cleaned_text.strip():
+                # All references failed and nothing else to send
+                return
+
+            # Build the user message: multimodal if there are attachments,
+            # plain text otherwise (preserving the existing text-only path).
+            if attachments:
+                parts: list[Any] = []
+                if cleaned_text.strip():
+                    parts.append(TextPart(text=cleaned_text))
+                for att in attachments:
+                    parts.append(att.part)
+                user_msg = Message(role="user", content=parts)
+                # The round_user_text is the display text (without image data)
+                display_text = (
+                    cleaned_text.strip()
+                    or f"({len(attachments)} image attachment{'s' if len(attachments) != 1 else ''})"
+                )
+            else:
+                user_msg = Message(role="user", content=cleaned_text)
+                display_text = cleaned_text
+
+        # Warn when the active model cannot see images: the attachment
+        # will be silently stripped before the request is sent (see
+        # Client._payload), so the user should know the image never
+        # reaches the model.
+        if attachments and any(isinstance(a.part, ImagePart) for a in attachments):
+            from ..config import get_model_info
+
+            # A malformed image_input_models config must not break the
+            # submit path; fall back to the built-in table on error.
+            try:
+                supports_images = get_model_info(
+                    self.session.model, config_path=self.session.config_path
+                ).supports_image_input
+            except Exception:  # noqa: BLE001 - config error must not block input
+                supports_images = get_model_info(self.session.model).supports_image_input
+            if not supports_images:
+                self.console.print(
+                    f"[yellow]warning: model {self.session.model} does not support "
+                    "image input — image attachment(s) will be ignored[/yellow]"
+                )
+
+        # Store for _run_agent to pick up (avoids re-parsing there)
+        self._pending_user_msg = user_msg
+
         self.stream_text = ""
         self.status = " running"
         self._current_tool = ""
@@ -232,7 +356,7 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         # the run so it points just past the previous round's messages —
         # the new user message will be the first mirrored row.
         self.round_start = len(self.session.last_messages or [])
-        self.round_user_text = text
+        self.round_user_text = display_text
         self._round_times.append(time.time())
         self._run_start = time.time()
         # keep the persisted metadata in sync so auto-save /save
@@ -256,7 +380,7 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         self._restore = restore
         self.agent_running = True
         worker = threading.Thread(
-            target=self._run_agent, args=(text, seq, system, restore), daemon=True
+            target=self._run_agent, args=(user_msg, seq, system, restore), daemon=True
         )
         worker.start()
         cancelled = False
@@ -360,13 +484,22 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
 
     def _run_agent(
         self,
-        text: str,
+        text: str | Message,
         seq: int,
         system: str | None = None,
         restore: Callable[[], None] | None = None,
     ) -> None:
         try:
-            self.conversation_history.append(Message(role="user", content=text))
+            # The user message was already built in _start_agent (with
+            # @file attachments parsed into ImagePart/TextPart).  We
+            # reconstruct it here from the round_user_text for text-only
+            # messages, or use the pre-built message stored on the instance.
+            user_msg = getattr(self, "_pending_user_msg", None)
+            if user_msg is None:
+                user_msg = text if isinstance(text, Message) else Message(role="user", content=text)
+            else:
+                self._pending_user_msg = None
+            self.conversation_history.append(user_msg)
             run_agent_loop(
                 self.session,
                 messages=list(self.conversation_history),
