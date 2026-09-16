@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from python_agent_harness.attachments import parse_at_references
-from python_agent_harness.config import ModelInfo, get_model_info
+from python_agent_harness.config import DEFAULT_LLM, load_llm_config
 from python_agent_harness.models import ImagePart, Message, TextPart
 
 
@@ -90,98 +90,18 @@ class TestMessageMultimodal(unittest.TestCase):
         self.assertEqual(m.to_api()["content"], "answer")
 
 
-class TestModelInfo(unittest.TestCase):
-    def test_gpt5_supports_images(self):
-        info = get_model_info("gpt-5-mini")
-        self.assertTrue(info.supports_image_input)
+class TestSupportsImageInputSetting(unittest.TestCase):
+    def test_default_is_false(self):
+        self.assertFalse(DEFAULT_LLM["supports_image_input"])
 
-    def test_gpt4o_supports_images(self):
-        info = get_model_info("gpt-4o")
-        self.assertTrue(info.supports_image_input)
-
-    def test_claude_supports_images(self):
-        info = get_model_info("claude-3-opus")
-        self.assertTrue(info.supports_image_input)
-
-    def test_deepseek_no_image_support(self):
-        info = get_model_info("deepseek-chat")
-        self.assertFalse(info.supports_image_input)
-
-    def test_unknown_model_no_image_support(self):
-        info = get_model_info("some-unknown-model")
-        self.assertFalse(info.supports_image_input)
-
-    def test_qwen38_supports_images(self):
-        # qwen3.8 (e.g. qwen3.8-27b) accepts image input even though it
-        # has no -vl suffix.
-        self.assertTrue(get_model_info("qwen3.8-27b").supports_image_input)
-
-    def test_text_only_qwen_not_matched_by_vl_patterns(self):
-        for name in ("qwen3.5", "qwen3.6", "qwen3"):
-            self.assertFalse(get_model_info(name).supports_image_input, name)
-
-    def test_model_info_defaults(self):
-        info = ModelInfo()
-        self.assertFalse(info.supports_image_input)
-
-    def test_config_image_input_models_override(self):
+    def test_config_llm_supports_image_input(self):
         import json
-
-        from python_agent_harness.config import load_image_input_models_config
 
         with tempfile.TemporaryDirectory() as d:
             cfg = os.path.join(d, "config.json")
             with open(cfg, "w") as f:
-                json.dump(
-                    {
-                        "image_input_models": [
-                            "_comment: docs",
-                            "my-custom-vlm",
-                            "internal-vision",
-                        ]
-                    },
-                    f,
-                )
-            # config-declared models are recognized (substring match)
-            self.assertTrue(
-                get_model_info("my-custom-vlm-v2", config_path=cfg).supports_image_input
-            )
-            self.assertTrue(
-                get_model_info("internal-vision-7b", config_path=cfg).supports_image_input
-            )
-            # unrelated model still unsupported
-            self.assertFalse(
-                get_model_info("plain-text-model", config_path=cfg).supports_image_input
-            )
-            # built-in table still applies alongside the config list
-            self.assertTrue(get_model_info("gpt-4o", config_path=cfg).supports_image_input)
-            # comment entry is skipped by the loader
-            self.assertEqual(
-                load_image_input_models_config(cfg), ["my-custom-vlm", "internal-vision"]
-            )
-
-    def test_config_image_input_models_invalid_type(self):
-        import json
-
-        from python_agent_harness.config import load_image_input_models_config
-
-        with tempfile.TemporaryDirectory() as d:
-            cfg = os.path.join(d, "config.json")
-            with open(cfg, "w") as f:
-                json.dump({"image_input_models": {"x": 1}}, f)
-            with self.assertRaises(ValueError):
-                load_image_input_models_config(cfg)
-
-    def test_config_image_input_models_missing(self):
-        import json
-
-        from python_agent_harness.config import load_image_input_models_config
-
-        with tempfile.TemporaryDirectory() as d:
-            cfg = os.path.join(d, "config.json")
-            with open(cfg, "w") as f:
-                json.dump({"llm": {}}, f)
-            self.assertEqual(load_image_input_models_config(cfg), [])
+                json.dump({"llm": {"supports_image_input": True}}, f)
+            self.assertTrue(load_llm_config(cfg)["supports_image_input"])
 
 
 class TestImageTokenEstimation(unittest.TestCase):
@@ -451,13 +371,6 @@ class TestClientImageStripping(unittest.TestCase):
         stripped = _strip_image_parts(m)
         self.assertIs(stripped, m)
 
-    def test_strip_image_parts_string_content_unchanged(self):
-        from python_agent_harness.client import _strip_image_parts
-
-        m = Message(role="user", content="hello")
-        stripped = _strip_image_parts(m)
-        self.assertIs(stripped, m)
-
     def test_strip_preserves_other_fields(self):
         from python_agent_harness.client import _strip_image_parts
 
@@ -512,6 +425,8 @@ class TestClientImageStripping(unittest.TestCase):
         stripped = _strip_image_parts(m)
         # str + dict text parts collapse to a plain string
         self.assertEqual(stripped.content, "plain dict text")
+        # the original message is not mutated
+        self.assertEqual(len(m.content), 3)
 
 
 class TestSessionPersistenceMultimodal(unittest.TestCase):
