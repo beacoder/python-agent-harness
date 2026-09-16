@@ -31,6 +31,16 @@ def is_cjk_char(c: str) -> bool:
 _CJK_RE = re.compile(r"[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef\U00020000-\U0002fa1f]")
 
 
+# Flat per-image token estimate.  Vision models bill images by tile /
+# detail level, not by the size of the base64 data URL, so counting the
+# encoded bytes as text would over-count by orders of magnitude.  A flat
+# heuristic keeps images visible to context-ratio tracking and, crucially,
+# stops the base64 blob from poisoning the token calibrator on turns that
+# contain an image.  ~1200 tokens is a reasonable mid-range approximation
+# for a single "high detail" image across common providers.
+IMAGE_TOKEN_ESTIMATE = 1200
+
+
 def estimate_tokens(text: str) -> int:
     """Estimate tokens in TEXT: Latin ~4 chars/token, CJK ~2 chars/token."""
     if not text:
@@ -132,4 +142,26 @@ def payload_text(system: object, messages: list[dict], tools: list[dict]) -> str
 
 
 def estimate_payload_tokens(system: object, messages: list[dict], tools: list[dict]) -> int:
-    return estimate_tokens(payload_text(system, messages, tools))
+    text_tokens = estimate_tokens(payload_text(system, messages, tools))
+    return text_tokens + count_image_tokens(messages)
+
+
+def count_image_tokens(messages: list[dict]) -> int:
+    """Estimate the token cost of image parts across MESSAGES.
+
+    Each image content part (``{"type": "image_url", ...}``) is charged
+    a flat ``IMAGE_TOKEN_ESTIMATE``.  ``payload_text`` deliberately skips
+    the base64 data URL (its length is not proportional to the model's
+    real image token cost), so this is the sole place images enter the
+    estimate — keeping them visible to context-ratio tracking without
+    letting the encoded blob distort the calibrator.
+    """
+    total = 0
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for p in content:
+            if isinstance(p, dict) and p.get("type") == "image_url":
+                total += IMAGE_TOKEN_ESTIMATE
+    return total
