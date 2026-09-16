@@ -82,11 +82,13 @@ class Session:
         max_tokens: int | None = config.MAX_TOKENS,
         reasoning_effort: str | None = None,
         stream: bool = True,
+        supports_image_input: bool = False,
         subagent_client: LLMClient | None = None,
         subagent_temperature: float | None = None,
         subagent_max_tokens: int | None = None,
         subagent_reasoning_effort: str | None = None,
         subagent_stream: bool | None = None,
+        subagent_supports_image_input: bool | None = None,
         tool_names: list[str] | None = None,
         registry: Registry | None = None,
         context_path: str | None = None,
@@ -107,6 +109,7 @@ class Session:
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
         self.stream = stream
+        self.supports_image_input = supports_image_input
         self.tools_enabled = True
         self.alive = True
         self._configured_context_path = context_path
@@ -133,6 +136,11 @@ class Session:
             reasoning_effort if subagent_reasoning_effort is None else subagent_reasoning_effort
         )
         self.subagent_stream = stream if subagent_stream is None else subagent_stream
+        self.subagent_supports_image_input = (
+            supports_image_input
+            if subagent_supports_image_input is None
+            else subagent_supports_image_input
+        )
 
         self.registry = registry or Registry()
         # MCP (Model Context Protocol) integration: an optional adapter
@@ -762,6 +770,7 @@ class Session:
             "timeout": self.client.timeout,
             "reasoning_effort": self.reasoning_effort,
             "stream": self.stream,
+            "supports_image_input": self.supports_image_input,
         }
         for key, val in current.items():
             merged.setdefault(key, val)
@@ -775,6 +784,7 @@ class Session:
                 "timeout",
                 "reasoning_effort",
                 "stream",
+                "supports_image_input",
             ):
                 if key in profile and profile[key] is not None:
                     merged[key] = profile[key]
@@ -791,6 +801,7 @@ class Session:
         self.client.set_timeout(merged["timeout"])
         self.reasoning_effort = merged["reasoning_effort"]
         self.stream = merged["stream"]
+        self.supports_image_input = merged["supports_image_input"]
         return True, f"switched to {name} ({self.model})"
 
     def switch_agent(self, name: str) -> tuple[bool, str]:
