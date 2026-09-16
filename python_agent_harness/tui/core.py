@@ -334,22 +334,11 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         has_image_parts = has_images or (
             attachments and any(isinstance(a.part, ImagePart) for a in attachments)
         )
-        if has_image_parts:
-            from ..config import get_model_info
-
-            # A malformed image_input_models config must not break the
-            # submit path; fall back to the built-in table on error.
-            try:
-                supports_images = get_model_info(
-                    self.session.model, config_path=self.session.config_path
-                ).supports_image_input
-            except Exception:  # noqa: BLE001 - config error must not block input
-                supports_images = get_model_info(self.session.model).supports_image_input
-            if not supports_images:
-                self.console.print(
-                    f"[yellow]warning: model {self.session.model} does not support "
-                    "image input — image attachment(s) will be ignored[/yellow]"
-                )
+        if has_image_parts and not self.session.supports_image_input:
+            self.console.print(
+                f"[yellow]warning: model {self.session.model} does not support "
+                "image input — image attachment(s) will be ignored[/yellow]"
+            )
 
         # Store for _run_agent to pick up (avoids re-parsing there)
         self._pending_user_msg = user_msg
