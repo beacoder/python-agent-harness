@@ -28,6 +28,40 @@ class TestImagePart(unittest.TestCase):
         p = ImagePart(data=b"x")
         self.assertEqual(p.media_type, "image/png")
 
+    def test_image_part_url_to_api(self):
+        p = ImagePart.from_url("https://example.com/image.jpg")
+        api = p.to_api()
+        self.assertEqual(
+            api,
+            {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}},
+        )
+
+    def test_image_part_url_takes_precedence_over_data(self):
+        p = ImagePart(data=b"\x89PNG", url="https://example.com/image.jpg")
+        self.assertEqual(
+            p.to_api(),
+            {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}},
+        )
+
+    def test_image_part_no_source_raises(self):
+        p = ImagePart()
+        with self.assertRaises(ValueError):
+            p.to_api()
+
+    def test_multimodal_url_image_to_api(self):
+        m = Message(
+            role="user",
+            content=[
+                TextPart(text="What is this?"),
+                ImagePart.from_url("https://example.com/image.jpg"),
+            ],
+        )
+        api = m.to_api()
+        self.assertEqual(
+            api["content"][1],
+            {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}},
+        )
+
 
 class TestMessageMultimodal(unittest.TestCase):
     def test_text_only_message_unchanged(self):
