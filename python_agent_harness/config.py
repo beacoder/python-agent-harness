@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from .lsp.config import LSPConfig
@@ -32,6 +33,58 @@ CONTEXT_WINDOWS: list[tuple[str, int]] = [
     ("kimi", 128_000),
 ]
 DEFAULT_CONTEXT_WINDOW = 128_000
+
+# ---- model capabilities --------------------------------------------------
+# Known models that accept image input.  Matched by substring
+# (case-insensitive) against the model name, like CONTEXT_WINDOWS.
+IMAGE_INPUT_MODELS: list[str] = [
+    "gpt-4o",
+    "gpt-4-vision",
+    "gpt-4-turbo",
+    "gpt-5",
+    "claude-3",
+    "claude-4",
+    "gemini",
+    "qwen2-vl",
+    "qwen2.5-vl",
+    "qwen3-vl",
+    "glm-4v",
+    "qwen3.8",
+]
+
+
+@dataclass
+class ModelInfo:
+    """Capability information for a model.
+
+    ``supports_image_input`` lets the harness avoid sending images to
+    text-only models (which would reject the request).
+    """
+
+    supports_image_input: bool = False
+
+
+def get_model_info(
+    model: str,
+    config_path: str | os.PathLike | None = None,
+) -> ModelInfo:
+    """Look up capabilities for MODEL by name (substring match).
+
+    Image-input capability is resolved from the config file's
+    ``image_input_models`` list (user additions) first, then the
+    built-in ``IMAGE_INPUT_MODELS`` table.  Both are matched by
+    substring (case-insensitive) against the model name, mirroring the
+    ``context_windows`` override mechanism.
+    """
+    lowered = model.lower()
+    for pattern in load_image_input_models_config(config_path):
+        if pattern.lower() in lowered:
+            return ModelInfo(supports_image_input=True)
+    for pattern in IMAGE_INPUT_MODELS:
+        if pattern.lower() in lowered:
+            return ModelInfo(supports_image_input=True)
+    return ModelInfo(supports_image_input=False)
+
 
 # ---- completion supervision ----------------------------------------------
 MAX_NUDGES = 2
@@ -239,6 +292,9 @@ CONFIG_TEMPLATE = """\
     "_comment": "Optional per-model context-window overrides (tokens). Keys are model names or substrings (e.g. deepseek-v4 = 1000000); matched in file order, first match wins. Overrides the built-in CONTEXT_WINDOWS table in config.py. Remove this section to use the built-in table.",
     "deepseek-v4": 1000000
   }},
+  "image_input_models": [
+    "_comment: Optional list of additional image-capable model names or substrings (matched case-insensitively), layered on top of the built-in IMAGE_INPUT_MODELS table in config.py. Add models here so images are sent instead of stripped. Remove this section to use only the built-in table."
+  ],
   "subagent_llm": {{
     "_comment": "Optional overrides for sub-agent (Agent tool) requests, e.g. a cheaper model. Every key is optional; unset keys inherit the main llm settings above. Set 'profile' to a name from the 'models' section to reuse a model profile (profile settings win over explicit keys below).",
     "profile": null,
@@ -574,6 +630,42 @@ def load_context_windows_config(
                 f"config file {_config_path(path)}: context_windows.{pattern} must be positive"
             )
         entries.append((pattern, size))
+    return entries
+
+
+def load_image_input_models_config(
+    path: str | os.PathLike | None = None,
+) -> list[str]:
+    """Load additional image-capable model patterns from the config file.
+
+    Reads the ``image_input_models`` array: a list of model names or
+    substrings (matched case-insensitively against the model name)
+    that accept image input, layered on top of the built-in
+    ``IMAGE_INPUT_MODELS`` table.  A missing file, missing section, or
+    unreadable JSON yields ``[]`` (callers fall back to the built-in
+    table); a malformed section or non-string entry raises ValueError
+    so config errors surface at session start.
+    """
+    try:
+        data = _read_config(path)
+    except ValueError:
+        return []
+    section = data.get("image_input_models")
+    if section is None:
+        return []
+    if not isinstance(section, list):
+        raise ValueError(f"config file {_config_path(path)}: image_input_models must be an array")
+    entries: list[str] = []
+    for item in section:
+        if not isinstance(item, str):
+            raise ValueError(
+                f"config file {_config_path(path)}: image_input_models entries must be strings"
+            )
+        stripped = item.strip()
+        # Skip comment-style entries (a leading underscore), mirroring
+        # the ``_comment`` convention used by the object-shaped sections.
+        if stripped and not stripped.startswith("_"):
+            entries.append(stripped)
     return entries
 
 
