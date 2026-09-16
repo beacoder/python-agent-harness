@@ -17,8 +17,9 @@ from rich.console import Console
 from rich.live import Live
 
 from .. import config
+from ..attachments import image_placeholder, parse_at_references, reattach_images
 from ..commands import find_command
-from ..models import Message
+from ..models import ImagePart, Message, TextPart
 from ..persistence import (
     SessionPersistence,
     escape_role_headers,
@@ -57,7 +58,7 @@ class CommandMixin:
 
         def _start_agent(
             self,
-            text: str,
+            text: str | Message,
             system: str | None = None,
             restore: Callable[[], None] | None = None,
         ) -> None: ...
@@ -258,7 +259,25 @@ class CommandMixin:
 
                 restore = _restore
         self.console.print(f"[cyan]/{name}: {kickoff.strip()}[/cyan]")
-        self._start_agent(kickoff, system=system, restore=restore)
+        # Parse @file references in the kickoff (e.g. "/review @diff.patch"
+        # or "/explain @client.py"): images become ImagePart attachments,
+        # text files become TextPart attachments, and the @path token is
+        # stripped from the text.  Validation errors are shown to the user.
+        cleaned_kickoff, attachments, errors = parse_at_references(
+            kickoff, str(self.session.project_dir)
+        )
+        for err in errors:
+            self.console.print(f"[red]@{err.path}: {err.message}[/red]")
+        if attachments:
+            parts: list[Any] = []
+            if cleaned_kickoff.strip():
+                parts.append(TextPart(text=cleaned_kickoff))
+            for att in attachments:
+                parts.append(att.part)
+            kickoff_msg = Message(role="user", content=parts)
+        else:
+            kickoff_msg = Message(role="user", content=cleaned_kickoff)
+        self._start_agent(kickoff_msg, system=system, restore=restore)
 
     def _conversation_text(self) -> str:
         msgs = self.session.last_messages or []
@@ -266,6 +285,13 @@ class CommandMixin:
         for m in msgs:
             # escaped: see persistence.escape_role_headers
             body = escape_role_headers(m.text())
+            # Mark messages that contained image attachments (see
+            # Session._conversation_text for details)
+            if isinstance(m.content, list):
+                image_count = sum(1 for p in m.content if isinstance(p, ImagePart))
+                if image_count:
+                    paths = [p.path for p in m.content if isinstance(p, ImagePart) and p.path]
+                    body = f"{image_placeholder(image_count, paths)}\n{body}"
             if body:
                 parts.append(f"**{m.role}**: {body}")
         return "\n\n".join(parts)
@@ -740,6 +766,25 @@ class CommandMixin:
         current_role: str | None = None
         current_lines: list[str] = []
 
+        def _flush(role: str, lines: list[str]) -> None:
+            content = "\n".join(lines).strip()
+            if not content:
+                return
+            # A leading image-attachment placeholder (written on save)
+            # is re-attached when the file still exists, so the restored
+            # message is multimodal again; otherwise it stays as text.
+            new_content, parts = reattach_images(content)
+            if parts:
+                remainder = new_content.split("\n", 1)
+                rest_text = remainder[1].strip() if len(remainder) > 1 else ""
+                content_parts: list = []
+                if rest_text:
+                    content_parts.append(TextPart(text=rest_text))
+                content_parts.extend(parts)
+                messages.append(Message(role=role, content=content_parts))
+            else:
+                messages.append(Message(role=role, content=content))
+
         for line in body.splitlines():
             # Check for a role header: **user**: ... or **assistant**: ...
             header = split_role_header(line)
@@ -749,9 +794,7 @@ class CommandMixin:
                 # tool_call_id/name; system blocks would duplicate the
                 # live system prompt the client prepends per request)
                 if current_role is not None and current_role not in ("tool", "system"):
-                    content = "\n".join(current_lines).strip()
-                    if content:
-                        messages.append(Message(role=current_role, content=content))
+                    _flush(current_role, current_lines)
                 current_role = role
                 current_lines = [unescape_role_header(rest)]
                 continue
@@ -759,9 +802,7 @@ class CommandMixin:
 
         # Don't forget the last block (tool/system blocks dropped, see above)
         if current_role is not None and current_role not in ("tool", "system"):
-            content = "\n".join(current_lines).strip()
-            if content:
-                messages.append(Message(role=current_role, content=content))
+            _flush(current_role, current_lines)
 
         return messages
 
