@@ -288,9 +288,8 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             attachments: list[Any] = []
             errors: list[Any] = []
             display_text = cleaned_text.strip() or "(attachment)"
-            has_images = (
-                isinstance(text.content, list)
-                and any(isinstance(p, ImagePart) for p in text.content)
+            has_images = isinstance(text.content, list) and any(
+                isinstance(p, ImagePart) for p in text.content
             )
         else:
             cleaned_text, attachments, errors = parse_at_references(
