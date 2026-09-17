@@ -2175,5 +2175,80 @@ class TestWindowsVariants(unittest.TestCase):
         self.assertIn("hello", out)
 
 
+class TestTildeExpansion(unittest.TestCase):
+    """All filesystem tools must expand ~ in user-provided paths."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.join(self.tmp.name, "home")
+        os.makedirs(self.home)
+        self.orig_home = os.environ.get("HOME")
+        os.environ["HOME"] = self.home
+
+    def tearDown(self):
+        self.tmp.cleanup()
+        if self.orig_home is not None:
+            os.environ["HOME"] = self.orig_home
+        else:
+            os.environ.pop("HOME", None)
+
+    def test_read_expands_tilde(self):
+        p = os.path.join(self.home, "file.txt")
+        with open(p, "w") as f:
+            f.write("content\n")
+        out = Read().run({"file_path": "~/file.txt"}, ToolContext())
+        self.assertIn("content", out)
+
+    def test_write_expands_tilde(self):
+        out = Write().run(
+            {"path": "~/sub", "filename": "out.txt", "content": "hi\n"},
+            ToolContext(),
+        )
+        self.assertIn("Created", out)
+        with open(os.path.join(self.home, "sub", "out.txt")) as f:
+            self.assertEqual(f.read(), "hi\n")
+
+    def test_edit_expands_tilde(self):
+        p = os.path.join(self.home, "edit.txt")
+        with open(p, "w") as f:
+            f.write("old\n")
+        ctx, _ = make_ctx()
+        out = edit_tool().run({"path": "~/edit.txt", "old_str": "old", "new_str": "new"}, ctx)
+        self.assertIn("Successfully", out)
+        with open(p) as f:
+            self.assertEqual(f.read(), "new\n")
+
+    def test_insert_expands_tilde(self):
+        p = os.path.join(self.home, "insert.txt")
+        with open(p, "w") as f:
+            f.write("line1\nline2\n")
+        out = Insert().run(
+            {"path": "~/insert.txt", "line_number": 1, "new_str": "inserted\n"},
+            ToolContext(),
+        )
+        self.assertIn("inserted text", out)
+        with open(p) as f:
+            self.assertEqual(f.read(), "line1\ninserted\nline2\n")
+
+    def test_mkdir_expands_tilde(self):
+        out = Mkdir().run({"parent": "~", "name": "newdir"}, ToolContext())
+        self.assertIn("created/verified", out)
+        self.assertTrue(os.path.isdir(os.path.join(self.home, "newdir")))
+
+    def test_glob_expands_tilde(self):
+        os.makedirs(os.path.join(self.home, "proj"))
+        with open(os.path.join(self.home, "proj", "a.py"), "w") as f:
+            f.write("x\n")
+        out = GlobTool().run({"pattern": "*.py", "path": "~/proj"}, ToolContext())
+        self.assertIn("a.py", out)
+
+    def test_grep_expands_tilde(self):
+        os.makedirs(os.path.join(self.home, "proj"))
+        with open(os.path.join(self.home, "proj", "a.py"), "w") as f:
+            f.write("needle\n")
+        out = Grep().run({"regex": "needle", "path": "~/proj"}, ToolContext())
+        self.assertIn("needle", out)
+
+
 if __name__ == "__main__":
     unittest.main()
