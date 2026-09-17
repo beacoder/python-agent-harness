@@ -184,9 +184,11 @@ def parse_at_references(
 
     Returns ``(cleaned_text, attachments, errors)``:
 
-    - ``cleaned_text``: the input text with ``@path`` tokens replaced by
-      just the path (the ``@`` stripped), so the model sees the file
-      content in the attachment, not a duplicate in the text.
+    - ``cleaned_text``: the input text with ``@path`` tokens replaced —
+      image references become ``[image]`` (the image bytes are already
+      in an ``ImagePart``; leaving the path invites the model to try
+      reading the file with tools), text references become just the
+      path (the content is inlined, the path provides context).
     - ``attachments``: successfully parsed ``ParsedAttachment`` objects
       (one per valid ``@path``), in order of appearance.
     - ``errors``: validation errors for files that could not be attached.
@@ -233,11 +235,18 @@ def parse_at_references(
             # can see what failed
             continue
         attachments.append(result)
-        # Replace the @path token (including the leading space/start)
-        # with just the path (no @), so the text reads naturally.  The
-        # trailing punctuation stripped above stays in the text.
+        # Replace the @path token.  For image attachments, the image
+        # bytes are already in an ImagePart — leaving the file path in
+        # the text causes some models to try reading the file with
+        # tools, so replace it with a generic [image] placeholder.
+        # For text attachments, keep the path (it provides context for
+        # the inlined content).  The trailing punctuation stripped
+        # above stays in the text.
         full_match = match.group(0)
-        replacements.append((full_match, full_match.replace("@" + stripped, stripped, 1)))
+        if isinstance(result.part, ImagePart):
+            replacements.append((full_match, full_match.replace("@" + stripped, "[image]", 1)))
+        else:
+            replacements.append((full_match, full_match.replace("@" + stripped, stripped, 1)))
 
     cleaned = text
     for old, new in replacements:
