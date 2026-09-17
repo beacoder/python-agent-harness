@@ -50,7 +50,9 @@ class Write(Tool):
         # LLM may put the full file path in "filename" or in "path"
         if filename:
             path = os.path.realpath(
-                os.path.abspath(os.path.join(os.path.expanduser(dir_path), filename))
+                os.path.abspath(
+                    os.path.join(os.path.expanduser(dir_path), os.path.expanduser(filename))
+                )
             )
         else:
             path = os.path.realpath(os.path.abspath(os.path.expanduser(dir_path)))
