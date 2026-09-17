@@ -630,8 +630,8 @@ class CommandMixin:
         path: str | None = None
         if not arg or arg in ("--latest", "latest"):
             path = SessionPersistence.latest_session()
-        elif os.path.isfile(arg):
-            path = arg
+        elif os.path.isfile(os.path.expanduser(arg)):
+            path = os.path.expanduser(arg)
         else:
             # Try title-based matching: find sessions whose filename
             # contains the argument as a case-insensitive substring
