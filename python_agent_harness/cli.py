@@ -80,7 +80,7 @@ def make_session(
     from .prompts import assemble_agent_prompt, load_agent_prompt
     from .session import find_skill_dir
 
-    abs_project = os.path.abspath(project_dir)
+    abs_project = os.path.abspath(os.path.expanduser(project_dir))
     skill_dir = find_skill_dir(abs_project, paths.get("skill_path"))
     registry = default_registry()
     tool_instructions = registry.tool_instructions()
