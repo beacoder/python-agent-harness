@@ -673,13 +673,20 @@ class TestGlobGrepTools(unittest.TestCase):
         out = grep_tool().run({"regex": "x", "path": os.path.join(self.tmp.name, "nope")}, self.ctx)
         self.assertIn("Error", out)
 
-    @unittest.skipIf(sys.platform == "darwin", "macOS uses GlobMac (find), not the tree fallback")
+    @unittest.skipIf(
+        sys.platform in ("darwin", "win32"),
+        "macOS uses GlobMac (find), Windows uses GlobWindows (pathlib), not the tree fallback",
+    )
     @mock.patch("shutil.which", return_value=None)
     def test_glob_errors_when_tree_missing(self, _which):
         d = self._mkdir("proj")
         out = glob_tool().run({"pattern": "*.py", "path": d}, self.ctx)
         self.assertIn("Executable `tree` not found", out)
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows GrepWindows has a pure-Python re fallback, no unavailable error",
+    )
     @mock.patch("shutil.which", return_value=None)
     def test_grep_errors_when_no_backend_available(self, _which):
         out = grep_tool().run({"regex": "x", "path": self.tmp.name}, self.ctx)
@@ -1135,7 +1142,10 @@ class TestGlobErrorPaths(unittest.TestCase):
         self.assertTrue(out.startswith("Error"))
         self.assertIn("No such file", out)
 
-    @unittest.skipIf(sys.platform == "darwin", "macOS uses GlobMac (find), not the tree fallback")
+    @unittest.skipIf(
+        sys.platform in ("darwin", "win32"),
+        "macOS uses GlobMac (find), Windows uses GlobWindows (pathlib), not the tree fallback",
+    )
     def test_tree_nonzero_exit_reported(self):
         d = os.path.join(self.tmp.name, "plain")
         os.makedirs(d)
@@ -1166,6 +1176,10 @@ class TestGrepFallbackBranches(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows GrepWindows has a pure-Python re fallback, no unavailable error",
+    )
     def test_git_grep_error_falls_to_unavailable_error(self):
         repo = os.path.join(self.tmp.name, "repo")
         os.makedirs(repo)
@@ -1200,6 +1214,10 @@ class TestGrepFallbackBranches(unittest.TestCase):
         self.assertIn("f.txt:1:needle", out)
         self.assertNotIn("Error", out)
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows GrepWindows has a pure-Python re fallback, no unavailable error",
+    )
     def test_rg_fallback_error_then_grep_unavailable(self):
         d = os.path.join(self.tmp.name, "plain")
         os.makedirs(d)
@@ -1216,6 +1234,10 @@ class TestGrepFallbackBranches(unittest.TestCase):
             out = grep_tool().run({"regex": "x", "path": d}, self.ctx)
         self.assertIn("ripgrep/grep/git-grep not available", out)
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows GrepWindows has a pure-Python re fallback, no unavailable error",
+    )
     def test_grep_fallback_error_then_unavailable(self):
         d = os.path.join(self.tmp.name, "plain")
         os.makedirs(d)
