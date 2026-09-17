@@ -127,6 +127,7 @@ def _jsonable(value: Any) -> Any:
 
 
 def _resolve_path(raw_path: str, cwd: str) -> str:
+    raw_path = os.path.expanduser(raw_path)
     if not os.path.isabs(raw_path):
         return os.path.realpath(os.path.abspath(os.path.join(cwd, raw_path)))
     return os.path.realpath(raw_path)
