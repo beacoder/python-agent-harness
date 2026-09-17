@@ -662,6 +662,7 @@ class TestGlobGrepTools(unittest.TestCase):
         out = grep_tool().run({"regex": "x", "path": os.path.join(self.tmp.name, "nope")}, self.ctx)
         self.assertIn("Error", out)
 
+    @unittest.skipIf(sys.platform == "darwin", "macOS uses GlobMac (find), not the tree fallback")
     @mock.patch("shutil.which", return_value=None)
     def test_glob_errors_when_tree_missing(self, _which):
         d = self._mkdir("proj")
@@ -902,8 +903,12 @@ class TestWriteTool(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             home = os.path.join(d, "home")
             os.makedirs(home)
-            orig_home = os.environ.get("HOME")
+            saved = {v: os.environ.get(v) for v in ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH")}
             os.environ["HOME"] = home
+            if os.name == "nt":
+                os.environ["USERPROFILE"] = home
+                os.environ.pop("HOMEDRIVE", None)
+                os.environ.pop("HOMEPATH", None)
             try:
                 ctx, _ = make_ctx()
                 result = Write().run(
@@ -914,10 +919,11 @@ class TestWriteTool(unittest.TestCase):
                     self.assertEqual(f.read(), "hi\n")
                 self.assertFalse(os.path.exists(os.path.join(d, "~")))
             finally:
-                if orig_home is not None:
-                    os.environ["HOME"] = orig_home
-                else:
-                    os.environ.pop("HOME", None)
+                for var, val in saved.items():
+                    if val is not None:
+                        os.environ[var] = val
+                    else:
+                        os.environ.pop(var, None)
 
     def test_overwrite_non_utf8_file_does_not_fail(self):
         """Regression: reading the old content with strict UTF-8 raised
@@ -1118,6 +1124,7 @@ class TestGlobErrorPaths(unittest.TestCase):
         self.assertTrue(out.startswith("Error"))
         self.assertIn("No such file", out)
 
+    @unittest.skipIf(sys.platform == "darwin", "macOS uses GlobMac (find), not the tree fallback")
     def test_tree_nonzero_exit_reported(self):
         d = os.path.join(self.tmp.name, "plain")
         os.makedirs(d)
@@ -2217,18 +2224,28 @@ class TestTildeExpansion(unittest.TestCase):
     """All filesystem tools must expand ~ in user-provided paths."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        # mkdtemp (system temp dir, outside the repo): a temp dir inside the
+        # repo would make _git_root find this repo and route Glob/Grep to the
+        # git backend, which needs `tree`/PCRE support the platform may lack.
+        self.tmp = tempfile.TemporaryDirectory(dir=tempfile.gettempdir())
         self.home = os.path.join(self.tmp.name, "home")
         os.makedirs(self.home)
-        self.orig_home = os.environ.get("HOME")
+        self._saved = {}
+        for var in ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
+            self._saved[var] = os.environ.get(var)
         os.environ["HOME"] = self.home
+        if os.name == "nt":
+            os.environ["USERPROFILE"] = self.home
+            os.environ.pop("HOMEDRIVE", None)
+            os.environ.pop("HOMEPATH", None)
 
     def tearDown(self):
         self.tmp.cleanup()
-        if self.orig_home is not None:
-            os.environ["HOME"] = self.orig_home
-        else:
-            os.environ.pop("HOME", None)
+        for var, val in self._saved.items():
+            if val is not None:
+                os.environ[var] = val
+            else:
+                os.environ.pop(var, None)
 
     def test_read_expands_tilde(self):
         p = os.path.join(self.home, "file.txt")
