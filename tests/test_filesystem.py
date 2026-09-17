@@ -15,6 +15,7 @@ from unittest import mock
 from python_agent_harness.tools.base import ToolContext, ToolRuntime
 from python_agent_harness.tools.diffapply import apply_unified_diff, diff_targets
 from python_agent_harness.tools.edit_mac import EditMac
+from python_agent_harness.tools.edit_win import EditWindows
 from python_agent_harness.tools.filesystem import (
     Edit,
     GlobTool,
@@ -27,26 +28,36 @@ from python_agent_harness.tools.filesystem import (
     _strip_diff_fence,
 )
 from python_agent_harness.tools.glob_mac import GlobMac
+from python_agent_harness.tools.glob_win import GlobWindows
 from python_agent_harness.tools.grep_mac import GrepMac
+from python_agent_harness.tools.grep_win import GrepWindows
 
 
 def edit_tool() -> Edit:
     """The Edit tool active on this platform: Linux uses the patch
     binary, macOS the built-in Python diff applier (Apple's BSD patch
-    rejects well-formed hunks that GNU patch accepts)."""
+    rejects well-formed hunks that GNU patch accepts), Windows the
+    pure-Python applier."""
+    if sys.platform == "win32":
+        return EditWindows()
     return EditMac() if sys.platform == "darwin" else Edit()
 
 
 def glob_tool() -> GlobTool:
     """The Glob tool active on this platform: Linux shells out to
     ``tree`` for the non-git fallback, macOS to ``find`` (Apple ships
-    no ``tree``)."""
+    no ``tree``), Windows uses pure-Python ``pathlib.rglob``."""
+    if sys.platform == "win32":
+        return GlobWindows()
     return GlobMac() if sys.platform == "darwin" else GlobTool()
 
 
 def grep_tool() -> Grep:
     """The Grep tool active on this platform: Linux uses
-    ``git grep -P``, macOS ``git grep -E`` (Apple's git lacks PCRE)."""
+    ``git grep -P``, macOS ``git grep -E`` (Apple's git lacks PCRE),
+    Windows the pure-Python fallback."""
+    if sys.platform == "win32":
+        return GrepWindows()
     return GrepMac() if sys.platform == "darwin" else Grep()
 
 
