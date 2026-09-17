@@ -881,6 +881,29 @@ class TestWriteTool(unittest.TestCase):
             with open(path, "rb") as f:
                 self.assertEqual(f.read(), b"a\r\nb\n")
 
+    def test_write_full_path_in_filename_expands_tilde(self):
+        """The LLM may put the full path in `filename`; a leading ~ there
+        must expand to the home directory, not a literal ~ dir."""
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "home")
+            os.makedirs(home)
+            orig_home = os.environ.get("HOME")
+            os.environ["HOME"] = home
+            try:
+                ctx, _ = make_ctx()
+                result = Write().run(
+                    {"path": ".", "filename": "~/notes.txt", "content": "hi\n"}, ctx
+                )
+                self.assertIn("Created file", result)
+                with open(os.path.join(home, "notes.txt")) as f:
+                    self.assertEqual(f.read(), "hi\n")
+                self.assertFalse(os.path.exists(os.path.join(d, "~")))
+            finally:
+                if orig_home is not None:
+                    os.environ["HOME"] = orig_home
+                else:
+                    os.environ.pop("HOME", None)
+
     def test_overwrite_non_utf8_file_does_not_fail(self):
         """Regression: reading the old content with strict UTF-8 raised
         UnicodeDecodeError, so the write itself never happened."""
