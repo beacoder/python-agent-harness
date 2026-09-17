@@ -117,7 +117,7 @@ class Edit(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         raw = args["path"]
-        path = os.path.realpath(os.path.abspath(raw))
+        path = os.path.realpath(os.path.abspath(os.path.expanduser(raw)))
         if not os.access(path, os.R_OK):
             return f"Error: File or directory {path} is not readable"
         new_str = args.get("new_str")
