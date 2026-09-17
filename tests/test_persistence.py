@@ -80,15 +80,22 @@ class TestSession(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
-            store = SessionPersistence(
-                project_dir=d,
-                model="m",
-            )
-            path = store.save("hello world")
-            self.assertTrue(path)
-            self.assertTrue(os.path.exists(path))
-            latest = SessionPersistence.latest_session()
-            self.assertEqual(latest, path)
+            from python_agent_harness import config
+
+            old_dir = config.SESSION_DIR
+            config.SESSION_DIR = __import__("pathlib").Path(d)
+            try:
+                store = SessionPersistence(
+                    project_dir=d,
+                    model="m",
+                )
+                path = store.save("hello world")
+                self.assertTrue(path)
+                self.assertTrue(os.path.exists(path))
+                latest = SessionPersistence.latest_session()
+                self.assertEqual(latest, path)
+            finally:
+                config.SESSION_DIR = old_dir
 
     def test_apply_title_renames(self):
         import os
