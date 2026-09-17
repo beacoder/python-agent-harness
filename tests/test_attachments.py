@@ -188,8 +188,9 @@ class TestParseAtReferences(unittest.TestCase):
         self.assertEqual(attachments[0].part.media_type, "image/png")
         # the resolved absolute path is recorded on the part
         self.assertEqual(attachments[0].part.path, os.path.join(self.tmpdir, "test.png"))
-        self.assertIn("test.png", cleaned)
+        self.assertIn("[image]", cleaned)
         self.assertNotIn("@test.png", cleaned)
+        self.assertNotIn("test.png", cleaned)
 
     def test_text_file_creates_text_part(self):
         self._make_file("README.md", "# Hello World\n")
@@ -299,14 +300,15 @@ class TestParseAtReferences(unittest.TestCase):
             self.assertEqual(errors, [], f"unexpected errors for {text!r}")
             self.assertEqual(len(attachments), 1, f"no attachment for {text!r}")
             self.assertIsInstance(attachments[0].part, ImagePart)
-            # the punctuation stays in the cleaned text
-            self.assertIn("shot.png", cleaned)
+            # the image path is replaced with [image]; punctuation stays
+            self.assertIn("[image]", cleaned)
+            self.assertNotIn("shot.png", cleaned)
             self.assertNotIn("@shot.png", cleaned)
 
     def test_trailing_punctuation_kept_in_text(self):
         self._make_file("shot.png", b"\x89PNG\r\n\x1a\npng", binary=True)
         cleaned, _, _ = parse_at_references("see @shot.png.", self.tmpdir)
-        self.assertEqual(cleaned, "see shot.png.")
+        self.assertEqual(cleaned, "see [image].")
 
     def test_punctuation_only_token_ignored(self):
         """A bare @ followed only by punctuation is not a reference."""
