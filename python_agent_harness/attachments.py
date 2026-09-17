@@ -115,9 +115,9 @@ TEXT_BASENAMES: frozenset[str] = frozenset(
 
 
 # Placeholder written into saved sessions for image attachments.  The
-# image bytes themselves are not persisted; the source path(s) are
-# recorded so a restored session can re-attach the image when the file
-# still exists.
+# image bytes themselves are not persisted; the source (file path or
+# web URL) is recorded so a restored session can re-attach the image
+# (re-reading the file when it still exists, or reusing the URL).
 IMAGE_PLACEHOLDER_RE = re.compile(
     r"^\[(\d+) image attachment\(s\)(?: from ([^\n]+))?"
     r" — (not available in restored session|re-attached on restore)\]"
@@ -152,9 +152,12 @@ def _split_paths(raw: str) -> list[str]:
     return [p for p in out if p]
 
 
-def image_placeholder(count: int, paths: list[str] | None = None) -> str:
-    """Build the image-attachment placeholder line for session saves."""
-    loc = f" from {_format_paths(paths)}" if paths else ""
+def image_placeholder(count: int, sources: list[str] | None = None) -> str:
+    """Build the image-attachment placeholder line for session saves.
+
+    SOURCES are the image origins: file paths and/or web URLs.
+    """
+    loc = f" from {_format_paths(sources)}" if sources else ""
     return f"[{count} image attachment(s){loc} — not available in restored session]"
 
 
@@ -337,25 +340,29 @@ def reattach_images(text: str) -> tuple[str, list[ImagePart]]:
 
     TEXT must be a message body whose first line is an image-attachment
     placeholder (see ``image_placeholder``).  Returns ``(new_text,
-    parts)``: for each recorded path whose file still exists and passes
-    validation, the placeholder line is rewritten as a
-    ``re-attached on restore`` variant and the rebuilt ``ImagePart``
-    objects are returned.  When no image can be re-attached, the text
-    is returned unchanged.
+    parts)``: for each recorded source, the image is re-attached when
+    it is a web URL (always re-attachable) or a file path whose file
+    still exists and passes validation.  The placeholder line is
+    rewritten as a ``re-attached on restore`` variant and the rebuilt
+    ``ImagePart`` objects are returned.  When no image can be
+    re-attached, the text is returned unchanged.
     """
     m = IMAGE_PLACEHOLDER_RE.match(text)
     if not m:
         return text, []
-    paths = _split_paths(m.group(2) or "")
+    sources = _split_paths(m.group(2) or "")
     parts: list[ImagePart] = []
-    for path in paths:
-        result = _validate_and_create(path, path)
+    for source in sources:
+        if source.startswith(("http://", "https://")):
+            parts.append(ImagePart.from_url(source))
+            continue
+        result = _validate_and_create(source, source)
         if isinstance(result, ParsedAttachment) and isinstance(result.part, ImagePart):
             parts.append(result.part)
     if not parts:
         return text, []
     new_line = (
         f"[{len(parts)} image attachment(s) from "
-        f"{_format_paths([p.path for p in parts if p.path])} — re-attached on restore]"
+        f"{_format_paths([p.path or p.url for p in parts if p.path or p.url])} — re-attached on restore]"
     )
     return new_line + text[m.end() :], parts
