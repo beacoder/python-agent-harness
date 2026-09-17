@@ -290,8 +290,12 @@ class CommandMixin:
             if isinstance(m.content, list):
                 image_count = sum(1 for p in m.content if isinstance(p, ImagePart))
                 if image_count:
-                    paths = [p.path for p in m.content if isinstance(p, ImagePart) and p.path]
-                    body = f"{image_placeholder(image_count, paths)}\n{body}"
+                    sources = [
+                        p.path or p.url
+                        for p in m.content
+                        if isinstance(p, ImagePart) and (p.path or p.url)
+                    ]
+                    body = f"{image_placeholder(image_count, sources)}\n{body}"
             if body:
                 parts.append(f"**{m.role}**: {body}")
         return "\n\n".join(parts)
