@@ -380,7 +380,7 @@ class Session:
 
         plan_file = self.plan_mode.plan_file
         raw = str(args.get("path", ""))
-        path = os.path.realpath(os.path.abspath(raw))
+        path = os.path.realpath(os.path.abspath(os.path.expanduser(raw)))
         cwd = _patch_cwd(raw, path)
         text = str(args.get("new_str"))
         text = text if text.endswith("\n") else text + "\n"
@@ -396,15 +396,21 @@ class Session:
     def _tool_path(self, name: str, args: dict[str, Any]) -> str | None:
         if name == "Write":
             return os.path.realpath(
-                os.path.join(str(args.get("path", "")), str(args.get("filename", "")))
+                os.path.join(
+                    os.path.expanduser(str(args.get("path", ""))),
+                    str(args.get("filename", "")),
+                )
             )
         if name == "Edit":
-            return os.path.realpath(str(args.get("path", "")))
+            return os.path.realpath(os.path.expanduser(str(args.get("path", ""))))
         if name == "Insert":
-            return os.path.realpath(str(args.get("path", "")))
+            return os.path.realpath(os.path.expanduser(str(args.get("path", ""))))
         if name == "Mkdir":
             return os.path.realpath(
-                os.path.join(str(args.get("parent", "")), str(args.get("name", "")))
+                os.path.join(
+                    os.path.expanduser(str(args.get("parent", ""))),
+                    str(args.get("name", "")),
+                )
             )
         return None
 
@@ -661,16 +667,20 @@ class Session:
             body = escape_role_headers(m.text())
             # Mark messages that contained image attachments: the image
             # data itself cannot be persisted in the markdown format, so
-            # a placeholder notes what was attached.  The original file
-            # path (when the image came from a path) is recorded so a
-            # restored session can re-attach it.  On restore, the
-            # placeholder text survives so the user/agent knows an image
-            # was present but is no longer available.
+            # a placeholder notes what was attached.  The original source
+            # (file path or web URL) is recorded so a restored session
+            # can re-attach it.  On restore, the placeholder text
+            # survives so the user/agent knows an image was present but
+            # is no longer available.
             if isinstance(m.content, list):
                 image_count = sum(1 for p in m.content if isinstance(p, ImagePart))
                 if image_count:
-                    paths = [p.path for p in m.content if isinstance(p, ImagePart) and p.path]
-                    body = f"{image_placeholder(image_count, paths)}\n{body}"
+                    sources = [
+                        p.path or p.url
+                        for p in m.content
+                        if isinstance(p, ImagePart) and (p.path or p.url)
+                    ]
+                    body = f"{image_placeholder(image_count, sources)}\n{body}"
             if m.role == "assistant" and m.tool_calls:
                 calls = ", ".join(tc.name for tc in m.tool_calls)
                 body = (body + f"\n[tool calls: {calls}]").strip()
