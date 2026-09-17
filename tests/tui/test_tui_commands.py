@@ -188,6 +188,39 @@ class TestTuiCommands(unittest.TestCase):
         start.assert_not_called()
         self.assertIn("needs a target", buf.getvalue())
 
+    def test_arbitrary_custom_command_dispatches(self):
+        """Any custom command (not just /explain) is routed through
+        _run_slash_command: a temp commands dir with a fresh .md file
+        must dispatch, not fall through to 'unknown command'."""
+        import tempfile
+        from pathlib import Path
+
+        from python_agent_harness import commands as commands_mod
+
+        tui, buf = make_tui()
+        captured = {}
+
+        def fake_start(text, system=None, restore=None):
+            captured["text"] = text
+            captured["system"] = system
+
+        with tempfile.TemporaryDirectory() as d:
+            prompts_dir = Path(d) / "prompts"
+            cmds_dir = prompts_dir / "commands"
+            cmds_dir.mkdir(parents=True)
+            (cmds_dir / "pcap_comparator.md").write_text(
+                "Compare two pcap files.", encoding="utf-8"
+            )
+            with (
+                mock.patch.object(commands_mod, "COMMANDS_DIR", cmds_dir),
+                mock.patch.object(commands_mod, "PROMPTS_DIR", prompts_dir),
+                mock.patch.object(tui, "_start_agent", side_effect=fake_start),
+            ):
+                self.assertFalse(tui._handle_slash("/pcap-comparator"))
+        self.assertIn("pcap-comparator", captured["text"].text())
+        self.assertIn("You are pcap file comparator.", captured["system"])
+        self.assertNotIn("unknown command", buf.getvalue())
+
     def test_unknown_slash_command(self):
         tui, buf = make_tui()
         self.assertFalse(tui._handle_slash("/bogus"))
