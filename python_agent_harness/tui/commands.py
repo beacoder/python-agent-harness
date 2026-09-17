@@ -291,9 +291,11 @@ class CommandMixin:
                 image_count = sum(1 for p in m.content if isinstance(p, ImagePart))
                 if image_count:
                     sources = [
-                        p.path or p.url
+                        loc
                         for p in m.content
-                        if isinstance(p, ImagePart) and (p.path or p.url)
+                        if isinstance(p, ImagePart)
+                        for loc in (p.path or p.url,)
+                        if loc
                     ]
                     body = f"{image_placeholder(image_count, sources)}\n{body}"
             if body:
