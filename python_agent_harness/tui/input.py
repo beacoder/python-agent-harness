@@ -357,7 +357,7 @@ class InputMixin:
     def _read_multiline(self) -> str | None:
         try:
             with _safe_patch_stdout():
-                text = self.prompt_session.prompt(self._input_prompt())
+                text = self.prompt_session.prompt(self._input_prompt(), multiline=True)
         except EOFError:
             # Ctrl-D: quit
             return None
