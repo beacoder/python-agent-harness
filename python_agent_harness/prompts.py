@@ -553,6 +553,8 @@ def _image_placeholder_text(msg: object) -> str:
         if isinstance(p, ImagePart):
             if p.path:
                 parts.append(f"[image was attached: {p.path}]")
+            elif p.url:
+                parts.append(f"[image was attached: {p.url}]")
             else:
                 parts.append("[image was attached]")
     return "\n".join(parts)
