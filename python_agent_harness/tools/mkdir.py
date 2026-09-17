@@ -22,7 +22,7 @@ class Mkdir(Tool):
     def run(self, args: dict, ctx: ToolContext) -> str:
         parent = args["parent"]
         name = args["name"]
-        path = os.path.realpath(os.path.abspath(os.path.join(parent, name)))
+        path = os.path.realpath(os.path.abspath(os.path.join(os.path.expanduser(parent), name)))
         try:
             os.makedirs(path, exist_ok=True)
             return f"Directory {name} created/verified in {parent}"
