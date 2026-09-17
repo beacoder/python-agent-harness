@@ -93,7 +93,7 @@ class CommandMixin:
             self.console.print(f"saved: {path}")
         elif cmd == "/summary":
             self._run_summary()
-        elif cmd in ("/init", "/review", "/explain"):
+        elif cmd in ("/init", "/review") or find_command(cmd[1:]) is not None:
             self._run_slash_command(cmd[1:], arg)
         elif cmd == "/sessions":
             self._run_sessions()
@@ -113,13 +113,25 @@ class CommandMixin:
         elif cmd == "/agent":
             self._run_agent_command(arg)
         elif cmd == "/help":
+            from ..commands import load_custom_commands
+
+            custom_names = {c.name for c in load_custom_commands()}
+            custom = " ".join(f"/{n}" for n in sorted(custom_names))
+            builtin = "/plan /build /init /review /compact "
+            builtin += "/save /summary /sessions /restore /clear /model /agent /exit"
+            if custom:
+                builtin += f"\n{custom}"
+            explain_line = (
+                "/explain [project] [target]          explain code\n"
+                if "explain" in custom_names
+                else ""
+            )
             self.console.print(
-                "/plan /build /init /review /explain /compact "
-                "/save /summary /sessions /restore /clear /model /agent /exit\n"
+                builtin + "\n"
                 "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
                 "/review [project] [commit|branch|PR] review code changes\n"
-                "/explain [project] [target]          explain code\n"
-                "/sessions                            list saved sessions\n"
+                + explain_line
+                + "/sessions                            list saved sessions\n"
                 "/restore [path | title | --latest | latest]   restore a saved session (conversation + agent + model)\n"
                 "/model [name]                        switch LLM model profile\n"
                 "/agent [name]                        switch agent system prompt\n"
