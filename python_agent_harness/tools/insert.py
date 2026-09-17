@@ -49,7 +49,7 @@ class Insert(Tool):
     }
 
     def run(self, args: dict, ctx: ToolContext) -> str:
-        path = os.path.realpath(os.path.abspath(args["path"]))
+        path = os.path.realpath(os.path.abspath(os.path.expanduser(args["path"])))
         # surrogateescape + newline="": preserve invalid UTF-8 bytes and
         # the file's own line endings (see Edit._string_replace)
         try:
