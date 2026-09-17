@@ -26,6 +26,8 @@ from python_agent_harness.tools.filesystem import (
     _fix_patch_headers,
     _strip_diff_fence,
 )
+from python_agent_harness.tools.glob_mac import GlobMac
+from python_agent_harness.tools.grep_mac import GrepMac
 
 
 def edit_tool() -> Edit:
@@ -33,6 +35,19 @@ def edit_tool() -> Edit:
     binary, macOS the built-in Python diff applier (Apple's BSD patch
     rejects well-formed hunks that GNU patch accepts)."""
     return EditMac() if sys.platform == "darwin" else Edit()
+
+
+def glob_tool() -> GlobTool:
+    """The Glob tool active on this platform: Linux shells out to
+    ``tree`` for the non-git fallback, macOS to ``find`` (Apple ships
+    no ``tree``)."""
+    return GlobMac() if sys.platform == "darwin" else GlobTool()
+
+
+def grep_tool() -> Grep:
+    """The Grep tool active on this platform: Linux uses
+    ``git grep -P``, macOS ``git grep -E`` (Apple's git lacks PCRE)."""
+    return GrepMac() if sys.platform == "darwin" else Grep()
 
 
 def _big_output(lines: int = 6000, width: int = 80) -> str:
@@ -309,7 +324,7 @@ class TestSpool(unittest.TestCase):
                 # inflates output well beyond MAX_OUTPUT
                 f.write("".join(f"line{i:04d}-needle-{'x' * 300}\n" for i in range(1500)))
             ctx, _ = make_ctx()
-            result = Grep().run({"regex": "needle", "path": d, "context_lines": 15}, ctx)
+            result = grep_tool().run({"regex": "needle", "path": d, "context_lines": 15}, ctx)
             self.assertIn("grep results too large", result)
             m = re.search(r'file_path="([^"]+)"', result)
             self.assertIsNotNone(m, result)
@@ -343,7 +358,7 @@ class TestSpool(unittest.TestCase):
             with open(os.path.join(d, "data.txt"), "w") as f:
                 f.write("one\ntwo\nthree\nneedle\nfour\nfive\nsix\n")
             ctx, _ = make_ctx()
-            result = Grep().run({"regex": "needle", "path": d, "context_lines": 99}, ctx)
+            result = grep_tool().run({"regex": "needle", "path": d, "context_lines": 99}, ctx)
             self.assertIn("needle", result)
             self.assertNotIn("Error", result)
 
@@ -564,10 +579,10 @@ class TestGlobGrepTools(unittest.TestCase):
         open(os.path.join(d, "a.py"), "w").close()
         self._mkdir("proj", "sub")
         open(os.path.join(d, "sub", "b.py"), "w").close()
-        out = GlobTool().run({"pattern": "*.py", "path": d}, self.ctx)
+        out = glob_tool().run({"pattern": "*.py", "path": d}, self.ctx)
         self.assertIn(os.path.realpath(os.path.join(d, "a.py")), out)
         self.assertIn(os.path.realpath(os.path.join(d, "sub", "b.py")), out)
-        out1 = GlobTool().run({"pattern": "*.py", "path": d, "depth": 1}, self.ctx)
+        out1 = glob_tool().run({"pattern": "*.py", "path": d, "depth": 1}, self.ctx)
         self.assertIn(os.path.realpath(os.path.join(d, "a.py")), out1)
         self.assertNotIn(os.path.realpath(os.path.join(d, "sub", "b.py")), out1)
 
@@ -579,15 +594,15 @@ class TestGlobGrepTools(unittest.TestCase):
             with open(os.path.join(repo, name), "w") as f:
                 f.write(content)
         subprocess.run(["git", "add", "."], cwd=repo, check=True)
-        out = GlobTool().run({"pattern": "*", "path": repo}, self.ctx)
+        out = glob_tool().run({"pattern": "*", "path": repo}, self.ctx)
         # git backend reports forward-slash paths on every platform
         self.assertIn(os.path.realpath(os.path.join(repo, "a.py")).replace(os.sep, "/"), out)
         self.assertIn(os.path.realpath(os.path.join(repo, "b.txt")).replace(os.sep, "/"), out)
-        out = Grep().run({"regex": "hello", "path": repo}, self.ctx)
+        out = grep_tool().run({"regex": "hello", "path": repo}, self.ctx)
         self.assertIn("a.py", out)
         self.assertIn("hello", out)
         self.assertNotIn("b.txt", out)
-        out = Grep().run({"regex": "hello", "path": repo, "context_lines": 2}, self.ctx)
+        out = grep_tool().run({"regex": "hello", "path": repo, "context_lines": 2}, self.ctx)
         self.assertIn("a.py", out)
         self.assertIn("hello", out)
 
@@ -604,24 +619,24 @@ class TestGlobGrepTools(unittest.TestCase):
         with open(os.path.join(real, "a.py"), "w") as f:
             f.write("hello world\n")
         subprocess.run(["git", "add", "."], cwd=real, check=True)
-        out = GlobTool().run({"pattern": "*", "path": link}, self.ctx)
+        out = glob_tool().run({"pattern": "*", "path": link}, self.ctx)
         self.assertNotIn("outside repository", out)
         self.assertNotIn("Glob failed", out)
         # Normalize path separators for Windows compatibility
         expected = os.path.realpath(os.path.join(real, "a.py")).replace("\\", "/")
         self.assertIn(expected, out.replace("\\", "/"))
-        out = Grep().run({"regex": "hello", "path": link}, self.ctx)
+        out = grep_tool().run({"regex": "hello", "path": link}, self.ctx)
         self.assertIn("a.py", out)
         self.assertIn("hello", out)
 
     def test_glob_nonexistent_path_errors(self):
-        out = GlobTool().run(
+        out = glob_tool().run(
             {"pattern": "*", "path": os.path.join(self.tmp.name, "nope")}, self.ctx
         )
         self.assertIn("Error", out)
 
     def test_glob_empty_pattern_errors(self):
-        out = GlobTool().run({"pattern": "", "path": self.tmp.name}, self.ctx)
+        out = glob_tool().run({"pattern": "", "path": self.tmp.name}, self.ctx)
         self.assertIn("Error", out)
 
     def test_grep_single_file_path(self):
@@ -629,7 +644,7 @@ class TestGlobGrepTools(unittest.TestCase):
         p = os.path.join(d, "a.py")
         with open(p, "w") as f:
             f.write("alpha\nbeta\nalpha\n")
-        out = Grep().run({"regex": "alpha", "path": p}, self.ctx)
+        out = grep_tool().run({"regex": "alpha", "path": p}, self.ctx)
         self.assertIn("alpha", out)
         self.assertIn("1", out)
 
@@ -639,23 +654,23 @@ class TestGlobGrepTools(unittest.TestCase):
             f.write("needle\n")
         with open(os.path.join(d, "a.md"), "w") as f:
             f.write("needle\n")
-        out = Grep().run({"regex": "needle", "path": d, "glob": "*.py"}, self.ctx)
+        out = grep_tool().run({"regex": "needle", "path": d, "glob": "*.py"}, self.ctx)
         self.assertIn("a.py", out)
         self.assertNotIn("a.md", out)
 
     def test_grep_nonexistent_path_errors(self):
-        out = Grep().run({"regex": "x", "path": os.path.join(self.tmp.name, "nope")}, self.ctx)
+        out = grep_tool().run({"regex": "x", "path": os.path.join(self.tmp.name, "nope")}, self.ctx)
         self.assertIn("Error", out)
 
     @mock.patch("shutil.which", return_value=None)
     def test_glob_errors_when_tree_missing(self, _which):
         d = self._mkdir("proj")
-        out = GlobTool().run({"pattern": "*.py", "path": d}, self.ctx)
+        out = glob_tool().run({"pattern": "*.py", "path": d}, self.ctx)
         self.assertIn("Executable `tree` not found", out)
 
     @mock.patch("shutil.which", return_value=None)
     def test_grep_errors_when_no_backend_available(self, _which):
-        out = Grep().run({"regex": "x", "path": self.tmp.name}, self.ctx)
+        out = grep_tool().run({"regex": "x", "path": self.tmp.name}, self.ctx)
         self.assertIn("ripgrep/grep/git-grep not available", out)
 
 
@@ -1077,7 +1092,7 @@ class TestGlobErrorPaths(unittest.TestCase):
             "python_agent_harness.tools.filesystem.subprocess.run",
             side_effect=subprocess.TimeoutExpired("git ls-files", 60),
         ):
-            out = GlobTool().run({"pattern": "*.py", "path": repo}, self.ctx)
+            out = glob_tool().run({"pattern": "*.py", "path": repo}, self.ctx)
         self.assertTrue(out.startswith("Error"))
         self.assertIn("timed out", out)
 
@@ -1088,7 +1103,7 @@ class TestGlobErrorPaths(unittest.TestCase):
             "python_agent_harness.tools.filesystem.subprocess.run",
             return_value=proc,
         ):
-            out = GlobTool().run({"pattern": "*.py", "path": repo}, self.ctx)
+            out = glob_tool().run({"pattern": "*.py", "path": repo}, self.ctx)
         self.assertIn("Glob failed with exit code 128", out)
 
     def test_git_lsfiles_oserror_reported(self):
@@ -1099,7 +1114,7 @@ class TestGlobErrorPaths(unittest.TestCase):
             "python_agent_harness.tools.filesystem.subprocess.run",
             side_effect=OSError("No such file or directory"),
         ):
-            out = GlobTool().run({"pattern": "*.py", "path": repo}, self.ctx)
+            out = glob_tool().run({"pattern": "*.py", "path": repo}, self.ctx)
         self.assertTrue(out.startswith("Error"))
         self.assertIn("No such file", out)
 
@@ -1114,7 +1129,7 @@ class TestGlobErrorPaths(unittest.TestCase):
                 return_value=proc,
             ),
         ):
-            out = GlobTool().run({"pattern": "*", "path": d}, self.ctx)
+            out = glob_tool().run({"pattern": "*", "path": d}, self.ctx)
         self.assertIn("Glob failed with exit code 1", out)
 
     def test_git_glob_results_empty_returns_empty_string(self):
@@ -1146,7 +1161,7 @@ class TestGrepFallbackBranches(unittest.TestCase):
             ),
             mock.patch("shutil.which", return_value=None),
         ):
-            out = Grep().run({"regex": "hello", "path": repo}, self.ctx)
+            out = grep_tool().run({"regex": "hello", "path": repo}, self.ctx)
         self.assertIn("ripgrep/grep/git-grep not available", out)
 
     def test_rg_fallback_success_with_context_and_glob(self):
@@ -1160,7 +1175,7 @@ class TestGrepFallbackBranches(unittest.TestCase):
                 return_value=proc,
             ),
         ):
-            out = Grep().run(
+            out = grep_tool().run(
                 {"regex": "needle", "path": d, "glob": "*.py", "context_lines": 2},
                 self.ctx,
             )
@@ -1180,7 +1195,7 @@ class TestGrepFallbackBranches(unittest.TestCase):
                 side_effect=OSError("boom"),
             ),
         ):
-            out = Grep().run({"regex": "x", "path": d}, self.ctx)
+            out = grep_tool().run({"regex": "x", "path": d}, self.ctx)
         self.assertIn("ripgrep/grep/git-grep not available", out)
 
     def test_grep_fallback_error_then_unavailable(self):
@@ -1196,7 +1211,7 @@ class TestGrepFallbackBranches(unittest.TestCase):
                 side_effect=OSError("boom"),
             ),
         ):
-            out = Grep().run({"regex": "x", "path": d}, self.ctx)
+            out = grep_tool().run({"regex": "x", "path": d}, self.ctx)
         self.assertIn("ripgrep/grep/git-grep not available", out)
 
     def test_git_grep_with_glob_filter(self):
@@ -1208,7 +1223,7 @@ class TestGrepFallbackBranches(unittest.TestCase):
         with open(os.path.join(repo, "b.md"), "w") as f:
             f.write("needle here\n")
         subprocess.run(["git", "add", "."], cwd=repo, check=True)
-        out = Grep().run({"regex": "needle", "path": repo, "glob": "*.py"}, self.ctx)
+        out = grep_tool().run({"regex": "needle", "path": repo, "glob": "*.py"}, self.ctx)
         self.assertIn("a.py", out)
         self.assertNotIn("b.md", out)
 
@@ -2262,14 +2277,14 @@ class TestTildeExpansion(unittest.TestCase):
         os.makedirs(os.path.join(self.home, "proj"))
         with open(os.path.join(self.home, "proj", "a.py"), "w") as f:
             f.write("x\n")
-        out = GlobTool().run({"pattern": "*.py", "path": "~/proj"}, ToolContext())
+        out = glob_tool().run({"pattern": "*.py", "path": "~/proj"}, ToolContext())
         self.assertIn("a.py", out)
 
     def test_grep_expands_tilde(self):
         os.makedirs(os.path.join(self.home, "proj"))
         with open(os.path.join(self.home, "proj", "a.py"), "w") as f:
             f.write("needle\n")
-        out = Grep().run({"regex": "needle", "path": "~/proj"}, ToolContext())
+        out = grep_tool().run({"regex": "needle", "path": "~/proj"}, ToolContext())
         self.assertIn("needle", out)
 
 
