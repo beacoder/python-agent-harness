@@ -67,7 +67,7 @@ class Read(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         path = args["file_path"]
-        full = os.path.realpath(os.path.abspath(path))
+        full = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
         if os.path.isdir(full):
             return f"Error: cannot read {path}: is a directory"
         try:
