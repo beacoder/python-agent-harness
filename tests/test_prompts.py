@@ -460,6 +460,23 @@ class TestUserPromptTexts(unittest.TestCase):
             ["what is this?\n[image was attached: /tmp/shot.png]"],
         )
 
+    def test_url_image_part_gets_placeholder_note(self):
+        """A URL-based image must survive compaction with its URL in the
+        note, so the model knows which image was attached."""
+        msgs = [
+            Message(
+                role="user",
+                content=[
+                    TextPart(text="what is this?"),
+                    ImagePart.from_url("https://example.com/image.jpg"),
+                ],
+            ),
+        ]
+        self.assertEqual(
+            user_prompt_texts(msgs),
+            ["what is this?\n[image was attached: https://example.com/image.jpg]"],
+        )
+
     def test_image_only_message_dropped(self):
         """An image-only prompt has no text; the image's content is
         already captured in the summary, so the prompt is dropped (the
