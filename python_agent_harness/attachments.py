@@ -361,8 +361,8 @@ def reattach_images(text: str) -> tuple[str, list[ImagePart]]:
             parts.append(result.part)
     if not parts:
         return text, []
+    locs = [loc for loc in (p.path or p.url for p in parts) if loc]
     new_line = (
-        f"[{len(parts)} image attachment(s) from "
-        f"{_format_paths([p.path or p.url for p in parts if p.path or p.url])} — re-attached on restore]"
+        f"[{len(parts)} image attachment(s) from {_format_paths(locs)} — re-attached on restore]"
     )
     return new_line + text[m.end() :], parts
