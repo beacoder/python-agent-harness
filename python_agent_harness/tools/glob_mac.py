@@ -96,6 +96,7 @@ class GlobMac(GlobTool):
             return "Error: pattern must not be empty"
         path = args.get("path")
         if path:
+            path = os.path.expanduser(path)
             if not (os.path.isdir(path) and os.access(path, os.R_OK)):
                 return f"Error: path {path} is not readable"
         else:
