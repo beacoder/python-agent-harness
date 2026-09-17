@@ -603,6 +603,28 @@ class TestRestoreReattach(unittest.TestCase):
         self.assertIsInstance(user.content, str)
         self.assertIn("not available in restored session", user.content)
 
+    def test_url_image_roundtrip(self):
+        from python_agent_harness.session import Session
+        from python_agent_harness.tui.commands import CommandMixin
+
+        url = "https://example.com/image.jpg"
+        messages = [
+            Message(
+                role="user",
+                content=[
+                    ImagePart.from_url(url),
+                    TextPart(text="hi"),
+                ],
+            ),
+        ]
+        dummy = type("Dummy", (), {"_conversation_text": Session._conversation_text})()
+        restored = CommandMixin._parse_saved_body(dummy._conversation_text(messages))
+        user = restored[0]
+        self.assertIsInstance(user.content, list)
+        images = [p for p in user.content if isinstance(p, ImagePart)]
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].url, url)
+
     def test_reattach_path_with_comma(self):
         from python_agent_harness.session import Session
         from python_agent_harness.tui.commands import CommandMixin
@@ -626,6 +648,38 @@ class TestRestoreReattach(unittest.TestCase):
         images = [p for p in user.content if isinstance(p, ImagePart)]
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].path, img)
+
+    def test_reattach_url_image(self):
+        from python_agent_harness.attachments import reattach_images
+
+        url = "https://example.com/image.jpg"
+        text = f"[1 image attachment(s) from {url} — not available in restored session]"
+        new_text, parts = reattach_images(text)
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(parts[0].url, url)
+        self.assertIsNone(parts[0].data)
+        self.assertIn("re-attached on restore", new_text)
+        self.assertIn(url, new_text)
+
+    def test_reattach_mixed_path_and_url(self):
+        from python_agent_harness.attachments import reattach_images
+
+        url = "https://example.com/image.jpg"
+        text = f"[2 image attachment(s) from {self.img}, {url} — not available in restored session]"
+        new_text, parts = reattach_images(text)
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(parts[0].path, self.img)
+        self.assertEqual(parts[1].url, url)
+
+    def test_reattach_url_only_file_gone(self):
+        from python_agent_harness.attachments import reattach_images
+
+        url = "https://example.com/image.jpg"
+        text = f"[2 image attachment(s) from {self.img}, {url} — not available in restored session]"
+        os.unlink(self.img)
+        new_text, parts = reattach_images(text)
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(parts[0].url, url)
 
     def test_reattach_images_no_placeholder(self):
         from python_agent_harness.attachments import reattach_images
