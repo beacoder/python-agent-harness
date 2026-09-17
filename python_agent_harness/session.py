@@ -398,7 +398,7 @@ class Session:
             return os.path.realpath(
                 os.path.join(
                     os.path.expanduser(str(args.get("path", ""))),
-                    str(args.get("filename", "")),
+                    os.path.expanduser(str(args.get("filename", ""))),
                 )
             )
         if name == "Edit":
