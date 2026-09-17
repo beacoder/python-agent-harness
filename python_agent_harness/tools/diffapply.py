@@ -214,6 +214,7 @@ def _resolve_target(new_path: str, cwd: str, fallback_path: str | None) -> str:
         if name.startswith(prefix):
             name = name[len(prefix) :]
             break
+    name = os.path.expanduser(name)
     if os.path.isabs(name):
         return name
     target = os.path.join(cwd, name)
