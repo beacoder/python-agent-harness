@@ -202,13 +202,14 @@ Launches the interactive TUI agent. If `--project` is omitted, the current direc
 ### Headless mode
 
 ```sh
-python-agent-harness headless [prompt] [--project DIR] [--restore [SPEC]]
+python-agent-harness headless [prompt] [--project DIR] [--restore [SPEC]] [--model NAME]
 ```
 
 Runs a single prompt without the TUI — for CI, scripting, and piping.
-The assistant's answer streams to stdout; tool/status events go to stderr,
-so the answer stream stays clean. Interactive prompts are auto-answered
-(`confirm` → yes, `ask` → "Unanswered"), so a run never blocks.
+The assistant's answer is written to stdout once the run completes;
+tool/status events go to stderr, so the answer stream stays clean.
+Interactive prompts are auto-answered (`confirm` → yes, `ask` →
+"Unanswered"), so a run never blocks.
 
 - The prompt is a positional argument; when omitted it is read from stdin:
 
@@ -225,6 +226,11 @@ so the answer stream stays clean. Interactive prompts are auto-answered
   python-agent-harness headless "now add tests" --restore
   python-agent-harness headless "next step" --restore parser-refactor
   ```
+
+- `--model NAME` selects the model: a profile from the `models` config
+  section (same as the TUI's `/model`), or a raw model name on the
+  configured endpoint when no such profile exists. An explicit `--model`
+  wins over the model restored by `--restore`.
 
 - Exit code is 0 on success, 1 when the prompt was empty (only failed
   `@file` references), the run raised an agent error, or the restore failed.
