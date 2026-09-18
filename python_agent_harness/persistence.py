@@ -288,3 +288,100 @@ def _parse_metadata_value(value: str) -> str:
         return str(parsed)
     except (ValueError, SyntaxError):
         return value.strip("\"'")
+
+
+def parse_saved_body(body: str) -> list:
+    """Parse a saved session body back into Message objects.
+
+    The save format is markdown with **role**: content blocks
+    separated by blank lines.
+
+    ``tool`` and ``system`` blocks are dropped: the saved markdown
+    does not keep ``tool_call_id``/``name`` (assistant tool calls are
+    flattened to plain text), so a restored ``role="tool"`` message
+    would form an API-invalid payload (a tool message with no
+    preceding assistant ``tool_calls``).  A restored ``system``
+    message would duplicate the live system prompt the client
+    prepends on every request.  The following assistant reply
+    already summarizes the results, so dropping them loses no
+    essential context.
+
+    Body lines that merely look like a block header are escaped by
+    the renderer (see `escape_role_headers`) and unescaped here, so
+    a message quoting this format no longer splits into extra
+    messages.  Sessions saved before escaping existed can still
+    split — that ambiguity is in the file, not in this parser.
+    """
+    from .attachments import reattach_images
+    from .models import Message, TextPart
+
+    messages: list = []
+    current_role: str | None = None
+    current_lines: list[str] = []
+
+    def _flush(role: str, lines: list[str]) -> None:
+        content = "\n".join(lines).strip()
+        if not content:
+            return
+        # A leading image-attachment placeholder (written on save)
+        # is re-attached when the file still exists, so the restored
+        # message is multimodal again; otherwise it stays as text.
+        new_content, parts = reattach_images(content)
+        if parts:
+            remainder = new_content.split("\n", 1)
+            rest_text = remainder[1].strip() if len(remainder) > 1 else ""
+            content_parts: list = []
+            if rest_text:
+                content_parts.append(TextPart(text=rest_text))
+            content_parts.extend(parts)
+            messages.append(Message(role=role, content=content_parts))
+        else:
+            messages.append(Message(role=role, content=content))
+
+    for line in body.splitlines():
+        # Check for a role header: **user**: ... or **assistant**: ...
+        header = split_role_header(line)
+        if header is not None:
+            role, rest = header
+            # Save the previous block (tool blocks lose their
+            # tool_call_id/name; system blocks would duplicate the
+            # live system prompt the client prepends per request)
+            if current_role is not None and current_role not in ("tool", "system"):
+                _flush(current_role, current_lines)
+            current_role = role
+            current_lines = [unescape_role_header(rest)]
+            continue
+        current_lines.append(unescape_role_header(line))
+
+    # Don't forget the last block (tool/system blocks dropped, see above)
+    if current_role is not None and current_role not in ("tool", "system"):
+        _flush(current_role, current_lines)
+
+    return messages
+
+
+def find_session_by_title(query: str) -> str | None:
+    """Find a session file by title substring (case-insensitive).
+
+    Matches against the full filename, the filename without .md,
+    and the derived title.  Returns the most recent match, or None.
+    """
+    query_lower = query.lower()
+    # Strip .md from query if present, for cleaner substring matching
+    query_stem = query_lower[:-3] if query_lower.endswith(".md") else query_lower
+    files = SessionPersistence.list_sessions()  # already sorted by mtime desc
+    for f in files:
+        basename = os.path.basename(f)
+        basename_lower = basename.lower()
+        # Exact basename match (with or without .md)
+        if basename_lower == query_lower or basename_lower == query_lower + ".md":
+            return f
+        # Substring match against filename (minus .md)
+        name_part = basename[:-3] if basename.endswith(".md") else basename
+        if query_stem in name_part.lower():
+            return f
+        # Match against derived title (dashes → spaces)
+        title = title_from_filename(f)
+        if title and query_stem in title.lower():
+            return f
+    return None
