@@ -691,15 +691,19 @@ class TestConfigCli(unittest.TestCase):
             self.assertIn("lsp servers: (none configured", buf.getvalue())
 
     def test_config_init_refuses_overwrite(self):
+        import io
+        from contextlib import redirect_stdout
+
         from python_agent_harness.cli import main
 
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"
             p.write_text('{"llm": {}}', encoding="utf-8")
-            rc = main(["config", "--init", "--path", str(p)])
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main(["config", "--init", "--path", str(p)])
             self.assertEqual(rc, 1)
-            rc = main(["config", "--init", "--force", "--path", str(p)])
-            self.assertEqual(rc, 0)
+            self.assertIn("delete it first", buf.getvalue())
 
     def test_config_show_missing_file_message(self):
         """config with a nonexistent path prints a hint, falls back to
@@ -723,9 +727,9 @@ class TestConfigCli(unittest.TestCase):
         from python_agent_harness.cli import build_parser
 
         parser = build_parser()
-        before = parser.parse_args(["--config", "/x.json", "run", "/tmp"])
+        before = parser.parse_args(["--config", "/x.json", "run", "--project", "/tmp"])
         self.assertEqual(before.config, "/x.json")
-        after = parser.parse_args(["run", "/tmp", "--config", "/x.json"])
+        after = parser.parse_args(["run", "--project", "/tmp", "--config", "/x.json"])
         self.assertEqual(after.config, "/x.json")
         plain = parser.parse_args(["config"])
         self.assertIsNone(plain.config)
@@ -735,9 +739,9 @@ class TestConfigCli(unittest.TestCase):
         from python_agent_harness.cli import build_parser
 
         parser = build_parser()
-        off = parser.parse_args(["run", "/tmp", "--no-stream"])
+        off = parser.parse_args(["run", "--project", "/tmp", "--no-stream"])
         self.assertTrue(off.no_stream)
-        on = parser.parse_args(["run", "/tmp"])
+        on = parser.parse_args(["run", "--project", "/tmp"])
         self.assertFalse(on.no_stream)
 
 
