@@ -194,10 +194,40 @@ All LLM settings live in a single JSON configuration file. Environment variables
 ## Usage
 
 ```sh
-python-agent-harness run [project-dir]
+python-agent-harness run [--project DIR]
 ```
 
-Launches the interactive TUI agent. If `project-dir` is omitted, the current directory is used.
+Launches the interactive TUI agent. If `--project` is omitted, the current directory is used.
+
+### Headless mode
+
+```sh
+python-agent-harness headless [prompt] [--project DIR] [--restore [SPEC]]
+```
+
+Runs a single prompt without the TUI — for CI, scripting, and piping.
+The assistant's answer streams to stdout; tool/status events go to stderr,
+so the answer stream stays clean. Interactive prompts are auto-answered
+(`confirm` → yes, `ask` → "Unanswered"), so a run never blocks.
+
+- The prompt is a positional argument; when omitted it is read from stdin:
+
+  ```sh
+  python-agent-harness headless "fix the failing test"
+  echo "fix the failing test" | python-agent-harness headless
+  ```
+
+- `--restore` continues a saved session (the conversation auto-saves after
+  each response). Bare `--restore` uses the most recent session; a SPEC may
+  be a file path or a title substring:
+
+  ```sh
+  python-agent-harness headless "now add tests" --restore
+  python-agent-harness headless "next step" --restore parser-refactor
+  ```
+
+- Exit code is 0 on success, 1 when the prompt was empty (only failed
+  `@file` references), the run raised an agent error, or the restore failed.
 
 ### Slash commands
 
