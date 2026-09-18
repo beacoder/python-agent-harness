@@ -72,9 +72,19 @@ def _custom_slash_commands() -> list[str]:
     return sorted(f"/{c.name}" for c in load_custom_commands())
 
 
-def _history_path() -> str:
+def _history_path(project_dir: str | None = None) -> str:
+    """Input-history file for a project directory.
+
+    History is keyed by project, not by session: all sessions of the
+    same project share one history file, so Up/Down recall carries
+    over between sessions of that project. Without a project dir
+    (tests, bare Tui construction) a shared fallback file is used.
+    """
     d = config.SESSION_DIR / "python-agent-harness"
     d.mkdir(parents=True, exist_ok=True)
+    if project_dir:
+        name = os.path.basename(os.path.normpath(project_dir)) or "root"
+        return str(d / f"input_history_{name}")
     return str(d / "input_history")
 
 
