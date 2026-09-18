@@ -32,20 +32,20 @@ from ..prompts import RESERVED_AGENT_NAME, discover_agents
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from ..session import Session
+    from ..controller import Controller
 
 
 class CommandMixin:
     """Slash command methods for the TUI.
 
-    Expects the host class to provide: ``session``, ``console``,
+    Expects the host class to provide: ``_controller``, ``console``,
     ``conversation_history``, ``_history_dirty``, ``_data_event``,
     ``agent_running``, ``status``, ``_current_tool``, ``_start_agent``,
     ``_status_bar``, ``_flush``, ``_render_frame``.
     """
 
     if TYPE_CHECKING:
-        session: Session
+        _controller: Controller
         console: Console
         prompt_session: PromptSession
         conversation_history: list[Message]
@@ -79,17 +79,17 @@ class CommandMixin:
         if cmd == "/exit":
             return True
         if cmd == "/plan":
-            self.session.switch_to_plan()
+            self._controller.switch_to_plan()
             self.console.print(
                 "[yellow]Plan mode — read-only; only the plan file is writable.[/yellow]"
             )
         elif cmd == "/build":
-            self.session.switch_to_build()
+            self._controller.switch_to_build()
             self.console.print("[green]Build mode.[/green]")
         elif cmd == "/compact":
             self._run_compact()
         elif cmd == "/save":
-            path = self.session.store.save(self._conversation_text())
+            path = self._controller.save(self._conversation_text())
             self.console.print(f"saved: {path}")
         elif cmd == "/summary":
             self._run_summary()
@@ -103,10 +103,8 @@ class CommandMixin:
             # Replacing the conversation is a new generation: invalidate any
             # worker still winding down from a cancelled run, or its
             # salvaged-history commit would resurrect what we just wiped.
-            self.session.run_generation += 1
+            self._controller.clear_conversation()
             self.conversation_history = []
-            self.session.last_messages = []
-            self.session.clear_todos()
             self.console.print("[yellow]Conversation history cleared.[/yellow]")
         elif cmd == "/model":
             self._run_model_command(arg)
@@ -212,9 +210,9 @@ class CommandMixin:
         if project:
             project = os.path.abspath(os.path.expanduser(project))
         cwd, prompt, kickoff = cmd.prepare(
-            project_dir=project or self.session.project_dir, extra=extra
+            project_dir=project or self._controller.project_dir, extra=extra
         )
-        if self.conversation_history or self.session.last_messages:
+        if self.conversation_history or self._controller.last_messages:
             # The commands' kickoffs ("Proceed with the task described
             # in your instructions.") assume a fresh conversation: the
             # task lives only in the system prompt.  Mid-conversation
@@ -235,17 +233,17 @@ class CommandMixin:
         from ..prompts import assemble_agent_prompt
 
         system = assemble_agent_prompt(
-            cwd, prompt, context_path=self.session._configured_context_path
+            cwd, prompt, context_path=self._controller.configured_context_path
         )
-        prev_project = self.session.project_dir
+        prev_project = self._controller.project_dir
         if cwd != prev_project:
-            self.session.project_dir = cwd
+            self._controller.project_dir = cwd
 
             def _restore() -> None:
                 # idempotent: only undo OUR borrow, never clobber a
                 # newer run's borrow (or a restore already performed)
-                if self.session.project_dir == cwd:
-                    self.session.project_dir = prev_project
+                if self._controller.project_dir == cwd:
+                    self._controller.project_dir = prev_project
 
             restore = _restore
         else:
@@ -256,7 +254,7 @@ class CommandMixin:
             # covered too) and put it back when the run finishes.
             from ..commands import hide_planexit
 
-            planexit_restore = hide_planexit(self.session)
+            planexit_restore = hide_planexit(self._controller.session)
             if planexit_restore is not None:
                 prev_restore = restore
                 state = {"done": False}
@@ -276,7 +274,7 @@ class CommandMixin:
         # text files become TextPart attachments, and the @path token is
         # stripped from the text.  Validation errors are shown to the user.
         cleaned_kickoff, attachments, errors = parse_at_references(
-            kickoff, str(self.session.project_dir)
+            kickoff, str(self._controller.project_dir)
         )
         for err in errors:
             self.console.print(f"[red]@{err.path}: {err.message}[/red]")
@@ -292,7 +290,7 @@ class CommandMixin:
         self._start_agent(kickoff_msg, system=system, restore=restore)
 
     def _conversation_text(self) -> str:
-        msgs = self.session.last_messages or []
+        msgs = self._controller.last_messages or []
         parts = []
         for m in msgs:
             # escaped: see persistence.escape_role_headers
@@ -371,7 +369,7 @@ class CommandMixin:
 
         def worker() -> None:
             try:
-                ok, msg = self.session.compact_conversation()
+                ok, msg = self._controller.compact_conversation()
                 result["ok"] = ok
                 result["msg"] = msg
             except Exception as e:  # noqa: BLE001 - surfaced to the user
@@ -389,7 +387,7 @@ class CommandMixin:
             # The shared conversation was replaced: sync the TUI's own
             # history too, or the next run would restart from the old
             # full conversation and immediately re-compact it.
-            self.conversation_history = list(self.session.last_messages)
+            self.conversation_history = list(self._controller.last_messages)
             self._history_dirty = True
         self.console.print(msg)
 
@@ -398,7 +396,9 @@ class CommandMixin:
         added/removed while the TUI is running show up on the next
         /model call.  A malformed config keeps the last loaded set."""
         try:
-            self.session.model_profiles = config.load_models_config(self.session.config_path)
+            self._controller.model_profiles = config.load_models_config(
+                self._controller.config_path
+            )
         except ValueError as e:
             self.console.print(f"[red]{e}[/red]")
 
@@ -413,11 +413,11 @@ class CommandMixin:
         numbered-selection paths so the numbers always match what was
         displayed.
         """
-        return ["default", *sorted(self.session.model_profiles.keys())]
+        return ["default", *sorted(self._controller.model_profiles.keys())]
 
     def _model_switch_by_name(self, name: str) -> None:
         """Switch to a named profile (or ``default``) and report the outcome."""
-        success, msg = self.session.switch_model(name)
+        success, msg = self._controller.switch_model(name)
         if success:
             self.console.print(f"[green]{msg}[/green]")
             self._data_event.set()
@@ -431,14 +431,14 @@ class CommandMixin:
             # List all models: the original default plus every profile
             # currently in the config file
             all_names = self._model_list_names()
-            current_model = self.session.model or "(unknown)"
-            default_model = (self.session.llm_settings or {}).get("model") or current_model
-            default_base_url = (self.session.llm_settings or {}).get(
+            current_model = self._controller.model or "(unknown)"
+            default_model = (self._controller.llm_settings or {}).get("model") or current_model
+            default_base_url = (self._controller.llm_settings or {}).get(
                 "base_url"
-            ) or self.session.client.base_url
+            ) or self._controller.client.base_url
 
             self.console.print("\n[bold cyan]Available model profiles:[/bold cyan]")
-            if not self.session.model_profiles:
+            if not self._controller.model_profiles:
                 self.console.print(
                     "[yellow]  (none configured — add a 'models' section to use /model)[/yellow]"
                 )
@@ -450,7 +450,7 @@ class CommandMixin:
                         f"{default_model} @ {default_base_url}"
                     )
                 else:
-                    profile = self.session.model_profiles[name]
+                    profile = self._controller.model_profiles[name]
                     model_name = profile.get("model", "(inherited)")
                     base_url = profile.get("base_url", "(inherited)")
                     marker = " *" if model_name == current_model else ""
@@ -498,10 +498,10 @@ class CommandMixin:
             idx = int(arg.strip()) - 1
             if 0 <= idx < len(all_names):
                 selected = all_names[idx]
-                default_model = (self.session.llm_settings or {}).get("model") or (
-                    self.session.model or ""
+                default_model = (self._controller.llm_settings or {}).get("model") or (
+                    self._controller.model or ""
                 )
-                if selected == "default" and (self.session.model or "") == default_model:
+                if selected == "default" and (self._controller.model or "") == default_model:
                     self.console.print("[yellow]Already using this model.[/yellow]")
                 else:
                     self._model_switch_by_name(selected)
@@ -519,7 +519,7 @@ class CommandMixin:
 
         def worker() -> None:
             try:
-                result["msg"] = self.session.summarize_conversation()
+                result["msg"] = self._controller.summarize_conversation()
             except Exception as e:  # noqa: BLE001 - surfaced to the user
                 result["msg"] = f"Summary failed: {e}"
 
@@ -529,10 +529,10 @@ class CommandMixin:
             cancel_message="summary cancelled — the result may still be appended",
         )
         msg = result.get("msg", "Summary failed: unknown error.")
-        self.conversation_history = list(self.session.last_messages)
+        self.conversation_history = list(self._controller.last_messages)
         self._history_dirty = True
         if msg == "Summary appended.":
-            last_msg = self.session.last_messages[-1]
+            last_msg = self._controller.last_messages[-1]
             if last_msg.role == "assistant" and last_msg.content:
                 self.console.print(last_msg.content)
             else:
@@ -555,7 +555,7 @@ class CommandMixin:
 
     def _agent_switch_by_name(self, name: str) -> None:
         """Switch to a named agent (or ``default``) and report."""
-        success, msg = self.session.switch_agent(name)
+        success, msg = self._controller.switch_agent(name)
         if success:
             self.console.print(f"[green]{msg}[/green]")
             self._data_event.set()
@@ -680,23 +680,23 @@ class CommandMixin:
                 self._round_times = []
         else:
             self._round_times = []
-        self.session.store.round_times = list(self._round_times)
+        self._controller.store.round_times = list(self._round_times)
         # Update the session store to point at the restored file
-        self.session.store.file_path = path
+        self._controller.store.file_path = path
         title = title_from_filename(path)
         if title:
-            self.session.store.title = title
+            self._controller.store.title = title
         # Restore agent if saved
         agent = meta.get("python-agent-harness--agent")
         if agent:
             try:
-                success, msg = self.session.switch_agent(agent)
+                success, msg = self._controller.switch_agent(agent)
                 if success:
                     self.console.print(f"[green]{msg}[/green]")
                 else:
                     # Agent no longer exists: reset to default to avoid
                     # stale exclusions from the previously active agent
-                    self.session.switch_agent("default")
+                    self._controller.switch_agent("default")
                     self.console.print(f"[yellow]warning: {msg}[/yellow]")
             except Exception as e:
                 self.console.print(f"[yellow]warning: could not restore agent: {e}[/yellow]")
@@ -710,29 +710,29 @@ class CommandMixin:
         model = meta.get("python-agent-harness--model")
         if model:
             try:
-                if model == self.session.model:
+                if model == self._controller.model:
                     # Already the active model: nothing to do, no noise.
                     pass
-                elif model == self.session.llm_settings.get("model"):
+                elif model == self._controller.llm_settings.get("model"):
                     # The saved model is the session-start default: the
                     # "default" pseudo-profile restores exactly those
                     # original llm settings (profile names were not saved,
                     # so there is no better match).
-                    success, msg = self.session.switch_model("default")
+                    success, msg = self._controller.switch_model("default")
                     self.console.print(f"[green]{msg}[/green]")
                 else:
-                    success, msg = self.session.switch_model(model)
+                    success, msg = self._controller.switch_model(model)
                     if not success:
                         profile = next(
                             (
                                 name
-                                for name, p in self.session.model_profiles.items()
+                                for name, p in self._controller.model_profiles.items()
                                 if p.get("model") == model
                             ),
                             None,
                         )
                         if profile:
-                            success, msg = self.session.switch_model(profile)
+                            success, msg = self._controller.switch_model(profile)
                     if success:
                         self.console.print(f"[green]{msg}[/green]")
                     else:
@@ -745,10 +745,10 @@ class CommandMixin:
         # Replace conversation history: a new generation.  Invalidate any
         # worker still winding down from a cancelled run so its salvaged
         # history can't clobber the restored session.
-        self.session.run_generation += 1
+        self._controller.run_generation += 1
         self.conversation_history = messages
-        self.session.last_messages = list(messages)
-        self.session.clear_todos()
+        self._controller.last_messages = list(messages)
+        self._controller.clear_todos()
         self._history_dirty = True
         project = meta.get("python-agent-harness--project-dir", "?")
         agent_display = meta.get("python-agent-harness--agent", "default")
