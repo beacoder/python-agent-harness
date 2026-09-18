@@ -13,6 +13,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
 from rich.console import Console
 from rich.live import Live
 
@@ -28,6 +29,7 @@ from ..persistence import (
     unescape_role_header,
 )
 from ..prompts import RESERVED_AGENT_NAME, discover_agents
+from .input import _history_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -629,7 +631,11 @@ class CommandMixin:
             basename = os.path.basename(f)
             model = meta.get("python-agent-harness--model", "?")
             project = meta.get("python-agent-harness--project-dir", "?")
-            self.console.print(f"  {basename:50s}  model={model:20s}  project={project}")
+            body = SessionPersistence.strip_metadata(text)
+            n_msgs = len(self._parse_saved_body(body))
+            self.console.print(
+                f"  {basename:50s}  model={model:20s}  project={project}  {n_msgs} messages"
+            )
 
     def _run_restore(self, arg: str) -> None:
         """Restore a saved session into the current TUI.
@@ -750,12 +756,35 @@ class CommandMixin:
         self._controller.last_messages = list(messages)
         self._controller.clear_todos()
         self._history_dirty = True
+        # The restored session belongs to the saved project: switch the
+        # input history (Up/Down recall) to that project's file too, so
+        # the recalled prompts match the restored conversation.
+        saved_project = meta.get("python-agent-harness--project-dir")
+        if saved_project:
+            self._switch_input_history(saved_project)
         project = meta.get("python-agent-harness--project-dir", "?")
         agent_display = meta.get("python-agent-harness--agent", "default")
         self.console.print(
             f"[green]restored:[/green] {os.path.basename(path)} "
             f"(model={model}, agent={agent_display}, project={project}, {len(messages)} messages)"
         )
+
+    def _switch_input_history(self, project_dir: str) -> None:
+        """Point the prompt session's Up/Down recall at PROJECT_DIR's
+        input-history file.
+
+        The FileHistory is bound once at Tui construction; swapping it
+        here (session + default buffer) and resetting the buffer makes
+        the next prompt load the restored project's history instead of
+        the startup project's.
+        """
+        new_history = FileHistory(_history_path(project_dir))
+        self.prompt_session.history = new_history
+        buffer = self.prompt_session.default_buffer
+        buffer.history = new_history
+        # reset() cancels the pending history-load task and repopulates
+        # the working lines from the new history on the next render
+        buffer.reset()
 
     @staticmethod
     def _parse_saved_body(body: str) -> list[Message]:
