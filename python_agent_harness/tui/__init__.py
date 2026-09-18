@@ -8,6 +8,12 @@ submodules.
 from __future__ import annotations
 
 from ..controller import Controller
+from ..text_filter import (
+    _FC_DANGLING_RE,
+    _FC_HEADER,
+    _FC_LABEL,
+    _FINAL_CHECK_RE,
+)
 from ..view import View
 from .commands import CommandMixin
 from .core import Tui
@@ -23,10 +29,6 @@ from .input import (
     _resolve_numbered_choice,
 )
 from .render import (
-    _FC_DANGLING_RE,
-    _FC_HEADER,
-    _FC_LABEL,
-    _FINAL_CHECK_RE,
     ASSISTANT_STYLE,
     SPINNER_FRAMES,
     USER_STYLE,
