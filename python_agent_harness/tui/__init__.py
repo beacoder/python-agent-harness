@@ -7,6 +7,8 @@ submodules.
 
 from __future__ import annotations
 
+from ..controller import Controller
+from ..view import View
 from .commands import CommandMixin
 from .core import Tui
 from .input import (
@@ -39,6 +41,8 @@ from .render import (
 )
 
 __all__ = [
+    "Controller",
+    "View",
     "CommandMixin",
     "Tui",
     "UiQuestion",
