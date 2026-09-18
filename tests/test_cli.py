@@ -400,7 +400,7 @@ class TestCliEntryPoints(unittest.TestCase):
             ) as ms,
             mock.patch("python_agent_harness.tui.Tui") as tui_cls,
         ):
-            rc = cli.main(["run", "/tmp/proj"])
+            rc = cli.main(["run", "--project", "/tmp/proj"])
         self.assertEqual(rc, 0)
         ms.assert_called_once()
         self.assertEqual(ms.call_args.args[0], "/tmp/proj")
@@ -436,7 +436,7 @@ class TestCliEntryPoints(unittest.TestCase):
             mock.patch("python_agent_harness.cli.make_session_with_mcp") as ms,
             mock.patch("python_agent_harness.tui.Tui"),
         ):
-            rc = cli.main(["run", "/tmp/proj", "--no-stream"])
+            rc = cli.main(["run", "--project", "/tmp/proj", "--no-stream"])
         self.assertEqual(rc, 0)
         self.assertIs(ms.call_args.kwargs["stream"], False)
 
