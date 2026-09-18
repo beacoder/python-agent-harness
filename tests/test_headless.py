@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import unittest
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -15,17 +16,23 @@ import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
 
 from python_agent_harness import cli
 from python_agent_harness.controller import RunHandle
-from python_agent_harness.headless import HeadlessView, restore_session, run_headless
+from python_agent_harness.headless import (
+    HeadlessView,
+    final_answer_text,
+    restore_session,
+    run_headless,
+)
+from python_agent_harness.models import Message
 
 
 class TestHeadlessView(unittest.TestCase):
-    def test_streams_delta_to_out(self):
+    def test_deltas_ignored(self):
         out = io.StringIO()
         err = io.StringIO()
         view = HeadlessView(out=out, err=err)
         view.on_delta("hello ")
         view.on_delta("world")
-        self.assertEqual(out.getvalue(), "hello world")
+        self.assertEqual(out.getvalue(), "")
 
     def test_notify_tool_start_to_err(self):
         out = io.StringIO()
@@ -54,6 +61,40 @@ class TestHeadlessView(unittest.TestCase):
         self.assertIsNone(view.run())
 
 
+class TestFinalAnswerText(unittest.TestCase):
+    def test_strips_final_check_block(self):
+        session = mock.Mock()
+        session.last_messages = [
+            Message(role="user", content="hi"),
+            Message(
+                role="assistant",
+                content="The answer is 4.\n\n[FINAL CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence: e",
+            ),
+        ]
+        self.assertEqual(final_answer_text(session), "The answer is 4.")
+
+    def test_strips_reasoning_preamble(self):
+        session = mock.Mock()
+        session.last_messages = [
+            Message(
+                role="assistant",
+                content="Let me think... 1+1=2. So the answer is 2.",
+                reasoning="Let me think... 1+1=2. ",
+            ),
+        ]
+        self.assertEqual(final_answer_text(session), "So the answer is 2.")
+
+    def test_empty_when_no_assistant_message(self):
+        session = mock.Mock()
+        session.last_messages = [Message(role="user", content="hi")]
+        self.assertEqual(final_answer_text(session), "")
+
+    def test_empty_when_history_empty(self):
+        session = mock.Mock()
+        session.last_messages = []
+        self.assertEqual(final_answer_text(session), "")
+
+
 class TestRunHeadless(unittest.TestCase):
     def _fake_handle(self, worker: threading.Thread) -> RunHandle:
         worker.start()
@@ -69,6 +110,7 @@ class TestRunHeadless(unittest.TestCase):
         import unittest.mock as mock
 
         session = mock.Mock()
+        session.last_messages = []
         worker = threading.Thread(target=lambda: None)
         handle = self._fake_handle(worker)
         with mock.patch("python_agent_harness.headless.Controller") as ctrl_cls:
@@ -85,6 +127,7 @@ class TestRunHeadless(unittest.TestCase):
         import unittest.mock as mock
 
         session = mock.Mock()
+        session.last_messages = []
         with mock.patch("python_agent_harness.headless.Controller") as ctrl_cls:
             ctrl = ctrl_cls.return_value
             ctrl.submit.return_value = None
@@ -95,6 +138,7 @@ class TestRunHeadless(unittest.TestCase):
         import unittest.mock as mock
 
         session = mock.Mock()
+        session.last_messages = []
         worker = threading.Thread(target=lambda: None)
         handle = self._fake_handle(worker)
         handle.warnings = ["model x does not support image input"]
@@ -112,6 +156,7 @@ class TestRunHeadless(unittest.TestCase):
         import unittest.mock as mock
 
         session = mock.Mock()
+        session.last_messages = []
         worker = threading.Thread(target=lambda: None)
         handle = self._fake_handle(worker)
         err = io.StringIO()
@@ -126,6 +171,68 @@ class TestRunHeadless(unittest.TestCase):
             ctrl.submit.return_value = handle
             rc = run_headless(session, "hi", err=err)
         self.assertEqual(rc, 1)
+
+    def test_final_answer_written_to_out(self):
+        session = mock.Mock()
+        session.last_messages = [
+            Message(
+                role="assistant",
+                content="Done.\n\n[FINAL CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence: e",
+            ),
+        ]
+        worker = threading.Thread(target=lambda: None)
+        handle = self._fake_handle(worker)
+        out = io.StringIO()
+        with mock.patch("python_agent_harness.headless.Controller") as ctrl_cls:
+            ctrl = ctrl_cls.return_value
+            ctrl.submit.return_value = handle
+            rc = run_headless(session, "hi", out=out)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.getvalue(), "Done.\n")
+
+    def test_model_profile_switch(self):
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        session.last_messages = []
+        worker = threading.Thread(target=lambda: None)
+        handle = self._fake_handle(worker)
+        with (
+            mock.patch("python_agent_harness.headless.Controller") as ctrl_cls,
+            mock.patch("python_agent_harness.headless.HeadlessView") as view_cls,
+        ):
+            ctrl = ctrl_cls.return_value
+            ctrl.submit.return_value = handle
+            ctrl.switch_model.return_value = (True, "switched to fast (m-fast)")
+            view = view_cls.return_value
+            view.errors = []
+            rc = run_headless(session, "hi", model="fast")
+        self.assertEqual(rc, 0)
+        ctrl.switch_model.assert_called_once_with("fast")
+
+    def test_model_raw_name_fallback(self):
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        session.last_messages = []
+        worker = threading.Thread(target=lambda: None)
+        handle = self._fake_handle(worker)
+        err = io.StringIO()
+        with (
+            mock.patch("python_agent_harness.headless.Controller") as ctrl_cls,
+            mock.patch("python_agent_harness.headless.HeadlessView") as view_cls,
+        ):
+            ctrl = ctrl_cls.return_value
+            ctrl.submit.return_value = handle
+            ctrl.switch_model.return_value = (False, "unknown model: x")
+            view = view_cls.return_value
+            view.errors = []
+            view.err = err
+            rc = run_headless(session, "hi", model="raw-model-name", err=err)
+        self.assertEqual(rc, 0)
+        self.assertEqual(ctrl.session.client.model, "raw-model-name")
+        self.assertEqual(ctrl.session.model, "raw-model-name")
+        self.assertIn("using model name directly", err.getvalue())
 
 
 class TestRestoreSession(unittest.TestCase):
@@ -259,6 +366,17 @@ class TestCliHeadless(unittest.TestCase):
         ):
             cli.main(["headless", "x", "--project", "/tmp/proj"])
         session.close.assert_called_once()
+
+    def test_headless_model_flag_passed_through(self):
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        with (
+            mock.patch("python_agent_harness.cli.make_session_with_mcp", return_value=session),
+            mock.patch("python_agent_harness.headless.run_headless") as rh,
+        ):
+            cli.main(["headless", "hi", "--model", "fast"])
+        self.assertEqual(rh.call_args.kwargs["model"], "fast")
 
     def test_headless_restore_flag_passed_through(self):
         import unittest.mock as mock
