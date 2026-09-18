@@ -32,11 +32,13 @@ full output remains readable via the Read tool.
 from __future__ import annotations
 
 import os
+import re
 import shutil  # noqa: F401  (mock target for tests)
 import subprocess  # noqa: F401  (mock target for tests)
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TypeGuard
 
@@ -130,6 +132,87 @@ def cleanup_spooled_files() -> None:
 def _natnump(n: object) -> TypeGuard[int]:
     """True for a non-negative integer (Emacs `natnump' semantics)."""
     return isinstance(n, int) and not isinstance(n, bool) and n >= 0
+
+
+def _glob_to_regex(pattern: str) -> str:
+    """Translate a pathlib-style glob pattern into a :mod:`re` pattern.
+
+    Follows :mod:`fnmatch` conventions with two deliberate deviations:
+    ``*`` does not cross path separators (unlike :func:`fnmatch.fnmatch`)
+    and ``**`` matches any number of directories (including none).  A
+    pattern without any glob metacharacters is escaped, so plain names
+    match exactly.
+    """
+    i, n = 0, len(pattern)
+    out: list[str] = []
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            if pattern[i : i + 2] == "**":
+                i += 2
+                if pattern[i : i + 1] == "/":
+                    i += 1
+                out.append("(?:.*/)?")
+                continue
+            out.append("[^/]*")
+            i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        elif c == "[":
+            end = _find_glob_class_end(pattern, i)
+            if end is None:
+                out.append(re.escape(c))
+                i += 1
+            else:
+                body = pattern[i + 1 : end]
+                if body.startswith("!"):
+                    body = "^" + body[1:]
+                out.append("[" + body.replace("\\", "\\\\") + "]")
+                i = end + 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return "".join(out)
+
+
+def _find_glob_class_end(pattern: str, start: int) -> int | None:
+    """Index of the ``]`` closing the char class opened at ``start``.
+
+    Mirrors glob semantics: a ``]`` immediately after ``[`` (or ``[!``)
+    is a literal bracket, and backslash escapes are honoured.
+    """
+    i = start + 1
+    if i < len(pattern) and pattern[i] == "!":
+        i += 1
+    if i < len(pattern) and pattern[i] == "]":
+        i += 1
+    while i < len(pattern):
+        if pattern[i] == "\\" and i + 1 < len(pattern):
+            i += 2
+        elif pattern[i] == "]":
+            return i
+        else:
+            i += 1
+    return None
+
+
+def _walk_files(root: Path, onerror: Callable[[OSError], object] | None = None) -> Iterator[Path]:
+    """Depth-first file iterator that never raises on traversal errors.
+
+    Wraps :func:`os.walk` with ``onerror`` so unreadable directories are
+    reported instead of silently swallowed, and wraps the whole iteration
+    in a try/except so a scan that dies mid-flight still yields the
+    entries collected so far (mirroring the 3.13+ ``pathlib`` scan
+    behaviour on every supported version).
+    """
+    try:
+        for dirpath, _dirnames, filenames in os.walk(root, onerror=onerror, followlinks=False):
+            for name in filenames:
+                yield Path(dirpath) / name
+    except OSError as e:
+        if onerror is not None:
+            onerror(e)
 
 
 def _git_root(path: str) -> str | None:

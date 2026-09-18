@@ -7,11 +7,18 @@ this file reaches the private helpers and failure branches those flows
 don't hit (PCRE->ERE translation, rg-present path, OSError tolerance
 during traversal/stat/reads), so the platform backends are covered by
 CI of every OS — none of these tests depend on the host platform.
+
+The glob_win/grep_win tests pin the traversal contract of
+``_walk_files``: scan errors are tolerated the same way on every
+supported Python version (3.11-3.13 pathlib differ here), per-entry
+stat/open failures never abort a scan, and pathlib-style glob
+semantics are translated explicitly.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -187,8 +194,11 @@ class TestGrepWindowsFallback(unittest.TestCase):
         self.assertIn("a.py", out)
         self.assertNotIn("b.txt", out)
 
-    def test_python_grep_rglob_failure_returns_empty(self):
-        with mock.patch.object(Path, "rglob", side_effect=OSError("scan failed")):
+    def test_python_grep_scan_failure_returns_empty(self):
+        with mock.patch(
+            "python_agent_harness.tools.filesystem.os.walk",
+            side_effect=OSError("scan failed"),
+        ):
             out = GrepWindows()._python_grep("x", "/tmp", None, None)
         self.assertEqual(out, "")
 
@@ -302,7 +312,7 @@ class TestGlobWindowsFallback(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "sub.py"))
             Path(d, "a.py").write_text("x")
-            out = GlobWindows()._rglob_fallback("*.py", d, None)
+            out = GlobWindows()._walk_fallback("*.py", d, None)
         self.assertIn("a.py", out)
         self.assertNotIn("sub.py", out)
 
@@ -315,14 +325,97 @@ class TestGlobWindowsFallback(unittest.TestCase):
                 mock.patch.object(Path, "is_file", return_value=True),
                 mock.patch.object(Path, "stat", side_effect=OSError("gone")),
             ):
-                out = GlobWindows()._rglob_fallback("*.py", d, None)
+                out = GlobWindows()._walk_fallback("*.py", d, None)
         self.assertIn("a.py", out)
 
-    def test_rglob_failure_returns_error(self):
+    def test_walk_stat_race_still_yields_entry(self):
+        """A file that vanishes mid-scan (stat fails) is still yielded:
+        callers decide how to treat it, the scan must not abort."""
+        from python_agent_harness.tools.filesystem import _walk_files
+
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("x")
+            with mock.patch.object(Path, "stat", side_effect=OSError("gone")):
+                found = [p.name for p in _walk_files(Path(d))]
+        self.assertEqual(found, ["a.py"])
+
+    def test_walk_mid_scan_error_reported_via_onerror(self):
+        """An error raised by os.walk after some entries were yielded
+        ends the iteration (like 3.13+ pathlib scan semantics: entries
+        already yielded stand, the rest are lost) and is reported
+        through ``onerror`` when the caller supplied one."""
+        from python_agent_harness.tools.filesystem import _walk_files
+
+        def flaky_walk(root, onerror=None, **kw):
+            yield str(root), [], ["a.py"]
+            raise OSError("boom mid-scan")
+
+        errors: list[str] = []
+        with mock.patch("python_agent_harness.tools.filesystem.os.walk", flaky_walk):
+            gen = _walk_files(Path("/x"), onerror=errors.append)
+            self.assertEqual(next(gen).name, "a.py")
+            self.assertIsNone(next(gen, None))
+        self.assertEqual(len(errors), 1)
+
+    def test_glob_to_regex_pathlib_semantics(self):
+        from python_agent_harness.tools.filesystem import _glob_to_regex
+
+        rx = re.compile(_glob_to_regex("*.py"))
+        self.assertTrue(rx.fullmatch("a.py"))
+        self.assertFalse(rx.fullmatch("sub/a.py"))
+        self.assertTrue(re.compile(_glob_to_regex("**/*.py")).fullmatch("sub/deep/a.py"))
+        self.assertTrue(re.compile(_glob_to_regex("**/*.py")).fullmatch("a.py"))
+        self.assertFalse(re.compile(_glob_to_regex("a?c")).fullmatch("a/c"))
+        self.assertTrue(re.compile(_glob_to_regex("a?c")).fullmatch("abc"))
+        self.assertTrue(re.compile(_glob_to_regex("setup.cfg")).fullmatch("setup.cfg"))
+
+    def test_glob_depth_limit(self):
         from python_agent_harness.tools.glob_win import GlobWindows
 
-        with mock.patch.object(Path, "rglob", side_effect=OSError("scan failed")):
-            out = GlobWindows()._rglob_fallback("*.py", "/tmp", None)
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("x")
+            (Path(d) / "sub").mkdir()
+            Path(d, "sub", "b.py").write_text("x")
+            out = GlobWindows()._walk_fallback("*.py", d, 1)
+        self.assertIn("a.py", out)
+        self.assertNotIn("b.py", out)
+
+    def test_scan_root_unreadable_reports_error(self):
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        def no_permission(root, onerror=None, **kw):
+            if onerror is not None:
+                onerror(OSError(13, "Permission denied"))
+            return iter(())
+
+        with mock.patch("python_agent_harness.tools.filesystem.os.walk", no_permission):
+            out = GlobWindows()._walk_fallback("*.py", "/locked", None)
+        self.assertIn("Error:", out)
+        self.assertIn("Permission denied", out)
+
+    def test_partial_scan_with_matches_tolerates_errors(self):
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        def walk_one_locked_dir(root, onerror=None, **kw):
+            yield str(root), [], ["a.py"]
+            if onerror is not None:
+                onerror(OSError(13, "Permission denied"))
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch("python_agent_harness.tools.filesystem.os.walk", walk_one_locked_dir),
+        ):
+            out = GlobWindows()._walk_fallback("*.py", d, None)
+        self.assertIn("a.py", out)
+
+    def test_scan_failure_returns_error(self):
+        from python_agent_harness.tools.glob_win import GlobWindows
+
+        with mock.patch(
+            "python_agent_harness.tools.filesystem.os.walk",
+            side_effect=OSError("scan failed"),
+        ):
+            out = GlobWindows()._walk_fallback("*.py", "/tmp", None)
         self.assertIn("Error: scan failed", out)
 
     def test_run_without_path_uses_cwd(self):

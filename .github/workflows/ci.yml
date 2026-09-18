@@ -85,7 +85,7 @@ jobs:
       - name: Run tests with coverage
         run: coverage run -m unittest discover -s tests -v
 
-      # `coverage report` enforces `fail_under` from pyproject.toml (90%),
+      # `coverage report` enforces `fail_under` from pyproject.toml (95%),
       # so an insufficiently-tested change fails this job.
       - name: Coverage report (enforces fail_under)
         run: coverage report

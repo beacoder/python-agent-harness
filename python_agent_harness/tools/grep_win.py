@@ -8,10 +8,10 @@ returns an error.
 
 ``GrepWindows`` extends the fallback chain with a pure-Python
 ``re``-based search: it walks the directory tree with
-:meth:`pathlib.Path.rglob`, applies the regex to each file, and
-collects matches with line numbers and optional context lines.  This
-ensures the Grep tool always works on a stock Windows install with
-only Python and Git installed.
+:func:`os.walk` (via :func:`_walk_files`), applies the regex to each
+file, and collects matches with line numbers and optional context
+lines.  This ensures the Grep tool always works on a stock Windows
+install with only Python and Git installed.
 
 Only the fallback strategy differs; the git path (``git grep -P``),
 the tool name, and the result format are inherited so callers, the
@@ -26,7 +26,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from .filesystem import _spool
+from .filesystem import _spool, _walk_files
 from .grep import Grep, _grep_out
 
 
@@ -98,17 +98,11 @@ class GrepWindows(Grep):
             files = [Path(path)]
         else:
             root = Path(path)
-            collected: list[Path] = []
-            try:
-                for p in root.rglob("*"):
-                    if not p.is_file():
-                        continue
-                    if any(part.startswith(".") for part in p.relative_to(root).parts[:-1]):
-                        continue
-                    collected.append(p)
-            except OSError:
-                pass
-            files = collected
+            files = [
+                p
+                for p in _walk_files(root)
+                if not any(part.startswith(".") for part in p.relative_to(root).parts[:-1])
+            ]
 
         for file_path in files:
             if match_count >= max_matches:
