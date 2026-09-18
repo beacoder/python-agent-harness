@@ -1,7 +1,8 @@
 """CLI entry points: interactive TUI session and configuration.
 
 Commands:
-  run [project]            interactive TUI agent session (default)
+  run                      interactive TUI agent session (default)
+  headless [prompt]        non-interactive: submit one prompt, print the result
   config [--init]          show effective LLM config / write a template file
 
 Custom commands (prompts/commands/*.md) — like init, review,
@@ -176,25 +177,45 @@ def make_session_with_mcp(
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    from .tui import Tui
-
     project_dir = getattr(args, "project", None) or os.getcwd()
     session = make_session_with_mcp(
         project_dir,
         config_path=args.config,
         stream=False if getattr(args, "no_stream", False) else None,
     )
-    Tui(session).run()
-    session.close()
-    return 0
+    try:
+        from .tui import Tui
+
+        Tui(session).run()
+        return 0
+    finally:
+        session.close()
+
+
+def cmd_headless(args: argparse.Namespace) -> int:
+    project_dir = getattr(args, "project", None) or os.getcwd()
+    session = make_session_with_mcp(
+        project_dir,
+        config_path=args.config,
+        stream=False if getattr(args, "no_stream", False) else None,
+    )
+    try:
+        from .headless import run_headless
+
+        prompt = getattr(args, "prompt", None)
+        if prompt is None:
+            prompt = sys.stdin.read()
+        return run_headless(session, prompt, restore=getattr(args, "restore", None))
+    finally:
+        session.close()
 
 
 def cmd_config(args: argparse.Namespace) -> int:
     path = config._config_path(args.path)
     if args.init:
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() and not args.force:
-            print(f"config already exists: {path} (use --force to overwrite)")
+        if path.exists():
+            print(f"config already exists: {path} (delete it first to overwrite)")
             return 1
         template = config.CONFIG_TEMPLATE.format(path=str(path).replace("\\", "\\\\"))
         path.write_text(template, encoding="utf-8")
@@ -298,11 +319,43 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="disable streaming (one-shot responses; overrides config file)",
     )
-    p_run.add_argument("project", nargs="?", help="project directory (default: cwd)")
+    p_run.add_argument(
+        "--project",
+        metavar="DIR",
+        help="project directory (default: cwd)",
+    )
+
+    p_headless = sub.add_parser(
+        "headless",
+        help="run without the TUI: submit one prompt and print the result",
+    )
+    _add_config_arg(p_headless, suppress=True)
+    p_headless.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="disable streaming (one-shot responses; overrides config file)",
+    )
+    p_headless.add_argument(
+        "prompt",
+        nargs="?",
+        help="prompt to run (default: read from stdin)",
+    )
+    p_headless.add_argument(
+        "--project",
+        metavar="DIR",
+        help="project directory (default: cwd)",
+    )
+    p_headless.add_argument(
+        "--restore",
+        metavar="SPEC",
+        nargs="?",
+        const="latest",
+        help="continue a saved session: file path, title substring, or "
+        "latest (default with no SPEC)",
+    )
 
     p_config = sub.add_parser("config", help="show effective LLM config or write a template file")
     p_config.add_argument("--init", action="store_true", help="write a config template")
-    p_config.add_argument("--force", action="store_true", help="overwrite an existing file")
     p_config.add_argument("--path", metavar="PATH", help="config file path")
     p_config.set_defaults(func=cmd_config)
     return parser
@@ -313,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command in (None, "run"):
         return cmd_run(args)
+    if args.command == "headless":
+        return cmd_headless(args)
     if args.command == "config":
         return cmd_config(args)
     parser.print_help()
