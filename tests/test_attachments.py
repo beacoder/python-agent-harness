@@ -570,9 +570,9 @@ class TestRestoreReattach(unittest.TestCase):
         return dummy._conversation_text(messages)
 
     def test_reattach_when_file_exists(self):
-        from python_agent_harness.tui.commands import CommandMixin
+        from python_agent_harness.persistence import parse_saved_body
 
-        restored = CommandMixin._parse_saved_body(self._saved_body())
+        restored = parse_saved_body(self._saved_body())
         self.assertEqual(len(restored), 2)
         user = restored[0]
         self.assertIsInstance(user.content, list)
@@ -585,29 +585,29 @@ class TestRestoreReattach(unittest.TestCase):
         self.assertEqual([t.text for t in texts], ["what is this"])
 
     def test_no_reattach_when_file_gone(self):
-        from python_agent_harness.tui.commands import CommandMixin
+        from python_agent_harness.persistence import parse_saved_body
 
         body = self._saved_body()
         os.unlink(self.img)
-        restored = CommandMixin._parse_saved_body(body)
+        restored = parse_saved_body(body)
         user = restored[0]
         self.assertIsInstance(user.content, str)
         self.assertIn("not available in restored session", user.content)
         self.assertIn("what is this", user.content)
 
     def test_no_reattach_when_file_is_not_an_image(self):
-        from python_agent_harness.tui.commands import CommandMixin
+        from python_agent_harness.persistence import parse_saved_body
 
         with open(self.img, "w", encoding="utf-8") as f:
             f.write("not really a png")
-        restored = CommandMixin._parse_saved_body(self._saved_body())
+        restored = parse_saved_body(self._saved_body())
         user = restored[0]
         self.assertIsInstance(user.content, str)
         self.assertIn("not available in restored session", user.content)
 
     def test_url_image_roundtrip(self):
+        from python_agent_harness.persistence import parse_saved_body
         from python_agent_harness.session import Session
-        from python_agent_harness.tui.commands import CommandMixin
 
         url = "https://example.com/image.jpg"
         messages = [
@@ -620,7 +620,7 @@ class TestRestoreReattach(unittest.TestCase):
             ),
         ]
         dummy = type("Dummy", (), {"_conversation_text": Session._conversation_text})()
-        restored = CommandMixin._parse_saved_body(dummy._conversation_text(messages))
+        restored = parse_saved_body(dummy._conversation_text(messages))
         user = restored[0]
         self.assertIsInstance(user.content, list)
         images = [p for p in user.content if isinstance(p, ImagePart)]
@@ -628,8 +628,8 @@ class TestRestoreReattach(unittest.TestCase):
         self.assertEqual(images[0].url, url)
 
     def test_reattach_path_with_comma(self):
+        from python_agent_harness.persistence import parse_saved_body
         from python_agent_harness.session import Session
-        from python_agent_harness.tui.commands import CommandMixin
 
         img = os.path.join(self.tmpdir, "my, shot.png")
         with open(img, "wb") as f:
@@ -644,7 +644,7 @@ class TestRestoreReattach(unittest.TestCase):
             ),
         ]
         dummy = type("Dummy", (), {"_conversation_text": Session._conversation_text})()
-        restored = CommandMixin._parse_saved_body(dummy._conversation_text(messages))
+        restored = parse_saved_body(dummy._conversation_text(messages))
         user = restored[0]
         self.assertIsInstance(user.content, list)
         images = [p for p in user.content if isinstance(p, ImagePart)]
