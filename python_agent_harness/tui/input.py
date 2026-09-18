@@ -46,7 +46,7 @@ def _safe_patch_stdout():
 
 
 if TYPE_CHECKING:
-    from ..session import Session
+    from ..controller import Controller
 
 SLASH_COMMANDS = [
     "/plan",
@@ -311,12 +311,12 @@ def _resolve_numbered_choice(answer: str, options: list[str]) -> str:
 class InputMixin:
     """Input handling methods for the TUI.
 
-    Expects the host class to provide: ``session``, ``console``,
+    Expects the host class to provide: ``_controller``, ``console``,
     ``question``, ``prompt_session``, ``_data_event``.
     """
 
     if TYPE_CHECKING:
-        session: Session
+        _controller: Controller
         console: Console
         question: UiQuestion | None
         prompt_session: PromptSession
@@ -333,9 +333,9 @@ class InputMixin:
         e.g. ``deepseek-ai/deepseek-flash-v4`` → ``deepseek-flash-v4``)
         so the active model stays visible while typing.
         """
-        model = self.session.model or ""
+        model = self._controller.model or ""
         short = model.rsplit("/", 1)[-1] if "/" in model else model
-        title = getattr(self.session.store, "title", None)
+        title = getattr(self._controller.store, "title", None)
         if title:
             title = title.strip()
             if len(title) > 20:
@@ -425,7 +425,7 @@ class InputMixin:
         question is answered.  A cancelled run returns an empty answer.
         """
         self.question = q
-        cancel = getattr(self.session, "cancel_event", None)
+        cancel = self._controller.cancel_event
         while not q.event.wait(0.1):
             if cancel is not None and cancel.is_set():
                 return ""
