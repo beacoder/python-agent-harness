@@ -357,6 +357,8 @@ class TestTuiCommands(unittest.TestCase):
         self.assertIn("my session_250101120000.md", out)
         self.assertIn("gpt-4", out)
         self.assertIn("/tmp/p", out)
+        # the console may wrap the line, so allow whitespace/newline
+        self.assertRegex(out, r"1\s+messages")
 
     def test_run_sessions_skips_unreadable_files(self):
         tui, buf = make_tui()
@@ -608,6 +610,42 @@ class TestTuiCommands(unittest.TestCase):
             tui._run_restore(path)
         roles = [m.role for m in tui.session.last_messages]
         self.assertEqual(roles, ["user", "assistant"])
+
+    def test_restore_switches_input_history_to_saved_project(self):
+        """/restore of a session saved under another project points the
+        prompt session's Up/Down recall at that project's history file
+        (session + default buffer), not the startup project's."""
+        from python_agent_harness.tui.input import _history_path
+
+        tui, buf = make_tui()
+        startup_project = str(tui._controller.project_dir)
+        saved_project = "/some/other/project"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**user**: hi\n\n;; Local Variables:\n"
+                    f";; python-agent-harness--project-dir: {saved_project!r}\n"
+                    ";; End:\n"
+                )
+            tui._run_restore(path)
+        expected = _history_path(saved_project)
+        self.assertEqual(tui.prompt_session.history.filename, expected)
+        self.assertEqual(tui.prompt_session.default_buffer.history.filename, expected)
+        self.assertNotEqual(expected, _history_path(startup_project))
+
+    def test_restore_without_project_metadata_keeps_input_history(self):
+        """A session file without project metadata (old format) leaves
+        the prompt session's input history untouched."""
+        tui, buf = make_tui()
+        before = tui.prompt_session.history.filename
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("**user**: hi\n\n;; Local Variables:\n;; End:\n")
+            tui._run_restore(path)
+        self.assertEqual(tui.prompt_session.history.filename, before)
+        self.assertEqual(tui.prompt_session.default_buffer.history.filename, before)
 
     def test_find_session_by_title(self):
         """Title lookup: exact basename, .md-less, substring and
