@@ -28,7 +28,7 @@ from ..prompts import _is_mode_reminder_text
 if TYPE_CHECKING:
     import threading
 
-    from ..session import Session
+    from ..controller import Controller
     from .input import UiQuestion
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -189,7 +189,7 @@ def _strip_reasoning(text: str, reasoning: str) -> str:
 class RenderMixin:
     """Rendering methods for the TUI.
 
-    Expects the host class to provide: ``session``, ``console``,
+    Expects the host class to provide: ``_controller``, ``console``,
     ``stream_text``, ``lock``, ``question``, ``agent_running``,
     ``status``, ``_current_tool``, ``round_start``, ``round_user_text``,
     ``_data_event``, ``_history_cache``, ``_history_dirty``,
@@ -197,7 +197,7 @@ class RenderMixin:
     """
 
     if TYPE_CHECKING:
-        session: Session
+        _controller: Controller
         console: Console
         stream_text: str
         lock: threading.Lock
@@ -228,7 +228,7 @@ class RenderMixin:
         """
         rows: list[Any] = []
         calls_by_id: dict[str, Any] = {}
-        all_messages = self.session.last_messages or []
+        all_messages = self._controller.last_messages or []
         # tool-call lookup spans the whole conversation so a diff still
         # resolves even if its call landed in an earlier round
         for m in all_messages:
@@ -331,10 +331,10 @@ class RenderMixin:
     def _todos_panel(self) -> Group | None:
         """Todos section — rebuilt every frame (not cached), so a
         TodoWrite call shows up immediately even mid-run."""
-        if not self.session.todos:
+        if not self._controller.todos:
             return None
         t = Table.grid(padding=(0, 1))
-        for todo in self.session.todos[-8:]:
+        for todo in self._controller.todos[-8:]:
             status = todo.get("status", "")
             mark = {"completed": "✅", "in_progress": "⏳", "pending": "⬜"}.get(status, "•")
             t.add_row(mark, todo.get("content", ""))
@@ -410,7 +410,7 @@ class RenderMixin:
         (``store.round_times``).
         """
         idx = round_no - 1
-        times = self._round_times or self.session.store.round_times
+        times = self._round_times or self._controller.store.round_times
         if 0 <= idx < len(times):
             return time.strftime("%H:%M:%S", time.localtime(times[idx]))
         return None
@@ -471,8 +471,8 @@ class RenderMixin:
         # reserve: status bar (up to 2 lines) + input prompt (1)
         # + the pinned Todos section when visible (its title line + rows)
         reserved = 3
-        if self.session.todos:
-            reserved += min(len(self.session.todos), 8) + 1
+        if self._controller.todos:
+            reserved += min(len(self._controller.todos), 8) + 1
         return max(5, height - reserved)
 
     @staticmethod
@@ -503,9 +503,9 @@ class RenderMixin:
         return Group(*parts)
 
     def _status_bar(self) -> Text:
-        mode = self.session.plan_mode.mode.value
+        mode = self._controller.plan_mode.mode.value
         mode_style = "bold yellow" if mode == "plan" else "bold green"
-        ratio = self.session.context_ratio
+        ratio = self._controller.context_ratio
         ctx = ""
         if ratio is not None:
             pct = round(ratio * 100)
@@ -518,7 +518,7 @@ class RenderMixin:
         if ctx:
             over = ratio is not None and ratio >= config.CONTEXT_TRIGGER
             t.append(ctx, style="bold" if over else "")
-        if getattr(self.session, "_save_error", None):
+        if self._controller.save_error:
             t.append(" [!save]", style="red bold")
         if self.agent_running:
             frame = SPINNER_FRAMES[int(time.time() * 10) % len(SPINNER_FRAMES)]
