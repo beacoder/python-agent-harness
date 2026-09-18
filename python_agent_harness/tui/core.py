@@ -77,7 +77,7 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         # added at runtime are picked up.
         self._discovered_agents: dict[str, str] = {}
         self.prompt_session = _make_prompt_session(
-            FileHistory(_history_path()),
+            FileHistory(_history_path(str(self._controller.project_dir))),
             SlashCompleter(lambda: str(self._controller.project_dir)),
         )
 
