@@ -14,7 +14,7 @@ import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs
 from tui_test_utils import make_tui
 
 from python_agent_harness.models import Message
-from python_agent_harness.tui import Tui
+from python_agent_harness.persistence import find_session_by_title
 
 
 class TestTuiCommands(unittest.TestCase):
@@ -662,16 +662,16 @@ class TestTuiCommands(unittest.TestCase):
             ):
                 # exact basename match (with and without .md)
                 self.assertEqual(
-                    Tui._find_session_by_title("Add feature_250101000001.md"),
+                    find_session_by_title("Add feature_250101000001.md"),
                     spaced,
                 )
-                self.assertEqual(Tui._find_session_by_title("add feature_250101000001"), spaced)
+                self.assertEqual(find_session_by_title("add feature_250101000001"), spaced)
                 # filename substring match
-                self.assertEqual(Tui._find_session_by_title("fix-bugs"), dash)
-                self.assertEqual(Tui._find_session_by_title("feature"), spaced)
+                self.assertEqual(find_session_by_title("fix-bugs"), dash)
+                self.assertEqual(find_session_by_title("feature"), spaced)
                 # derived-title match (dashes -> spaces)
-                self.assertEqual(Tui._find_session_by_title("fix bugs"), dash)
-                self.assertIsNone(Tui._find_session_by_title("nothing here"))
+                self.assertEqual(find_session_by_title("fix bugs"), dash)
+                self.assertIsNone(find_session_by_title("nothing here"))
 
     # ------------------------------------------------------------------
     # /model paths
