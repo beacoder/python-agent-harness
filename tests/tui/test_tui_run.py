@@ -216,7 +216,7 @@ class TestTuiRun(unittest.TestCase):
             Message(role="user", content="q2"),
             Message(role="assistant", content="partial answer"),
         ]
-        with mock.patch("python_agent_harness.tui.core.run_agent_loop", return_value=None):
+        with mock.patch("python_agent_harness.controller.run_agent_loop", return_value=None):
             tui._run_agent("q2", tui.run_seq)
         self.assertEqual(
             [m.text() for m in tui.conversation_history],
@@ -428,7 +428,7 @@ class TestTuiRun(unittest.TestCase):
             raise RuntimeError("stop")
 
         with (
-            mock.patch("python_agent_harness.tui.core.run_agent_loop", side_effect=boom),
+            mock.patch("python_agent_harness.controller.run_agent_loop", side_effect=boom),
             mock.patch.object(tui, "_run_live", return_value=False) as live,
         ):
             tui._start_agent("hello")
@@ -450,7 +450,7 @@ class TestTuiRun(unittest.TestCase):
         )
         with (
             mock.patch(
-                "python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("stop")
+                "python_agent_harness.controller.run_agent_loop", side_effect=RuntimeError("stop")
             ),
             mock.patch.object(tui, "_run_dumb", return_value=False) as dumb,
         ):
@@ -468,7 +468,7 @@ class TestTuiRun(unittest.TestCase):
         tui.question = q
         with (
             mock.patch(
-                "python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("stop")
+                "python_agent_harness.controller.run_agent_loop", side_effect=RuntimeError("stop")
             ),
             mock.patch.object(tui, "_run_live", side_effect=KeyboardInterrupt),
         ):
@@ -538,7 +538,7 @@ class TestTuiRun(unittest.TestCase):
         status bar."""
         tui, _ = make_tui()
         with mock.patch(
-            "python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("boom")
+            "python_agent_harness.controller.run_agent_loop", side_effect=RuntimeError("boom")
         ):
             tui._run_agent("hi", tui.run_seq)
         self.assertIn("agent error: boom", tui.status)
@@ -548,7 +548,7 @@ class TestTuiRun(unittest.TestCase):
         tui, _ = make_tui()
         restored = []
         with mock.patch(
-            "python_agent_harness.tui.core.run_agent_loop", side_effect=RuntimeError("boom")
+            "python_agent_harness.controller.run_agent_loop", side_effect=RuntimeError("boom")
         ):
             tui._run_agent("hi", tui.run_seq, restore=lambda: restored.append(1))
         self.assertEqual(restored, [1])
