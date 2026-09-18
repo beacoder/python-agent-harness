@@ -1,10 +1,13 @@
 """Core TUI class — the coordinator that owns shared state, the main
-event loop, agent run lifecycle, and session callbacks.
+event loop, and session callbacks.
 
 Rendering, input, and slash commands are mixed in from their respective
 modules; this module provides the glue: ``__init__``, ``run``,
 ``_start_agent``, ``_run_live``, ``_run_dumb``, ``_run_agent``, and the
-session callbacks (``_on_delta``, ``_on_notify``, ``_on_log``).
+session callbacks (``_on_delta``, ``_on_notify``, ``_on_log``).  The
+run lifecycle (message building, worker thread) lives in the
+controller (``Controller.submit``); the TUI only drives its display
+loop on the returned worker thread.
 """
 
 from __future__ import annotations
@@ -23,9 +26,8 @@ from rich.panel import Panel
 from rich.text import Text
 
 from .. import config
-from ..agent import run_agent_loop
-from ..attachments import parse_at_references
-from ..models import ImagePart, Message, TextPart
+from ..controller import Controller
+from ..models import Message
 from ..session import Session
 from .commands import CommandMixin
 from .input import InputMixin, SlashCompleter, UiQuestion, _history_path, _make_prompt_session
@@ -41,7 +43,7 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
     """
 
     def __init__(self, session: Session, console: Console | None = None) -> None:
-        self.session = session
+        self._controller = Controller(session)
         self.console = console or Console()
         self.stream_text = ""
         self.lock = threading.Lock()
@@ -51,7 +53,6 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         self._current_tool = ""
         self.run_seq = 0
         self._restore: Callable[[], None] | None = None
-        self.conversation_history: list[Message] = []
         # Index into ``session.last_messages`` where the current round
         # begins: the live panel renders only from here on (the latest
         # round of interactions), while the end-of-run scrollback dump
@@ -71,23 +72,57 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         # wall-clock start of the current run, used to report the total
         # time spent once the run finishes
         self._run_start: float | None = None
-        # Pre-built user message (with @file attachments) passed from
-        # _start_agent to _run_agent
-        self._pending_user_msg: Message | None = None
         # Discovered agent profiles (name -> prompt file path) from the
         # prompts/agents/ directory; refreshed on each /agent call so files
         # added at runtime are picked up.
         self._discovered_agents: dict[str, str] = {}
         self.prompt_session = _make_prompt_session(
             FileHistory(_history_path()),
-            SlashCompleter(lambda: str(self.session.project_dir)),
+            SlashCompleter(lambda: str(self._controller.project_dir)),
         )
 
-        session.on_delta = self._on_delta
-        session.notify_fn = self._on_notify
-        session.log_fn = self._on_log
-        session.confirm_fn = self._ui_confirm
-        session.ask_fn = self._ui_ask
+        self._controller.attach_view(self)
+
+    # ------------------------------------------------------------------
+    # session access
+    # ------------------------------------------------------------------
+    @property
+    def session(self) -> Session:
+        """The underlying session (owned by the controller).
+
+        Kept for direct access; new code should prefer the controller.
+        """
+        return self._controller.session
+
+    @property
+    def conversation_history(self) -> list[Message]:
+        """The conversation as the agent loop sees it (owned by the
+        controller).  Kept as a property for backward compatibility;
+        new code should use ``self._controller.conversation_history``.
+        """
+        return self._controller.conversation_history
+
+    @conversation_history.setter
+    def conversation_history(self, value: list[Message]) -> None:
+        self._controller.conversation_history = value
+
+    # ------------------------------------------------------------------
+    # View protocol (wired to the session by Controller.attach_view)
+    # ------------------------------------------------------------------
+    def on_delta(self, text: str) -> None:
+        self._on_delta(text)
+
+    def on_notify(self, kind: str, data: Any = None) -> None:
+        self._on_notify(kind, data)
+
+    def on_log(self, msg: str) -> None:
+        self._on_log(msg)
+
+    def confirm(self, prompt: str) -> bool:
+        return self._ui_confirm(prompt)
+
+    def ask(self, questions: list[dict]) -> str:
+        return self._ui_ask(questions)
 
     # ------------------------------------------------------------------
     # session callbacks (called from the worker thread)
@@ -161,6 +196,14 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             with self.lock:
                 self.status = " done"
                 self._history_dirty = True
+        elif kind == "run_finished":
+            # the run is done: the final assistant message is now part
+            # of the conversation history, so drop the live stream
+            # buffer — otherwise the same text renders twice (stream
+            # row + history row) and eats the visible-row budget
+            with self.lock:
+                self.stream_text = ""
+                self._history_dirty = True
         else:
             with self.lock:
                 self.status = " running"
@@ -192,8 +235,8 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             )
         )
         if config.LLM_LOG_ENABLED:
-            self.console.print(f"[dim]LLM logs: {self.session.client.log_path}[/dim]")
-        for warning in getattr(self.session, "startup_warnings", ()):
+            self.console.print(f"[dim]LLM logs: {self._controller.client.log_path}[/dim]")
+        for warning in self._controller.startup_warnings:
             self.console.print(f"[yellow]warning: {warning}[/yellow]")
         while True:
             try:
@@ -224,73 +267,19 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
     ) -> None:
         """Run the agent loop on TEXT in a worker thread.
 
-        SYSTEM overrides the session's system prompt for this run only.
-        RESTORE (if given) runs when the run finishes — used by the
-        slash commands to put back state they borrowed (e.g. project_dir).
-
-        TEXT may be a plain string (parsed for @file references here) or
-        a pre-built Message (slash commands that already parsed their
-        kickoff's @file references pass the Message directly).
+        The run lifecycle (message building, run generation, worker
+        thread) lives in the controller; this method only prepares the
+        TUI's round state and drives the display loop on the returned
+        worker thread.
         """
-        # Parse @file references before submitting: images become
-        # ImagePart attachments, text files become TextPart attachments.
-        # The @path token is stripped from the text (the content lives
-        # in the attachment), and validation errors are shown to the user.
-        has_images = False
-        if isinstance(text, Message):
-            user_msg = text
-            cleaned_text = text.text()
-            attachments: list[Any] = []
-            errors: list[Any] = []
-            display_text = cleaned_text.strip() or "(attachment)"
-            has_images = isinstance(text.content, list) and any(
-                isinstance(p, ImagePart) for p in text.content
-            )
-        else:
-            cleaned_text, attachments, errors = parse_at_references(
-                text, str(self.session.project_dir)
-            )
-            for err in errors:
-                self.console.print(f"[red]@{err.path}: {err.message}[/red]")
-
-            if errors and not attachments and not cleaned_text.strip():
-                # All references failed and nothing else to send
-                return
-
-            # Build the user message: multimodal if there are attachments,
-            # plain text otherwise (preserving the existing text-only path).
-            if attachments:
-                parts: list[Any] = []
-                if cleaned_text.strip():
-                    parts.append(TextPart(text=cleaned_text))
-                for att in attachments:
-                    parts.append(att.part)
-                user_msg = Message(role="user", content=parts)
-                # The round_user_text is the display text (without image data)
-                display_text = (
-                    cleaned_text.strip()
-                    or f"({len(attachments)} image attachment{'s' if len(attachments) != 1 else ''})"
-                )
-            else:
-                user_msg = Message(role="user", content=cleaned_text)
-                display_text = cleaned_text
-
-        # Warn when the active model cannot see images: the attachment
-        # will be silently stripped before the request is sent (see
-        # Client._payload), so the user should know the image never
-        # reaches the model.
-        has_image_parts = has_images or (
-            attachments and any(isinstance(a.part, ImagePart) for a in attachments)
-        )
-        if has_image_parts and not self.session.supports_image_input:
-            self.console.print(
-                f"[yellow]warning: model {self.session.model} does not support "
-                "image input — image attachment(s) will be ignored[/yellow]"
-            )
-
-        # Store for _run_agent to pick up (avoids re-parsing there)
-        self._pending_user_msg = user_msg
-
+        handle = self._controller.submit(text, system=system, restore=restore)
+        if handle is None:
+            # all @file references failed and nothing else to send
+            return
+        for err in handle.errors:
+            self.console.print(f"[red]@{err.path}: {err.message}[/red]")
+        for warning in handle.warnings:
+            self.console.print(f"[yellow]warning: {warning}[/yellow]")
         self.stream_text = ""
         self.status = " running"
         self._current_tool = ""
@@ -299,34 +288,19 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         # end-of-run dump prints the full conversation.  Captured before
         # the run so it points just past the previous round's messages —
         # the new user message will be the first mirrored row.
-        self.round_start = len(self.session.last_messages or [])
-        self.round_user_text = display_text
+        self.round_start = len(self._controller.last_messages or [])
+        self.round_user_text = handle.display_text
         self._round_times.append(time.time())
         self._run_start = time.time()
         # keep the persisted metadata in sync so auto-save /save
         # capture the round timestamps (restore reads them back)
-        self.session.store.round_times = list(self._round_times)
-        # A new top-level run starts here: drop any todo list left over
-        # from a previous run so a finished task's todos don't stay
-        # pinned into the next task.
-        self.session.clear_todos()
-        # A new top-level run starts here: invalidate any worker still
-        # unwinding from a previous run — from this point on it is stale
-        # and must never touch shared state.  Bump before clearing the
-        # event so there is no instant where an old worker sees "not
-        # cancelled".
-        self.session.run_generation += 1
-        self.session.cancel_event.clear()
+        self._controller.store.round_times = list(self._round_times)
         self._data_event.clear()
         self._history_dirty = True
-        self.run_seq += 1
-        seq = self.run_seq
+        self.run_seq = handle.seq
         self._restore = restore
         self.agent_running = True
-        worker = threading.Thread(
-            target=self._run_agent, args=(user_msg, seq, system, restore), daemon=True
-        )
-        worker.start()
+        worker = handle.worker
         cancelled = False
         try:
             if self.console.is_dumb_terminal:
@@ -339,7 +313,7 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             # hung HTTP read may take a while, and the UI must return to
             # the input prompt immediately.
             cancelled = True
-            self.session.cancel()
+            self._controller.cancel()
             if self.question is not None:
                 # a pending question wedges the worker in its wait: the
                 # run is cancelled, so release it now — it must not be
@@ -433,51 +407,12 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         system: str | None = None,
         restore: Callable[[], None] | None = None,
     ) -> None:
-        try:
-            # The user message was already built in _start_agent (with
-            # @file attachments parsed into ImagePart/TextPart).  We
-            # reconstruct it here from the round_user_text for text-only
-            # messages, or use the pre-built message stored on the instance.
-            user_msg = getattr(self, "_pending_user_msg", None)
-            if user_msg is None:
-                user_msg = text if isinstance(text, Message) else Message(role="user", content=text)
-            else:
-                self._pending_user_msg = None
-            self.conversation_history.append(user_msg)
-            run_agent_loop(
-                self.session,
-                messages=list(self.conversation_history),
-                top_level=True,
-                system=system or self.session.system_prompt,
-            )
-            # Only the current run may update shared state: a stale
-            # worker (a newer run started — `run_seq` advanced) must not
-            # clobber the next run.  A cancelled run with no successor
-            # is still current, so it adopts its salvaged partial
-            # history and the interrupted turn is not lost (the seq
-            # check is the staleness guard; the cancel event no longer
-            # blocks the adoption).
-            if seq == self.run_seq and self.session.last_messages:
-                self.conversation_history = list(self.session.last_messages)
-        except Exception as e:  # noqa: BLE001
-            if seq == self.run_seq:
-                self._on_log(f"agent error: {e}")
-        finally:
-            # Only the current run may touch shared UI state: a stale
-            # worker from a cancelled run that finishes late must not
-            # wipe the next run's live stream or fire its restore
-            # callback (which could reset e.g. a borrowed project dir
-            # while the new run is mid-execution).  The restore for a
-            # cancelled run is released by the Ctrl-C handler instead.
-            if seq == self.run_seq:
-                # the run is done: the final assistant message is now
-                # part of the conversation history, so drop the live
-                # stream buffer — otherwise the same text renders twice
-                # (stream row + history row) and eats the visible-row
-                # budget
-                with self.lock:
-                    self.stream_text = ""
-                self._history_dirty = True
-                self._data_event.set()
-                if restore is not None:
-                    restore()
+        """Worker-thread body of a run (test-compat wrapper).
+
+        The real implementation lives in ``Controller._run_worker``;
+        this method keeps the old signature so existing tests that
+        call it directly (or patch ``run_agent_loop`` in this module)
+        keep working.  It reconstructs the user message and delegates.
+        """
+        user_msg = text if isinstance(text, Message) else Message(role="user", content=text)
+        self._controller._run_worker(user_msg, seq, system, restore)
