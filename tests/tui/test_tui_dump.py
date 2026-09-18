@@ -11,7 +11,7 @@ import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs
 from tui_test_utils import make_tui
 
 from python_agent_harness.models import Message
-from python_agent_harness.tui import Tui
+from python_agent_harness.persistence import parse_saved_body
 
 
 class TestTuiDump(unittest.TestCase):
@@ -238,7 +238,7 @@ class TestTuiDump(unittest.TestCase):
             Message(role="assistant", content=reply),
         ]
         body = tui._conversation_text()
-        msgs = Tui._parse_saved_body(body)
+        msgs = parse_saved_body(body)
         self.assertEqual([m.role for m in msgs], ["user", "assistant"])
         self.assertEqual(msgs[1].text(), reply)
 
@@ -248,7 +248,7 @@ class TestTuiDump(unittest.TestCase):
         tui, _ = make_tui()
         reply = "escaped in the file as:\n\n\\**user**: hello"
         tui.session.last_messages = [Message(role="assistant", content=reply)]
-        msgs = Tui._parse_saved_body(tui._conversation_text())
+        msgs = parse_saved_body(tui._conversation_text())
         self.assertEqual(len(msgs), 1)
         self.assertEqual(msgs[0].text(), reply)
 
@@ -264,7 +264,7 @@ class TestTuiDump(unittest.TestCase):
             "**assistant**: I found them.\n\n"
             "**tool**: trailing result"
         )
-        msgs = Tui._parse_saved_body(body)
+        msgs = parse_saved_body(body)
         self.assertEqual(
             [(m.role, m.text()) for m in msgs],
             [
