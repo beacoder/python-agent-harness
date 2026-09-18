@@ -14,8 +14,10 @@ of the rendering.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+import threading
 from typing import Any, TextIO
 
 from .controller import Controller
@@ -219,4 +221,130 @@ def run_headless(
     if answer:
         view.out.write(answer + "\n")
         view.out.flush()
+    return 1 if view.errors else 0
+
+
+class JsonlView(HeadlessView):
+    """A ``View`` that emits the run as JSON lines on *out*.
+
+    ``--json`` mode for ``headless``: every event — streamed deltas,
+    tool/status notifications, log lines, submit warnings, and the
+    final result — becomes one ``{"type": ...}`` JSON object per line
+    on stdout, so a driving process (CI, an IDE, a web backend) gets a
+    structured event stream on one pipe.  Human-readable diagnostics
+    (restore notes, model-switch notes) still go to *err* as plain
+    text, and stderr also keeps the plain-text echo of error events so
+    a failed run is diagnosable without JSON parsing.  ``confirm``
+    auto-approves and ``ask`` returns "Unanswered", like
+    ``HeadlessView``.
+
+    Line kinds: ``start`` (echoes the prompt and submit warnings; the
+    first line whenever a run actually starts), ``delta``, ``notify``
+    (with ``kind``/``data`` as emitted by the session — ``data`` may be
+    any JSON-serializable value or None), ``log``, and a final
+    ``result`` (with the filtered answer and ``errors``).  The stream
+    ends after ``result`` — which is also the only line when the run
+    fails before start (restore failure, nothing to send).
+
+    Events that arrive before ``emit_start`` (the worker thread starts
+    as soon as the prompt is submitted) are buffered and flushed right
+    behind the ``start`` line, so ``start`` is guaranteed to be first.
+    A lock serializes buffer access and stream writes: the agent's
+    worker thread emits live events while the caller's thread runs
+    ``emit_start``/``emit_result``.
+    """
+
+    def __init__(self, out: TextIO | None = None, err: TextIO | None = None) -> None:
+        super().__init__(out=out, err=err)
+        self._lock = threading.Lock()
+        # None = live mode (write through); a list = buffering mode.
+        self._buffer: list[dict[str, Any]] | None = []
+
+    def _write(self, payload: dict[str, Any]) -> None:
+        self.out.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        self.out.flush()
+
+    def _emit(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            if self._buffer is None:
+                self._write(payload)
+            else:
+                self._buffer.append(payload)
+
+    # deltas carry no meaning beyond concatenation, but stream them so
+    # a driver can render progress; the result line remains canonical.
+    def on_delta(self, text: str) -> None:
+        self._emit({"type": "delta", "text": text})
+
+    def on_notify(self, kind: str, data: Any = None) -> None:
+        self._emit({"type": "notify", "kind": kind, "data": data})
+        # Mirror "error" onto stderr as plain text and record it (the
+        # parent's contract) so a failed run is diagnosable without
+        # parsing JSON and the exit code still signals the failure.
+        if kind == "error":
+            with self._lock:
+                self.errors.append(str(data))
+            self.err.write(f"\n[error: {data}]\n")
+            self.err.flush()
+
+    def on_log(self, msg: str) -> None:
+        self._emit({"type": "log", "message": msg})
+
+    def emit_start(self, prompt: str, warnings: list[str]) -> None:
+        """Write the ``start`` line, then any events buffered before it."""
+        with self._lock:
+            self._write({"type": "start", "prompt": prompt, "warnings": warnings})
+            buffered, self._buffer = self._buffer, None
+            for payload in buffered or []:
+                self._write(payload)
+
+    def emit_result(self, answer: str, errors: list[str] | None = None) -> None:
+        """Write the terminal ``result`` line (always written, even when
+        the run failed before ``emit_start``)."""
+        with self._lock:
+            self._buffer = None
+            self._write(
+                {
+                    "type": "result",
+                    "answer": answer,
+                    "errors": list(self.errors if errors is None else errors),
+                }
+            )
+
+    def run(self) -> None:
+        pass
+
+
+def run_headless_jsonl(
+    session: Session,
+    prompt: str,
+    out: TextIO | None = None,
+    err: TextIO | None = None,
+    restore: str | None = None,
+    model: str | None = None,
+) -> int:
+    """Run one prompt headlessly with a JSON-lines event stream on *out*.
+
+    The ``--json`` counterpart of ``run_headless``: same submit/restore/
+    model-selection flow and exit-code semantics, but ``JsonlView``
+    replaces plain-text output — see its docstring for the line kinds.
+    Exit code is 0 unless the prompt had nothing to send, the restore
+    failed, or an ``error`` notification occurred (same rules as
+    ``run_headless``).
+    """
+    controller = Controller(session)
+    view = JsonlView(out=out, err=err)
+    controller.attach_view(view)
+    if restore is not None and not restore_session(controller, restore, view.err):
+        view.emit_result("", errors=["restore failed"])
+        return 1
+    if model is not None:
+        _select_model(controller, model, view.err)
+    handle = controller.submit(prompt)
+    if handle is None:
+        view.emit_result("", errors=["nothing to send"])
+        return 1
+    view.emit_start(prompt, list(handle.warnings))
+    handle.worker.join()
+    view.emit_result(final_answer_text(session))
     return 1 if view.errors else 0

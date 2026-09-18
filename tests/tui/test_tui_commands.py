@@ -801,5 +801,395 @@ class TestTuiCommands(unittest.TestCase):
         self.assertEqual(tui.session.client.base_url, "https://new/v1")
 
 
+class TestTuiCommandsExtra(unittest.TestCase):
+    """Remaining branches: /model + /agent interactive flows, /help with
+    no custom commands, kickoff attachments, image placeholders,
+    _run_with_status terminal modes, agent listing/switching, and the
+    /restore warning paths."""
+
+    # ------------------------------------------------------------------
+    # slash dispatch
+    # ------------------------------------------------------------------
+    def test_slash_dispatch_routes_model_and_agent(self):
+        tui, _ = make_tui()
+        with (
+            mock.patch.object(tui, "_run_model_command") as model,
+            mock.patch.object(tui, "_run_agent_command") as agent,
+        ):
+            self.assertFalse(tui._handle_slash("/model deepseek"))
+            model.assert_called_once_with("deepseek")
+            self.assertFalse(tui._handle_slash("/agent planner"))
+            agent.assert_called_once_with("planner")
+
+    def test_help_without_custom_commands(self):
+        """With no custom commands the help omits the custom block —
+        exercising the empty-custom branch of the listing."""
+        tui, buf = make_tui()
+        with mock.patch("python_agent_harness.commands.load_custom_commands", return_value=[]):
+            tui._handle_slash("/help")
+        out = buf.getvalue()
+        self.assertIn("/sessions", out)
+        self.assertIn("Ctrl-D or /exit quits.", out)
+
+    # ------------------------------------------------------------------
+    # kickoff attachments + image placeholders
+    # ------------------------------------------------------------------
+    def test_kickoff_attachments_and_reference_errors(self):
+        """@file references in the kickoff become message parts; failed
+        references are reported but the run still proceeds."""
+        from python_agent_harness.models import TextPart
+
+        tui, buf = make_tui()
+        tui.conversation_history = []
+        tui.session.last_messages = []
+        captured = {}
+
+        def fake_start(text, system=None, restore=None):
+            captured["text"] = text
+
+        attached = TextPart(text="[attached file contents]")
+        bad = mock.Mock()
+        bad.path = "missing.png"
+        bad.message = "no such file"
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.parse_at_references",
+                return_value=("do the task", [mock.Mock(part=attached)], [bad]),
+            ),
+            mock.patch.object(tui, "_start_agent", side_effect=fake_start),
+        ):
+            tui._run_slash_command("init", "")
+        self.assertIn("@missing.png: no such file", buf.getvalue())
+        content = captured["text"].content
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0].text, "do the task")
+        self.assertIs(content[-1], attached)
+
+    def test_conversation_text_image_placeholder(self):
+        """Messages with image parts get a placeholder line recording the
+        image count and sources (so a saved session shows what was
+        attached)."""
+        from python_agent_harness.models import ImagePart, TextPart
+
+        tui, _ = make_tui()
+        tui.session.last_messages = [
+            Message(
+                role="user",
+                content=[
+                    TextPart(text="look at this"),
+                    ImagePart(data=b"x", path="/tmp/shot.png"),
+                    ImagePart(url="https://example.com/i.png"),
+                ],
+            ),
+        ]
+        text = tui._conversation_text()
+        self.assertIn("2 image", text)
+        self.assertIn("/tmp/shot.png", text)
+        self.assertIn("https://example.com/i.png", text)
+        self.assertIn("look at this", text)
+
+    # ------------------------------------------------------------------
+    # _run_with_status: terminal modes
+    # ------------------------------------------------------------------
+    def test_run_with_status_dumb_terminal_loop(self):
+        """In a dumb terminal the status bar is printed per poll instead
+        of using rich's Live region."""
+        import threading
+        import time as _time
+
+        from rich.console import Console
+
+        tui, buf = make_tui()
+        done = threading.Event()
+
+        def worker() -> None:
+            _time.sleep(0.15)
+            done.set()
+
+        with mock.patch.object(
+            Console, "is_dumb_terminal", new_callable=mock.PropertyMock, return_value=True
+        ):
+            tui._run_with_status(worker, status_text=" ⏳ working", cancel_message="cancelled")
+        self.assertTrue(done.is_set())
+        self.assertFalse(tui.agent_running)
+
+    def test_run_with_status_keyboard_interrupt_reports_cancel(self):
+        import time as _time
+
+        tui, buf = make_tui()
+
+        def worker() -> None:
+            _time.sleep(0.3)
+
+        with mock.patch.object(tui._data_event, "wait", side_effect=KeyboardInterrupt):
+            tui._run_with_status(worker, status_text="x", cancel_message="aborted!")
+        self.assertIn("aborted!", buf.getvalue())
+        self.assertFalse(tui.agent_running)
+
+    def test_refresh_model_profiles_reports_bad_config(self):
+        tui, buf = make_tui()
+        tui.session.model_profiles = {"keep": {"model": "m"}}
+        with mock.patch(
+            "python_agent_harness.tui.commands.config.load_models_config",
+            side_effect=ValueError("bad config"),
+        ):
+            tui._refresh_model_profiles()
+        self.assertIn("bad config", buf.getvalue())
+        self.assertEqual(tui.session.model_profiles, {"keep": {"model": "m"}})
+
+    def test_model_switch_by_name_failure_reported(self):
+        tui, buf = make_tui()
+        with mock.patch.object(
+            tui.session, "switch_model", return_value=(False, "no such profile")
+        ):
+            tui._model_switch_by_name("nope")
+        self.assertIn("no such profile", buf.getvalue())
+
+    # ------------------------------------------------------------------
+    # /model interactive flows
+    # ------------------------------------------------------------------
+    def _set_default_model(self, tui) -> None:
+        profiles: dict = {}
+        tui.session.model_profiles = dict(profiles)
+        tui.session.llm_settings = {"model": "gpt-5-mini", "base_url": "https://default"}
+        tui.session.model = "gpt-5-mini"
+
+    def test_model_interactive_already_default(self):
+        tui, buf = make_tui()
+        self._set_default_model(tui)
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config", return_value={}
+            ),
+            mock.patch("builtins.input", return_value="1"),
+        ):
+            tui._run_model_command("")
+        self.assertIn("Already using this model", buf.getvalue())
+
+    def test_model_interactive_invalid_number(self):
+        tui, buf = make_tui()
+        self._set_default_model(tui)
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config", return_value={}
+            ),
+            mock.patch("builtins.input", return_value="99"),
+        ):
+            tui._run_model_command("")
+        self.assertIn("Invalid selection: 99", buf.getvalue())
+
+    def test_model_interactive_name_switches(self):
+        tui, buf = make_tui()
+        self._set_default_model(tui)
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config", return_value={}
+            ),
+            mock.patch("builtins.input", return_value="some-model"),
+            mock.patch.object(tui, "_model_switch_by_name") as switch,
+        ):
+            tui._run_model_command("")
+        switch.assert_called_once_with("some-model")
+
+    def test_model_interactive_eof_is_silent(self):
+        tui, buf = make_tui()
+        self._set_default_model(tui)
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config", return_value={}
+            ),
+            mock.patch("builtins.input", side_effect=EOFError),
+        ):
+            tui._run_model_command("")  # must not raise
+        self.assertNotIn("cancelled", buf.getvalue())
+
+    def test_model_interactive_keyboard_interrupt_cancels(self):
+        tui, buf = make_tui()
+        self._set_default_model(tui)
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config", return_value={}
+            ),
+            mock.patch("builtins.input", side_effect=KeyboardInterrupt),
+        ):
+            tui._run_model_command("")
+        self.assertIn("cancelled", buf.getvalue())
+
+    def test_model_numeric_arg_out_of_range(self):
+        tui, buf = make_tui()
+        self._set_default_model(tui)
+        with mock.patch(
+            "python_agent_harness.tui.commands.config.load_models_config", return_value={}
+        ):
+            tui._run_model_command("99")
+        self.assertIn("Invalid selection: 99", buf.getvalue())
+
+    # ------------------------------------------------------------------
+    # /summary fallback
+    # ------------------------------------------------------------------
+    def test_summary_with_contentless_last_message_prints_status(self):
+        tui, buf = make_tui()
+        with mock.patch.object(
+            tui.session, "summarize_conversation", return_value="Summary appended."
+        ):
+            tui.session.last_messages = [Message(role="assistant", content="")]
+            tui._run_summary()
+        self.assertIn("Summary appended.", buf.getvalue())
+
+    # ------------------------------------------------------------------
+    # /agent command
+    # ------------------------------------------------------------------
+    def test_refresh_agent_profiles_discovers(self):
+        tui, _ = make_tui()
+        with mock.patch(
+            "python_agent_harness.tui.commands.discover_agents",
+            return_value={"planner": "/p/planner.md"},
+        ):
+            tui._refresh_agent_profiles()
+        self.assertEqual(tui._discovered_agents, {"planner": "/p/planner.md"})
+        self.assertEqual(tui._agent_list_names(), ["default", "planner"])
+
+    def test_agent_switch_by_name_success_and_failure(self):
+        tui, buf = make_tui()
+        with mock.patch.object(tui.session, "switch_agent", return_value=(True, "agent ok")):
+            tui._agent_switch_by_name("planner")
+        self.assertIn("agent ok", buf.getvalue())
+        buf.truncate(0)
+        with mock.patch.object(tui.session, "switch_agent", return_value=(False, "no agent")):
+            tui._agent_switch_by_name("nope")
+        self.assertIn("no agent", buf.getvalue())
+
+    def test_agent_command_lists_without_agents(self):
+        tui, buf = make_tui()
+        with (
+            mock.patch("python_agent_harness.tui.commands.discover_agents", return_value={}),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_agent_command("")
+        out = buf.getvalue()
+        self.assertIn("Available agent profiles", out)
+        self.assertIn("none found", out)
+
+    def test_agent_command_interactive_number(self):
+        tui, buf = make_tui()
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.discover_agents",
+                return_value={"planner": "/p/planner.md"},
+            ),
+            mock.patch("builtins.input", return_value="2"),
+            mock.patch.object(tui, "_agent_switch_by_name") as switch,
+        ):
+            tui._run_agent_command("")
+        switch.assert_called_once_with("planner")
+
+    def test_agent_command_interactive_invalid_number(self):
+        tui, buf = make_tui()
+        with (
+            mock.patch("python_agent_harness.tui.commands.discover_agents", return_value={}),
+            mock.patch("builtins.input", return_value="9"),
+        ):
+            tui._run_agent_command("")
+        self.assertIn("Invalid selection: 9", buf.getvalue())
+
+    def test_agent_command_interactive_name(self):
+        tui, buf = make_tui()
+        with (
+            mock.patch("python_agent_harness.tui.commands.discover_agents", return_value={}),
+            mock.patch("builtins.input", return_value="planner"),
+            mock.patch.object(tui, "_agent_switch_by_name") as switch,
+        ):
+            tui._run_agent_command("")
+        switch.assert_called_once_with("planner")
+
+    def test_agent_command_interactive_eof_and_interrupt(self):
+        tui, buf = make_tui()
+        with (
+            mock.patch("python_agent_harness.tui.commands.discover_agents", return_value={}),
+            mock.patch("builtins.input", side_effect=EOFError),
+        ):
+            tui._run_agent_command("")  # silent
+        with (
+            mock.patch("python_agent_harness.tui.commands.discover_agents", return_value={}),
+            mock.patch("builtins.input", side_effect=KeyboardInterrupt),
+        ):
+            tui._run_agent_command("")
+        self.assertIn("cancelled", buf.getvalue())
+
+    def test_agent_command_numeric_and_named_arg(self):
+        tui, buf = make_tui()
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.discover_agents",
+                return_value={"planner": "/p/planner.md"},
+            ),
+            mock.patch.object(tui, "_agent_switch_by_name") as switch,
+        ):
+            tui._run_agent_command("1")
+        switch.assert_called_once_with("default")
+        switch.reset_mock()
+        with mock.patch(
+            "python_agent_harness.tui.commands.discover_agents",
+            return_value={"planner": "/p/planner.md"},
+        ):
+            tui._run_agent_command("99")
+        self.assertIn("Invalid selection: 99", buf.getvalue())
+        buf.truncate(0)
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.discover_agents",
+                return_value={"planner": "/p/planner.md"},
+            ),
+            mock.patch.object(tui, "_agent_switch_by_name") as switch,
+        ):
+            tui._run_agent_command("planner")
+        switch.assert_called_once_with("planner")
+
+    # ------------------------------------------------------------------
+    # /restore warning paths
+    # ------------------------------------------------------------------
+    def test_restore_bad_round_times_metadata_tolerated(self):
+        tui, buf = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**user**: hello\n\n;; Local Variables:\n"
+                    ";; python-agent-harness--round-times: not-a-number\n"
+                    ";; End:\n"
+                )
+            tui._run_restore(path)
+        self.assertIn("restored:", buf.getvalue())
+        self.assertEqual(tui._round_times, [])
+
+    def test_restore_agent_switch_exception_warns(self):
+        tui, buf = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**user**: hello\n\n;; Local Variables:\n"
+                    ";; python-agent-harness--agent: planner\n"
+                    ";; End:\n"
+                )
+            with mock.patch.object(tui.session, "switch_agent", side_effect=RuntimeError("boom")):
+                tui._run_restore(path)
+        self.assertIn("could not restore agent: boom", buf.getvalue())
+
+    def test_restore_model_switch_exception_warns(self):
+        tui, buf = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.md")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(
+                    "**user**: hello\n\n;; Local Variables:\n"
+                    ";; python-agent-harness--model: other-model\n"
+                    ";; End:\n"
+                )
+            with mock.patch.object(tui.session, "switch_model", side_effect=RuntimeError("boom")):
+                tui._run_restore(path)
+        self.assertIn("could not restore model: boom", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

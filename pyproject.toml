@@ -94,6 +94,7 @@ omit = ["python_agent_harness/__main__.py"]
 
 [tool.coverage.report]
 show_missing = true
-# Current line + branch coverage is ~98%. Gate at 90 to leave headroom for
-# small changes while still catching real regressions. Raise as coverage grows.
-fail_under = 90
+# Current line + branch coverage is ~97%. Gate at 95 to catch real
+# regressions while leaving headroom for platform-dependent test skips
+# (the same gate runs on Linux/macOS/Windows CI).
+fail_under = 95

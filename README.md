@@ -232,6 +232,18 @@ Interactive prompts are auto-answered (`confirm` → yes, `ask` →
   configured endpoint when no such profile exists. An explicit `--model`
   wins over the model restored by `--restore`.
 
+- `--json` emits the run as JSON lines on stdout instead of plain text —
+  one `{"type": ...}` object per line: `start` (echoes the prompt and
+  submit warnings), `delta` (streamed text chunks), `notify` (tool and
+  status events, with `kind`/`data`), `log`, and a final `result` (the
+  filtered answer plus any `errors`). Diagnostics (restore/model notes,
+  a plain-text echo of error events) still go to stderr, so one pipe
+  carries the structured stream. Exit codes are unchanged.
+
+  ```sh
+  python-agent-harness headless "fix it" --json | jq -c 'select(.type=="result")'
+  ```
+
 - Exit code is 0 on success, 1 when the prompt was empty (only failed
   `@file` references), the run raised an agent error, or the restore failed.
 

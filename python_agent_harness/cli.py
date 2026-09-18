@@ -3,6 +3,7 @@
 Commands:
   run                      interactive TUI agent session (default)
   headless [prompt]        non-interactive: submit one prompt, print the result
+                           (--json emits the run as JSON lines instead)
   config [--init]          show effective LLM config / write a template file
 
 Custom commands (prompts/commands/*.md) — like init, review,
@@ -200,12 +201,13 @@ def cmd_headless(args: argparse.Namespace) -> int:
         stream=False if getattr(args, "no_stream", False) else None,
     )
     try:
-        from .headless import run_headless
+        from .headless import run_headless, run_headless_jsonl
 
         prompt = getattr(args, "prompt", None)
         if prompt is None:
             prompt = sys.stdin.read()
-        return run_headless(
+        runner = run_headless_jsonl if getattr(args, "json", False) else run_headless
+        return runner(
             session,
             prompt,
             restore=getattr(args, "restore", None),
@@ -363,6 +365,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="model to use: a profile from the 'models' config section, "
         "or a raw model name on the configured endpoint",
+    )
+    p_headless.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the run as JSON lines on stdout (start/delta/notify/log/"
+        "result events) for programmatic driving; diagnostics stay on stderr",
     )
 
     p_config = sub.add_parser("config", help="show effective LLM config or write a template file")

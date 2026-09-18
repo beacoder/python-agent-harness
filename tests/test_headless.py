@@ -18,9 +18,11 @@ from python_agent_harness import cli
 from python_agent_harness.controller import RunHandle
 from python_agent_harness.headless import (
     HeadlessView,
+    JsonlView,
     final_answer_text,
     restore_session,
     run_headless,
+    run_headless_jsonl,
 )
 from python_agent_harness.models import Message
 
@@ -40,6 +42,24 @@ class TestHeadlessView(unittest.TestCase):
         view = HeadlessView(out=out, err=err)
         view.on_notify("tool_start", ["Read", "Grep"])
         self.assertIn("Read, Grep", err.getvalue())
+
+    def test_notify_tool_start_without_names(self):
+        err = io.StringIO()
+        view = HeadlessView(err=err)
+        view.on_notify("tool_start", None)
+        self.assertIn("[tools: tools]", err.getvalue())
+
+    def test_notify_run_done_to_err(self):
+        err = io.StringIO()
+        view = HeadlessView(err=err)
+        view.on_notify("run_done")
+        self.assertIn("[done]", err.getvalue())
+
+    def test_on_log_to_err(self):
+        err = io.StringIO()
+        view = HeadlessView(err=err)
+        view.on_log("compacting")
+        self.assertIn("[log: compacting]", err.getvalue())
 
     def test_notify_error_to_err(self):
         out = io.StringIO()
@@ -321,6 +341,342 @@ class TestRestoreSession(unittest.TestCase):
         ctrl.switch_agent.assert_called_once_with("default")
         ctrl.switch_model.assert_called_once_with("gpt-x")
 
+    def test_restore_by_title_substring(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write_session(d, name="my session_250101120000")
+            ctrl = self._fake_controller()
+            err = io.StringIO()
+            with mock.patch(
+                "python_agent_harness.persistence.find_session_by_title", return_value=path
+            ) as find:
+                ok = restore_session(ctrl, "MY SESSION", err)
+        self.assertTrue(ok)
+        find.assert_called_once_with("MY SESSION")
+        self.assertEqual(ctrl.store.title, "my session")
+
+    def test_restore_agent_failure_resets_to_default(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            from python_agent_harness.persistence import SessionPersistence
+
+            store = SessionPersistence(project_dir=d, model="gpt-x", agent="ghost")
+            store.file_path = os.path.join(d, "ghost-session.md")
+            path = store.save("**user**: hi\n\n**assistant**: yo\n")
+            ctrl = self._fake_controller()
+            ctrl.switch_agent.side_effect = [(False, "no such agent: ghost"), (True, "agent ok")]
+            err = io.StringIO()
+            ok = restore_session(ctrl, path, err)
+        self.assertTrue(ok)
+        self.assertEqual(
+            ctrl.switch_agent.call_args_list,
+            [mock.call("ghost"), mock.call("default")],
+        )
+        self.assertIn("warning: no such agent: ghost", err.getvalue())
+
+    def test_restore_default_model_via_pseudo_profile(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write_session(d)  # saved model gpt-x
+            ctrl = self._fake_controller()
+            ctrl.model = "drifted-model"
+            ctrl.llm_settings = {"model": "gpt-x"}
+            err = io.StringIO()
+            ok = restore_session(ctrl, path, err)
+        self.assertTrue(ok)
+        ctrl.switch_model.assert_called_once_with("default")
+
+    def test_restore_model_via_matching_profile(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write_session(d)  # saved model gpt-x
+            ctrl = self._fake_controller()
+            ctrl.model = "m1"
+            ctrl.llm_settings = {"model": "other"}
+            ctrl.model_profiles = {"prof": {"model": "gpt-x"}}
+            ctrl.switch_model.side_effect = [(False, "unknown model"), (True, "switched")]
+            err = io.StringIO()
+            ok = restore_session(ctrl, path, err)
+        self.assertTrue(ok)
+        self.assertEqual(
+            ctrl.switch_model.call_args_list,
+            [mock.call("gpt-x"), mock.call("prof")],
+        )
+
+    def test_restore_model_without_profile_warns(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write_session(d)  # saved model gpt-x
+            ctrl = self._fake_controller()
+            ctrl.model = "m1"
+            ctrl.llm_settings = {"model": "other"}
+            ctrl.model_profiles = {}
+            ctrl.switch_model.side_effect = [(False, "unknown model")]
+            err = io.StringIO()
+            ok = restore_session(ctrl, path, err)
+        self.assertTrue(ok)
+        self.assertIn("has no matching profile", err.getvalue())
+
+    def test_restore_failure_exit_code(self):
+        session = mock.Mock()
+        session.last_messages = []
+        with mock.patch("python_agent_harness.headless.restore_session", return_value=False):
+            rc = run_headless(session, "hi", restore="nope")
+        self.assertEqual(rc, 1)
+
+
+class TestJsonlView(unittest.TestCase):
+    def _lines(self, out: io.StringIO) -> list[dict]:
+        import json
+
+        return [json.loads(line) for line in out.getvalue().splitlines() if line]
+
+    def test_events_emitted_as_json_lines(self):
+        import json
+
+        out = io.StringIO()
+        err = io.StringIO()
+        view = JsonlView(out=out, err=err)
+        view.emit_start("do it", ["w1"])
+        view.on_delta("hello ")
+        view.on_notify("tool_start", ["Read"])
+        view.on_notify("error", "no quota")
+        view.on_log("warming up")
+        view.emit_result("Done.")
+        lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
+        self.assertEqual(lines[0], {"type": "start", "prompt": "do it", "warnings": ["w1"]})
+        self.assertEqual(lines[1], {"type": "delta", "text": "hello "})
+        self.assertEqual(lines[2], {"type": "notify", "kind": "tool_start", "data": ["Read"]})
+        self.assertEqual(lines[3], {"type": "notify", "kind": "error", "data": "no quota"})
+        self.assertEqual(lines[4], {"type": "log", "message": "warming up"})
+        # the error seen during the run is reported on the result line
+        self.assertEqual(lines[5], {"type": "result", "answer": "Done.", "errors": ["no quota"]})
+        # each line is compact single-line JSON: no embedded newlines
+        self.assertTrue(all("\n" not in line for line in out.getvalue().splitlines()))
+
+    def test_events_before_start_are_buffered_behind_start_line(self):
+        """The worker starts before emit_start runs, so early events must
+        be buffered and flushed after start — start is always first."""
+        import json
+
+        out = io.StringIO()
+        view = JsonlView(out=out)
+        # simulate the race: events arrive before emit_start
+        view.on_delta("early ")
+        view.on_notify("tool_start", ["Bash"])
+        view.emit_start("go", [])
+        view.on_delta("live")
+        view.emit_result("ok")
+        lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
+        self.assertEqual(lines[0]["type"], "start")
+        self.assertEqual(lines[1], {"type": "delta", "text": "early "})
+        self.assertEqual(lines[2], {"type": "notify", "kind": "tool_start", "data": ["Bash"]})
+        self.assertEqual(lines[3], {"type": "delta", "text": "live"})
+        self.assertEqual(lines[-1]["type"], "result")
+
+    def test_concurrent_emit_and_start_never_corrupts_stream(self):
+        """A worker hammering _emit while emit_start swaps the buffer to
+        live mode must not raise (None.append race) and every line must
+        stay valid JSON with start first."""
+        import json
+
+        for _ in range(20):  # the race is timing-dependent: hammer it
+            out = io.StringIO()
+            view = JsonlView(out=out)
+            errors: list[BaseException] = []
+
+            def worker(view=view, errors=errors) -> None:
+                try:
+                    for i in range(200):
+                        view.on_delta(f"d{i}")
+                except BaseException as exc:  # noqa: BLE001 - recorded below
+                    errors.append(exc)
+
+            t = threading.Thread(target=worker)
+            t.start()
+            view.emit_start("go", [])
+            t.join()
+            view.emit_result("ok")
+            self.assertEqual(errors, [])
+            lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
+            self.assertEqual(lines[0]["type"], "start")
+            self.assertEqual(lines[-1]["type"], "result")
+            self.assertEqual(len(lines), 202)  # start + 200 deltas + result
+
+    def test_error_notified_recorded_and_echoed_to_err(self):
+        out = io.StringIO()
+        err = io.StringIO()
+        view = JsonlView(out=out, err=err)
+        view.on_notify("error", "no quota")
+        self.assertEqual(view.errors, ["no quota"])  # parent HeadlessView behavior
+        self.assertIn("[error: no quota]", err.getvalue())
+
+    def test_non_error_notify_not_echoed_to_err(self):
+        out = io.StringIO()
+        err = io.StringIO()
+        view = JsonlView(out=out, err=err)
+        view.on_notify("tool_start", ["Read"])
+        self.assertEqual(err.getvalue(), "")
+
+    def test_deltas_recorded_but_errors_only_from_notify(self):
+        out = io.StringIO()
+        view = JsonlView(out=out)
+        view.on_delta("text")
+        self.assertEqual(view.errors, [])
+
+    def test_confirm_auto_approves_and_ask_unanswered(self):
+        view = JsonlView()
+        self.assertTrue(view.confirm("switch to build?"))
+        self.assertEqual(view.ask([{"question": "pick one"}]), "Unanswered")
+
+    def test_run_is_noop(self):
+        self.assertIsNone(JsonlView().run())
+
+
+class TestRunHeadlessJsonl(unittest.TestCase):
+    def _fake_handle(self, worker: threading.Thread) -> RunHandle:
+        worker.start()
+        return RunHandle(
+            worker=worker,
+            seq=1,
+            display_text="hi",
+            errors=[],
+            warnings=[],
+        )
+
+    def test_emits_start_and_result_lines(self):
+        import json
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        session.last_messages = [
+            Message(
+                role="assistant",
+                content="Done.\n\n[FINAL CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence: e",
+            ),
+        ]
+        worker = threading.Thread(target=lambda: None)
+        handle = self._fake_handle(worker)
+        out = io.StringIO()
+        with mock.patch("python_agent_harness.headless.Controller") as ctrl_cls:
+            ctrl = ctrl_cls.return_value
+            ctrl.submit.return_value = handle
+            rc = run_headless_jsonl(session, "hello", out=out)
+        self.assertEqual(rc, 0)
+        lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
+        self.assertEqual(lines[0], {"type": "start", "prompt": "hello", "warnings": []})
+        self.assertEqual(lines[-1], {"type": "result", "answer": "Done.", "errors": []})
+        ctrl.submit.assert_called_once_with("hello")
+
+    def test_submit_warnings_on_start_line(self):
+        import json
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        session.last_messages = []
+        worker = threading.Thread(target=lambda: None)
+        handle = self._fake_handle(worker)
+        handle.warnings = ["model x does not support image input"]
+        out = io.StringIO()
+        with mock.patch("python_agent_harness.headless.Controller") as ctrl_cls:
+            ctrl_cls.return_value.submit.return_value = handle
+            rc = run_headless_jsonl(session, "hi", out=out)
+        self.assertEqual(rc, 0)
+        start = json.loads(out.getvalue().splitlines()[0])
+        self.assertEqual(start["warnings"], ["model x does not support image input"])
+
+    def test_returns_1_when_nothing_to_send(self):
+        import json
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        session.last_messages = []
+        out = io.StringIO()
+        with mock.patch("python_agent_harness.headless.Controller") as ctrl_cls:
+            ctrl_cls.return_value.submit.return_value = None
+            rc = run_headless_jsonl(session, "@missing.txt", out=out)
+        self.assertEqual(rc, 1)
+        lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
+        # result is the only line (no start), with the failure reason
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0], {"type": "result", "answer": "", "errors": ["nothing to send"]})
+
+    def test_returns_1_when_error_notified(self):
+        """An "error" notification during the run must yield exit code 1."""
+        import json
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        session.last_messages = []
+        worker = threading.Thread(target=lambda: None)
+        handle = self._fake_handle(worker)
+        out = io.StringIO()
+        err = io.StringIO()
+
+        real_view = JsonlView(out=out, err=err)
+
+        with (
+            mock.patch("python_agent_harness.headless.Controller") as ctrl_cls,
+            mock.patch("python_agent_harness.headless.JsonlView", return_value=real_view),
+        ):
+            ctrl_cls.return_value.submit.return_value = handle
+            # inject the error the way the agent loop would
+            real_view.on_notify("error", "no quota")
+            rc = run_headless_jsonl(session, "hi", out=out, err=err)
+        self.assertEqual(rc, 1)
+        lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
+        # the pre-start error event is buffered behind the start line
+        notify_idx = next(i for i, line in enumerate(lines) if line["type"] == "notify")
+        self.assertEqual(lines[notify_idx]["kind"], "error")
+        result = lines[-1]
+        self.assertEqual(result["type"], "result")
+        self.assertEqual(result["errors"], ["no quota"])
+
+    def test_restore_failure_emits_result_line(self):
+        import json
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        session.last_messages = []
+        out = io.StringIO()
+        err = io.StringIO()
+        with (
+            mock.patch("python_agent_harness.headless.Controller") as ctrl_cls,
+            mock.patch(
+                "python_agent_harness.headless.restore_session",
+                return_value=False,
+            ) as restore,
+        ):
+            ctrl_cls.return_value.attach_view.return_value = None
+            rc = run_headless_jsonl(session, "hi", out=out, err=err, restore="nope")
+        self.assertEqual(rc, 1)
+        restore.assert_called_once()
+        lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
+        # result is the only line (no start), with the failure reason
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0], {"type": "result", "answer": "", "errors": ["restore failed"]})
+
+    def test_jsonl_model_selection_applied(self):
+        session = mock.Mock()
+        session.last_messages = []
+        worker = threading.Thread(target=lambda: None)
+        handle = self._fake_handle(worker)
+        out = io.StringIO()
+        with (
+            mock.patch("python_agent_harness.headless.Controller") as ctrl_cls,
+            mock.patch("python_agent_harness.headless._select_model") as select,
+        ):
+            ctrl_cls.return_value.submit.return_value = handle
+            rc = run_headless_jsonl(session, "hi", model="fast", out=out)
+        self.assertEqual(rc, 0)
+        select.assert_called_once()
+        self.assertEqual(select.call_args.args[1], "fast")
+
 
 class TestCliHeadless(unittest.TestCase):
     def test_headless_flag_routes_to_run_headless(self):
@@ -399,6 +755,42 @@ class TestCliHeadless(unittest.TestCase):
         ):
             cli.main(["headless", "fix it", "--restore"])
         self.assertEqual(rh.call_args.kwargs["restore"], "latest")
+
+    def test_headless_json_flag_routes_to_run_headless_jsonl(self):
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        with (
+            mock.patch("python_agent_harness.cli.make_session_with_mcp", return_value=session),
+            mock.patch("python_agent_harness.headless.run_headless_jsonl") as rhj,
+            mock.patch("python_agent_harness.headless.run_headless") as rh,
+        ):
+            rc = cli.main(["headless", "fix it", "--json"])
+        self.assertEqual(rc, rhj.return_value)
+        rhj.assert_called_once()
+        self.assertEqual(rhj.call_args.args[1], "fix it")
+        rh.assert_not_called()  # plain runner must not run too
+        session.close.assert_called_once()
+
+    def test_headless_without_json_flag_keeps_plain_runner(self):
+        import unittest.mock as mock
+
+        session = mock.Mock()
+        with (
+            mock.patch("python_agent_harness.cli.make_session_with_mcp", return_value=session),
+            mock.patch("python_agent_harness.headless.run_headless_jsonl") as rhj,
+            mock.patch("python_agent_harness.headless.run_headless") as rh,
+        ):
+            cli.main(["headless", "fix it"])
+        rh.assert_called_once()
+        rhj.assert_not_called()
+
+    def test_parser_has_json_flag(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["headless", "p", "--json"])
+        self.assertTrue(args.json)
+        args = parser.parse_args(["headless", "p"])
+        self.assertFalse(args.json)
 
     def test_parser_has_headless_and_prompt(self):
         parser = cli.build_parser()
