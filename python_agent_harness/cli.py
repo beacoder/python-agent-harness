@@ -205,7 +205,12 @@ def cmd_headless(args: argparse.Namespace) -> int:
         prompt = getattr(args, "prompt", None)
         if prompt is None:
             prompt = sys.stdin.read()
-        return run_headless(session, prompt, restore=getattr(args, "restore", None))
+        return run_headless(
+            session,
+            prompt,
+            restore=getattr(args, "restore", None),
+            model=getattr(args, "model", None),
+        )
     finally:
         session.close()
 
@@ -352,6 +357,12 @@ def build_parser() -> argparse.ArgumentParser:
         const="latest",
         help="continue a saved session: file path, title substring, or "
         "latest (default with no SPEC)",
+    )
+    p_headless.add_argument(
+        "--model",
+        metavar="NAME",
+        help="model to use: a profile from the 'models' config section, "
+        "or a raw model name on the configured endpoint",
     )
 
     p_config = sub.add_parser("config", help="show effective LLM config or write a template file")
