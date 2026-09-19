@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-from ..diffrender import unified_diff
+from ..io.diffrender import unified_diff
 from .base import Tool, ToolContext
 from .edit import _to_crlf, _uses_crlf
 

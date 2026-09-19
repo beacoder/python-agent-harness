@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 
-from ..diffrender import unified_diff
+from ..io.diffrender import unified_diff
 from .base import ToolContext
 from .diffapply import apply_unified_diff
 from .edit import Edit, _strip_diff_fence

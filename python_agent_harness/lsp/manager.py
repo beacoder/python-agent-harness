@@ -8,7 +8,7 @@ import shutil
 import threading
 from pathlib import Path
 
-from .. import config
+from ..session import config
 from .client import LSPClient, LSPError
 
 # command, language id. Users can override/add servers via the config

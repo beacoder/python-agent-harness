@@ -115,7 +115,7 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         ctx_dir.mkdir()
         (ctx_dir / "notes.md").write_text("# My Notes\nHello world\n", encoding="utf-8")
         with mock.patch(
-            "python_agent_harness.session.find_context_dir",
+            "python_agent_harness.session.session.find_context_dir",
             return_value=str(ctx_dir),
         ):
             session = cli.make_session(self._tmp.name, config_path=self._config_path)
@@ -132,7 +132,7 @@ class TestMakeSessionPromptDefaults(unittest.TestCase):
         import unittest.mock as mock
 
         with mock.patch(
-            "python_agent_harness.session.find_context_dir",
+            "python_agent_harness.session.session.find_context_dir",
             return_value=None,
         ):
             session = cli.make_session(self._tmp.name, config_path=self._config_path)
@@ -457,7 +457,11 @@ class TestCliEntryPoints(unittest.TestCase):
         """`python -m python_agent_harness.cli` must call sys.exit(main()).
         The module is executed as __main__ with main() stubbed out so no
         session or TUI machinery runs; the exit code is the stub's."""
-        src = Path(cli.__file__).read_text(encoding="utf-8")
+        src = (
+            Path(__import__("python_agent_harness").__file__)
+            .parent.joinpath("__main__.py")
+            .read_text(encoding="utf-8")
+        )
         # stub the module's own main so nothing real is started
         src = src.replace("sys.exit(main())", "sys.exit(__test_main__())")
         calls = []
@@ -468,12 +472,21 @@ class TestCliEntryPoints(unittest.TestCase):
 
         ns = {
             "__name__": "__main__",
-            "__file__": str(cli.__file__),
+            "__file__": str(
+                Path(__import__("python_agent_harness").__file__).parent / "__main__.py"
+            ),
             "__package__": "python_agent_harness",
             "__test_main__": __test_main__,
         }
         with self.assertRaises(SystemExit) as cm:
-            exec(compile(src, str(cli.__file__), "exec"), ns)
+            exec(
+                compile(
+                    src,
+                    str(Path(__import__("python_agent_harness").__file__).parent / "__main__.py"),
+                    "exec",
+                ),
+                ns,
+            )
         self.assertEqual(cm.exception.code, 7)
         self.assertEqual(calls, [None])
 

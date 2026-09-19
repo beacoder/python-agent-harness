@@ -18,6 +18,9 @@ DESCRIPTION = (
     "3. Get decisions on implementation choices as you work\n"
     "4. Offer choices to the user about what direction to take\n\n"
     "Each question can have predefined options for the user to select from. "
+    "Each option is either a plain string or an object with a required "
+    '"label" and an optional "description" (shown to the user); the label '
+    "is what gets returned as the answer. "
     'By default, a "Type your own answer" option is added; set custom to '
     "false to disable it. Set multiple to true to allow selecting more than "
     "one option.\n\n"
@@ -36,7 +39,22 @@ PARAMETERS = {
                 "type": "object",
                 "properties": {
                     "question": {"type": "string"},
-                    "options": {"type": "array", "items": {"type": "string"}},
+                    "options": {
+                        "type": "array",
+                        "items": {
+                            "anyOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {"type": "string"},
+                                        "description": {"type": "string"},
+                                    },
+                                    "required": ["label"],
+                                },
+                            ]
+                        },
+                    },
                     "multiple": {"type": "boolean"},
                     "custom": {"type": "boolean"},
                 },

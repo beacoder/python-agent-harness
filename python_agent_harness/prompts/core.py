@@ -20,10 +20,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import config
-from .models import ImagePart, Message
+from ..core.models import ImagePart, Message
+from ..session import config
 
-PROMPTS_DIR = Path(__file__).parent / "prompts"
+PROMPTS_DIR = Path(__file__).parent
 AGENTS_DIR = PROMPTS_DIR / "agents"
 # Reserved pseudo-name that restores the built-in agent (prompts/agent.md);
 # custom agent files cannot claim it (see discover_agents).
@@ -369,7 +369,7 @@ def load_task_completion_rules() -> str | None:
     excluded: they get ONLY their own prompt (subagent.md) with no
     extra context injected.
     """
-    p = Path(__file__).parent / "prompts" / "task-completion-rules.md"
+    p = Path(__file__).parent / "task-completion-rules.md"
     try:
         text = p.read_text(encoding="utf-8")
     except OSError:
@@ -407,7 +407,7 @@ def assemble_agent_prompt(
     parts: list[str] = []
     if include_context:
         # lazy import: harness imports this module at call time
-        from .session import find_context_dir
+        from ..session.session import find_context_dir
 
         # the project's AGENTS.md files are just context files that live
         # outside the context directory — same block format, same section

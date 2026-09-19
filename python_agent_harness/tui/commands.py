@@ -17,11 +17,9 @@ from prompt_toolkit.history import FileHistory
 from rich.console import Console
 from rich.live import Live
 
-from .. import config
-from ..attachments import image_placeholder, parse_at_references
-from ..commands import find_command
-from ..models import ImagePart, Message, TextPart
-from ..persistence import (
+from ..core.models import ImagePart, Message, TextPart
+from ..io.attachments import image_placeholder, parse_at_references
+from ..io.persistence import (
     SessionPersistence,
     escape_role_headers,
     find_session_by_title,
@@ -29,12 +27,14 @@ from ..persistence import (
     title_from_filename,
 )
 from ..prompts import RESERVED_AGENT_NAME, discover_agents
+from ..session import config
+from ..session.commands import find_command
 from .input import _history_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from ..controller import Controller
+    from ..entry.controller import Controller
 
 
 class CommandMixin:
@@ -113,7 +113,7 @@ class CommandMixin:
         elif cmd == "/agent":
             self._run_agent_command(arg)
         elif cmd == "/help":
-            from ..commands import load_custom_commands
+            from ..session.commands import load_custom_commands
 
             custom_names = {c.name for c in load_custom_commands()}
             custom = " ".join(f"/{n}" for n in sorted(custom_names))
@@ -254,7 +254,7 @@ class CommandMixin:
             # init/review: all tools except PlanExit — hide it for the
             # run (sub-agents share the session registry, so they are
             # covered too) and put it back when the run finishes.
-            from ..commands import hide_planexit
+            from ..session.commands import hide_planexit
 
             planexit_restore = hide_planexit(self._controller.session)
             if planexit_restore is not None:

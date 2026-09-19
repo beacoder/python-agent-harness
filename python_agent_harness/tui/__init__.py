@@ -7,14 +7,14 @@ submodules.
 
 from __future__ import annotations
 
-from ..controller import Controller
-from ..text_filter import (
+from ..entry.controller import Controller
+from ..entry.view import View
+from ..io.text_filter import (
     _FC_DANGLING_RE,
     _FC_HEADER,
     _FC_LABEL,
     _FINAL_CHECK_RE,
 )
-from ..view import View
 from .commands import CommandMixin
 from .core import Tui
 from .input import (
@@ -25,6 +25,7 @@ from .input import (
     _history_path,
     _make_key_bindings,
     _make_prompt_session,
+    _option_label,
     _resolve_keyed_choice,
     _resolve_numbered_choice,
 )
@@ -55,6 +56,7 @@ __all__ = [
     "ASSISTANT_STYLE",
     "_resolve_keyed_choice",
     "_resolve_numbered_choice",
+    "_option_label",
     "_make_key_bindings",
     "_make_prompt_session",
     "_history_path",

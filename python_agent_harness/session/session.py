@@ -15,25 +15,25 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from . import config
-from .attachments import image_placeholder
-from .client import Client, LLMClient
-from .diffrender import sanitize_for_display
-from .mcp.config import MCPConfig
-from .mcp.manager import MCPManager
-from .models import AgentMode, ImagePart
-from .persistence import SessionPersistence, escape_role_headers
-from .planmode import PlanMode
-from .prompts import RESERVED_AGENT_NAME, _tool_excluded, discover_agents, index_skills
-from .subagent import run_subagent
-from .token_estimator import TokenCalibrator
-from .tools import Registry, ToolContext
-from .tools.base import PendingToolResult
-from .tools.filesystem import cleanup_spooled_files
-from .tools.mcp import mcp_tools_from_manager
+from ..core.models import AgentMode, ImagePart
+from ..core.planmode import PlanMode
+from ..core.subagent import run_subagent
+from ..core.token_estimator import TokenCalibrator
+from ..io.attachments import image_placeholder
+from ..io.diffrender import sanitize_for_display
+from ..io.persistence import SessionPersistence, escape_role_headers
+from ..llm.client import Client, LLMClient
+from ..mcp.config import MCPConfig
+from ..mcp.manager import MCPManager
+from ..prompts import RESERVED_AGENT_NAME, _tool_excluded, discover_agents, index_skills
+from ..session import config
+from ..tools import Registry, ToolContext
+from ..tools.base import PendingToolResult
+from ..tools.filesystem import cleanup_spooled_files
+from ..tools.mcp import mcp_tools_from_manager
 
 if TYPE_CHECKING:
-    from .tools.base import ToolRuntime
+    from ..tools.base import ToolRuntime
 
 
 def find_skill_dir(project_dir: str, configured: str | None = None) -> str | None:
@@ -375,8 +375,8 @@ class Session:
         diff that cannot be parsed into file sections is refused (fail
         closed): an unverifiable patch must never reach a patch engine.
         """
-        from .tools.diffapply import diff_targets
-        from .tools.edit import _patch_cwd, _strip_diff_fence
+        from ..tools.diffapply import diff_targets
+        from ..tools.edit import _patch_cwd, _strip_diff_fence
 
         plan_file = self.plan_mode.plan_file
         raw = str(args.get("path", ""))
@@ -567,13 +567,13 @@ class Session:
         self.registry.unregister("PlanExit")
 
     def switch_to_plan(self) -> None:
-        from .tools import PlanExit
+        from ..tools import PlanExit
 
         self.plan_mode.set_mode(AgentMode.PLAN, self._mode_prompts())
         self.registry.register(PlanExit())
 
     def _mode_prompts(self) -> dict[str, str]:
-        from .prompts import read_prompt_file
+        from ..prompts import read_prompt_file
 
         return {
             "plan": read_prompt_file("plan.md"),
@@ -640,8 +640,8 @@ class Session:
             return
         store.title_pending = True
         try:
-            from .models import Message as Msg
-            from .prompts import read_prompt_file
+            from ..core.models import Message as Msg
+            from ..prompts import read_prompt_file
 
             system = read_prompt_file("title.md")
             resp, _ = self.client.chat_sync(
@@ -836,7 +836,7 @@ class Session:
         if prompt_file is None:
             available = ", ".join(sorted([RESERVED_AGENT_NAME, *agents.keys()]))
             return False, f"unknown agent: {name} (available: {available})"
-        from .prompts import agent_exclude_tools, assemble_agent_prompt, load_agent_prompt
+        from ..prompts import agent_exclude_tools, assemble_agent_prompt, load_agent_prompt
 
         new_exclusions = agent_exclude_tools(prompt_file)
         tool_instructions = self.registry.tool_instructions()
@@ -874,7 +874,7 @@ class Session:
         manual command just replaces the history and waits for the next
         user message.
         """
-        from .prompts import compact_summary, compacted_messages, user_prompt_texts
+        from ..prompts import compact_summary, compacted_messages, user_prompt_texts
 
         # Replacing the conversation is a new generation: invalidate any
         # worker still winding down from a cancelled run, or its
@@ -916,8 +916,8 @@ class Session:
         text is sent with the summary prompt, and the result is appended
         as an assistant message plus a session save.
         """
-        from .models import Message as Msg
-        from .prompts import read_prompt_file
+        from ..core.models import Message as Msg
+        from ..prompts import read_prompt_file
 
         # Appending to the shared conversation is a new generation: invalidate
         # any worker still winding down from a cancelled run, or its

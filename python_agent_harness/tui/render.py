@@ -19,16 +19,16 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from .. import config
-from ..diffrender import render_diff
-from ..models import ImagePart
+from ..core.models import ImagePart
+from ..io.diffrender import render_diff
+from ..io.text_filter import strip_final_check, strip_reasoning
 from ..prompts import _is_mode_reminder_text
-from ..text_filter import strip_final_check, strip_reasoning
+from ..session import config
 
 if TYPE_CHECKING:
     import threading
 
-    from ..controller import Controller
+    from ..entry.controller import Controller
     from .input import UiQuestion
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]

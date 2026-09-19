@@ -20,7 +20,25 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.text import Text
 
-from .. import config
+from ..session import config
+
+
+def _option_label(opt: Any) -> str:
+    """Coerce a Question-tool option to its display label.
+
+    Models occasionally send dicts ({"label": ..., "description": ...})
+    despite the string-only schema; accept both so a non-string option
+    can never crash the main render thread with rich's
+    ``TypeError: Only str or Text can be appended to Text``.
+    """
+    if isinstance(opt, str):
+        return opt
+    if isinstance(opt, dict):
+        label = opt.get("label", opt.get("name", opt.get("value")))
+        if label is not None:
+            return str(label)
+        return repr(opt)
+    return str(opt)
 
 
 @contextmanager
@@ -46,7 +64,7 @@ def _safe_patch_stdout():
 
 
 if TYPE_CHECKING:
-    from ..controller import Controller
+    from ..entry.controller import Controller
 
 SLASH_COMMANDS = [
     "/plan",
@@ -67,7 +85,7 @@ SLASH_COMMANDS = [
 
 
 def _custom_slash_commands() -> list[str]:
-    from ..commands import load_custom_commands
+    from ..session.commands import load_custom_commands
 
     return sorted(f"/{c.name}" for c in load_custom_commands())
 
@@ -269,7 +287,7 @@ class UiQuestion:
     ) -> None:
         self.prompt = prompt
         self.multiple = multiple
-        self.options = options or []
+        self.options = [_option_label(o) for o in (options or [])]
         self.custom = custom
         # keyed choices (e.g. ["y", "n"] for a confirm): render the
         # options as a keyed list and resolve typed keys to labels,

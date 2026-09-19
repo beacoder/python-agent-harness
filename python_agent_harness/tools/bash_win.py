@@ -30,8 +30,8 @@ import threading
 import time
 from collections import deque
 
-from ..config import BASH_TIMEOUT_MAX, BASH_TIMEOUT_SILENCE
-from ..config import MAX_OUTPUT_CHARS as _MAX_OUTPUT
+from ..session.config import BASH_TIMEOUT_MAX, BASH_TIMEOUT_SILENCE
+from ..session.config import MAX_OUTPUT_CHARS as _MAX_OUTPUT
 from .base import PendingToolResult, ToolContext
 from .bash import (
     _DRAIN_GRACE,

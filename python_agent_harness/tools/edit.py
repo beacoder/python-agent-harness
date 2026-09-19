@@ -15,7 +15,7 @@ import re
 import shutil
 import subprocess
 
-from ..diffrender import unified_diff
+from ..io.diffrender import unified_diff
 from .base import Tool, ToolContext
 
 # Any line ending, as a single compiled pattern (CRLF first so a CRLF is

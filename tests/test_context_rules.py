@@ -9,11 +9,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from python_agent_harness import prompts
 from python_agent_harness.prompts import (
     assemble_agent_prompt,
     load_task_completion_rules,
 )
+from python_agent_harness.prompts import core as prompts_core
 
 
 class TestTaskCompletionRules(unittest.TestCase):
@@ -30,7 +30,7 @@ class TestTaskCompletionRules(unittest.TestCase):
             ctx.mkdir()
             (ctx / "general-rules.md").write_text("GENERAL CONTEXT", encoding="utf-8")
             with mock.patch(
-                "python_agent_harness.session.find_context_dir",
+                "python_agent_harness.session.session.find_context_dir",
                 return_value=str(ctx),
             ):
                 prompt = assemble_agent_prompt(d, "ACTUAL AGENT PROMPT")
@@ -53,7 +53,7 @@ class TestTaskCompletionRules(unittest.TestCase):
         self.assertIn("Task Completion Rules", prompt)
 
     def test_assemble_missing_rules_falls_back(self):
-        with mock.patch.object(prompts, "load_task_completion_rules", return_value=None):
+        with mock.patch.object(prompts_core, "load_task_completion_rules", return_value=None):
             self.assertEqual(
                 assemble_agent_prompt("/tmp", "AGENT", include_context=False),
                 "AGENT",

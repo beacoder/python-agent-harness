@@ -12,7 +12,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
 from tui_test_utils import make_tui
 
-from python_agent_harness.tui import UiQuestion, _resolve_keyed_choice, _resolve_numbered_choice
+from python_agent_harness.tui import (
+    UiQuestion,
+    _option_label,
+    _resolve_keyed_choice,
+    _resolve_numbered_choice,
+)
 
 
 class TestTuiQuestions(unittest.TestCase):
@@ -223,6 +228,48 @@ class TestTuiQuestions(unittest.TestCase):
             tui._ask_question_blocking()
         self.assertEqual(q.answer, "")
         self.assertIsNone(tui.question)
+
+    # ------------------------------------------------------------------
+    # non-string options (regression: rich TypeError crashed the TUI)
+    # ------------------------------------------------------------------
+    def test_dict_options_render_and_resolve_to_labels(self):
+        """Options sent as {"label": ..., "description": ...} dicts render
+        as their labels and resolve to the label string, not a dict."""
+        tui, buf = make_tui()
+        q = UiQuestion(
+            "Pick one",
+            options=[
+                {"label": "Shim", "description": "keep compat"},
+                {"label": "Hard cut", "description": "break old paths"},
+            ],
+        )
+        tui.question = q
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="2"):
+            tui._ask_question_blocking()
+        self.assertEqual(q.answer, "Hard cut")
+        out = buf.getvalue()
+        self.assertIn("1) Shim", out)
+        self.assertIn("2) Hard cut", out)
+
+    def test_ui_ask_normalizes_dict_options(self):
+        """_ui_ask coerces dict options to labels before prompting."""
+        tui, _ = make_tui()
+        with mock.patch.object(tui, "_ask_sync", return_value="Shim") as m:
+            result = tui._ui_ask(
+                [{"question": "How?", "options": [{"label": "Shim"}, {"label": "Cut"}]}]
+            )
+        self.assertEqual(result, '"How?" = "Shim"')
+        self.assertEqual(m.call_args[0][0].options, ["Shim", "Cut"])
+
+    def test_option_label_coercion(self):
+        """_option_label covers str, label/name/value dicts, and junk."""
+        self.assertEqual(_option_label("plain"), "plain")
+        self.assertEqual(_option_label({"label": "L"}), "L")
+        self.assertEqual(_option_label({"name": "N"}), "N")
+        self.assertEqual(_option_label({"value": "V"}), "V")
+        self.assertEqual(_option_label({}), "{}")
+        self.assertEqual(_option_label(42), "42")
+        self.assertEqual(_option_label(None), "None")
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TypeGuard
 
-from ..config import MAX_OUTPUT_CHARS as MAX_OUTPUT
+from ..session.config import MAX_OUTPUT_CHARS as MAX_OUTPUT
 
 SPOOL_LINES = 50  # preview lines kept when results are spilled
 READ_SIZE_LIMIT = 400 * 1024  # whole-file reads above this are refused

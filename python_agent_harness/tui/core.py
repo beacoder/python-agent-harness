@@ -25,10 +25,10 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-from .. import config
-from ..controller import Controller
-from ..models import Message
-from ..session import Session
+from ..core.models import Message
+from ..entry.controller import Controller
+from ..session import config
+from ..session.session import Session
 from .commands import CommandMixin
 from .input import InputMixin, SlashCompleter, UiQuestion, _history_path, _make_prompt_session
 from .render import RenderMixin
