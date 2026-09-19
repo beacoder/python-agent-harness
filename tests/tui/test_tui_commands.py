@@ -6,15 +6,14 @@ import sys
 import tempfile
 import unittest
 import unittest.mock as mock
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
-import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
-from tui_test_utils import make_tui
-
-from python_agent_harness.models import Message
-from python_agent_harness.persistence import find_session_by_title
+from python_agent_harness.core.models import Message
+from python_agent_harness.io.persistence import find_session_by_title
+from tests.support import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+from tests.support.tui_test_utils import make_tui
 
 
 class TestTuiCommands(unittest.TestCase):
@@ -827,7 +826,7 @@ class TestTuiCommandsExtra(unittest.TestCase):
         """With no custom commands the help omits the custom block —
         exercising the empty-custom branch of the listing."""
         tui, buf = make_tui()
-        with mock.patch("python_agent_harness.commands.load_custom_commands", return_value=[]):
+        with mock.patch("python_agent_harness.session.commands.load_custom_commands", return_value=[]):
             tui._handle_slash("/help")
         out = buf.getvalue()
         self.assertIn("/sessions", out)
@@ -839,7 +838,7 @@ class TestTuiCommandsExtra(unittest.TestCase):
     def test_kickoff_attachments_and_reference_errors(self):
         """@file references in the kickoff become message parts; failed
         references are reported but the run still proceeds."""
-        from python_agent_harness.models import TextPart
+        from python_agent_harness.core.models import TextPart
 
         tui, buf = make_tui()
         tui.conversation_history = []
@@ -871,7 +870,7 @@ class TestTuiCommandsExtra(unittest.TestCase):
         """Messages with image parts get a placeholder line recording the
         image count and sources (so a saved session shows what was
         attached)."""
-        from python_agent_harness.models import ImagePart, TextPart
+        from python_agent_harness.core.models import ImagePart, TextPart
 
         tui, _ = make_tui()
         tui.session.last_messages = [

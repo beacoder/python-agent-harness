@@ -20,7 +20,7 @@ class ContextManager:
     ``update_context_ratio`` receives the two token-estimator functions
     from the loop's delegate so the call site keeps resolving them
     through the ``agent`` module namespace (tests patch
-    ``python_agent_harness.agent.estimate_payload_tokens``).  The
+    ``python_agent_harness.core.token_estimator.estimate_payload_tokens``).  The
     context window comes from the session's client (config-file aware,
     resolved per access); ``context_window_for`` is only the fallback
     for clients without the property.

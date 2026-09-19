@@ -1,16 +1,12 @@
 """TUI question tests: numbered/keyed choice resolution, _ask_question_blocking,
 _ask_sync, _ui_ask and _ui_confirm."""
 
-import os
 import sys
 import unittest
 import unittest.mock as mock
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
-from tui_test_utils import make_tui
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 from python_agent_harness.tui import (
     UiQuestion,
@@ -18,6 +14,8 @@ from python_agent_harness.tui import (
     _resolve_keyed_choice,
     _resolve_numbered_choice,
 )
+from tests.support import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+from tests.support.tui_test_utils import make_tui
 
 
 class TestTuiQuestions(unittest.TestCase):
@@ -115,7 +113,7 @@ class TestTuiQuestions(unittest.TestCase):
     def test_ui_confirm_accepts_y_n_and_legacy_yes(self):
         """_ui_confirm approves on y/yes, rejects on n; it renders a
         y/n keyed choice list (not a bare prompt)."""
-        from python_agent_harness import config
+        from python_agent_harness.session import config
 
         tui, _ = make_tui()
         for raw, expected in (

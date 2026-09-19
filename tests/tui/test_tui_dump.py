@@ -1,17 +1,15 @@
 """TUI scrollback-dump and session save/restore parsing tests."""
 
-import os
 import sys
 import unittest
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
-import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
-from tui_test_utils import make_tui
-
-from python_agent_harness.models import Message
-from python_agent_harness.persistence import parse_saved_body
+from python_agent_harness.core.models import Message
+from python_agent_harness.io.persistence import parse_saved_body
+from tests.support import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+from tests.support.tui_test_utils import make_tui
 
 
 class TestTuiDump(unittest.TestCase):
@@ -80,7 +78,7 @@ class TestTuiDump(unittest.TestCase):
     def test_dump_conversation_still_filters_and_strips(self):
         """The full dump keeps the same display hygiene as the panel:
         injected prompts hidden, final-check blocks stripped."""
-        from python_agent_harness import config
+        from python_agent_harness.session import config
 
         tui, buf = make_tui()
         tui.session.last_messages = [

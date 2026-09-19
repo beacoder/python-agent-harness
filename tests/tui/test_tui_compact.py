@@ -1,18 +1,16 @@
 """TUI /compact and /summary command tests."""
 
-import os
 import sys
 import threading
 import unittest
 import unittest.mock as mock
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
-import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
-from tui_test_utils import make_tui
-
-from python_agent_harness.models import Message
+from python_agent_harness.core.models import Message
+from tests.support import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+from tests.support.tui_test_utils import make_tui
 
 
 class TestTuiCompact(unittest.TestCase):

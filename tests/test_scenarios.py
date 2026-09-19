@@ -10,7 +10,6 @@ semantics.
 
 import contextlib
 import json
-import os
 import socket
 import sys
 import tempfile
@@ -18,28 +17,30 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 
-import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
-import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
-
-from python_agent_harness import config
-from python_agent_harness.agent import AgentLoop
-from python_agent_harness.client import Client
-from python_agent_harness.models import Message, ToolCall, Usage
-from python_agent_harness.persistence import SessionPersistence
-from python_agent_harness.session import Session
+from python_agent_harness.core.agent import AgentLoop
+from python_agent_harness.core.models import Message, ToolCall, Usage
+from python_agent_harness.io.persistence import SessionPersistence
+from python_agent_harness.llm.client import Client
+from python_agent_harness.session import config
+from python_agent_harness.session.session import Session
 from python_agent_harness.tools import default_registry
+from tests.support import (
+    plan_cleanup,  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+    session_sandbox,  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
+)
 
 # `discover -s tests` puts the tests dir on sys.path, but a direct
 # `-m unittest tests.test_scenarios` invocation does not — make the
 # sibling helper importable either way.
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 
-import fake_openai_server  # noqa: E402  (state overrides for sync tests)
-from fake_openai_server import serve  # noqa: E402
+from tests.support import fake_openai_server  # noqa: E402  (state overrides for sync tests)
+from tests.support.fake_openai_server import serve  # noqa: E402
 
 
 class ScriptedClient:
@@ -117,7 +118,7 @@ class ScenarioSession(Session):
             import shutil
             import tempfile as _tf
 
-            import python_agent_harness.config as cfg
+            import python_agent_harness.session.config as cfg
 
             ScenarioSession._test_session_dir = _tf.mkdtemp(prefix="pah-scenarios-")
             # remove at process exit: a leaked dir per test run otherwise
@@ -244,7 +245,7 @@ class TestScenarioNudging(unittest.TestCase):
         session = ScenarioSession()
         session.tools_enabled = True
         session.client.script = ["I'll get back to this", "here is the finished work"]
-        with mock.patch("python_agent_harness.config.MAX_NUDGES", 1):
+        with mock.patch("python_agent_harness.session.config.MAX_NUDGES", 1):
             loop = AgentLoop(session, messages=[Message(role="user", content="implement feature")])
             result = loop.run()
         self.assertEqual(result, "here is the finished work")
@@ -394,10 +395,10 @@ class TestScenarioCompaction(unittest.TestCase):
 
         with (
             mock.patch(
-                "python_agent_harness.agent.estimate_payload_tokens",
+                "python_agent_harness.core.agent.estimate_payload_tokens",
                 side_effect=fake_estimate,
             ),
-            mock.patch("python_agent_harness.config.MAX_NUDGES", 0),
+            mock.patch("python_agent_harness.session.config.MAX_NUDGES", 0),
         ):
             loop = AgentLoop(session, messages=[Message(role="user", content="long task")])
             result = loop.run()

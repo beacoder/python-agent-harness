@@ -229,7 +229,7 @@ class AgentLoop:
         """Update the session's context ratio (see ContextManager)."""
         # the estimator functions are resolved here — in the agent
         # module namespace — so tests patching
-        # python_agent_harness.agent.estimate_payload_tokens keep
+        # python_agent_harness.core.token_estimator.estimate_payload_tokens keep
         # intercepting the call site
         self._context_manager.update_context_ratio(estimate_payload_tokens, context_window_for)
 

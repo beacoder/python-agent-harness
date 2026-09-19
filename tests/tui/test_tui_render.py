@@ -1,19 +1,18 @@
 """TUI rendering regression tests (panel, status bar, rows)."""
 
 import io
-import os
 import sys
 import unittest
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
-import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
 from rich.console import Console
 from rich.live import Live
-from tui_test_utils import make_tui
 
-from python_agent_harness.models import ImagePart, Message, TextPart, ToolCall
+from python_agent_harness.core.models import ImagePart, Message, TextPart, ToolCall
+from tests.support import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+from tests.support.tui_test_utils import make_tui
 
 
 class TestTuiRender(unittest.TestCase):
@@ -257,7 +256,7 @@ class TestTuiRender(unittest.TestCase):
         reminders, plan-exit notices) are harness bookkeeping — the TUI
         shows only what the user actually typed.  Messages flagged
         ``injected`` never render as user rows; real user input stays."""
-        from python_agent_harness import config
+        from python_agent_harness.session import config
 
         tui, buf = make_tui()
         plan_file = "/tmp/python-agent-plans-proj-ab12cd/PLAN.md"
@@ -287,7 +286,7 @@ class TestTuiRender(unittest.TestCase):
         harness prompts out of the panel: nudge, the
         <system-reminder>-wrapped plan/build-switch prompts, and the
         plan-exit approval notice."""
-        from python_agent_harness import config
+        from python_agent_harness.session import config
 
         tui, buf = make_tui()
         tui.session.last_messages = [
@@ -324,7 +323,7 @@ class TestTuiRender(unittest.TestCase):
         ONLY content (a reply carrying real content keeps its content).
         The stored messages are untouched — the agent loop keeps
         working exactly as before."""
-        from python_agent_harness import config
+        from python_agent_harness.session import config
 
         tui, buf = make_tui()
         tui.session.last_messages = [

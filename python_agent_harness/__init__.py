@@ -1,7 +1,7 @@
 """python-agent-harness: a Python port of the gptel-agent-harness."""
 
 from .core.models import AgentMode, ImagePart, Message, TextPart, ToolCall, ToolSpec
-from .entry.cli import main  # noqa: F401  (back-compat: python_agent_harness.cli:main)
+from .entry.cli import main  # noqa: F401  (public lib surface: main entry point)
 from .llm.client import Client, LLMClient
 from .lsp.config import LSPConfig, LSPServerConfig
 from .mcp.config import MCPConfig, MCPServerConfig

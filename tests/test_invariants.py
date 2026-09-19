@@ -51,18 +51,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, os.path.dirname(__file__))  # sibling test helpers
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root
 
-import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
-import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
-from agent.agent_test_utils import ParallelToolSession, RecordingSession, agent_call  # noqa: E402
-
-from python_agent_harness import config  # noqa: E402
-from python_agent_harness.agent import AgentLoop  # noqa: E402
-from python_agent_harness.client import Client  # noqa: E402
-from python_agent_harness.models import Message, ToolCall, Usage  # noqa: E402
-from python_agent_harness.session import Session  # noqa: E402
+from python_agent_harness.core.agent import AgentLoop  # noqa: E402
+from python_agent_harness.core.models import Message, ToolCall, Usage  # noqa: E402
+from python_agent_harness.llm.client import Client  # noqa: E402
+from python_agent_harness.session import config  # noqa: E402
+from python_agent_harness.session.session import Session  # noqa: E402
 from python_agent_harness.tools import default_registry  # noqa: E402
+from tests.support import (
+    plan_cleanup,  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
+    session_sandbox,  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
+)
+from tests.support.agent_test_utils import (  # noqa: E402
+    ParallelToolSession,
+    RecordingSession,
+    agent_call,
+)
 
 # ----------------------------------------------------------------------
 # helpers
@@ -795,7 +800,7 @@ class TestPlanModeWriteGuard(unittest.TestCase):
             link = os.path.join(tmpdir, "link")
             os.symlink(real, link)
             with mock.patch(
-                "python_agent_harness.planmode._plan_temp_dir",
+                "python_agent_harness.core.planmode._plan_temp_dir",
                 return_value=link,
             ):
                 session = self.make_plan_session(tmpdir)
@@ -1016,7 +1021,7 @@ class TestNudgeBudgetInvariant(unittest.TestCase):
                 session = RecordingSession()
                 session.tools_enabled = True
                 session.client.script = list(script)
-                with mock.patch("python_agent_harness.config.MAX_NUDGES", max_nudges):
+                with mock.patch("python_agent_harness.session.config.MAX_NUDGES", max_nudges):
                     loop = AgentLoop(session, messages=[Message(role="user", content=f"q-{seed}")])
                     result = loop.run()
                 self.assertEqual(loop.state, AgentLoop.DONE)
@@ -1043,7 +1048,7 @@ class TestNudgeBudgetInvariant(unittest.TestCase):
                 session.client.script = list(script)
                 n_tool_rounds = sum(1 for item in script if isinstance(item, tuple))
                 max_nudges = rng.choice((1, 2))
-                with mock.patch("python_agent_harness.config.MAX_NUDGES", max_nudges):
+                with mock.patch("python_agent_harness.session.config.MAX_NUDGES", max_nudges):
                     loop = AgentLoop(session, messages=[Message(role="user", content=f"q-{seed}")])
                     result = loop.run()
                 self.assertEqual(loop.state, AgentLoop.DONE)

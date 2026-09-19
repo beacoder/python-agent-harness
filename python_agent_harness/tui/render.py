@@ -122,7 +122,7 @@ def _image_indicator(msg: Any) -> str:
     return f" [📎 {count} {noun}]"
 
 
-# shared with the headless view (python_agent_harness.text_filter); the
+# shared with the headless view (python_agent_harness.io.text_filter); the
 # underscore-prefixed names are kept for existing importers
 _strip_final_check = strip_final_check
 _strip_reasoning = strip_reasoning
