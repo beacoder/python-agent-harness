@@ -85,14 +85,20 @@ jobs:
       - name: Run tests with coverage
         run: coverage run -m unittest discover -s tests -v
 
-      # `coverage report` enforces `fail_under` (95% from pyproject.toml;
-      # Windows runs at a lower floor via --fail-under below, because
-      # posix-only code paths — PTY bash, `tree`/`find` fallbacks — cannot
-      # execute there and Wine-verified real Windows coverage is ~93.5%).
+      # `coverage report` enforces `fail_under` (95% from pyproject.toml).
+      # Windows reports at a lower floor with tools/bash.py omitted: that
+      # module is the posix PTY/spawn backend — on Windows only its
+      # module-level definitions execute (tools/bash_win.py runs instead),
+      # so its body is structurally unmeasurable there.  Wine-measured
+      # Windows coverage is ~93.5% overall and ~95.5% without bash.py (a
+      # lower bound: real CI has git, mcp and prompt_toolkit available).
       - name: Coverage report (enforces fail_under)
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then FLOOR=93; else FLOOR=95; fi
-          coverage report --fail-under=$FLOOR
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            coverage report --fail-under=94 --omit="python_agent_harness/tools/bash.py"
+          else
+            coverage report
+          fi
 
       - name: Coverage XML
         if: always()

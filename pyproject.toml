@@ -94,8 +94,8 @@ omit = ["python_agent_harness/__main__.py"]
 
 [tool.coverage.report]
 show_missing = true
-# Linux/macOS gate: 95% (CI enforces this floor; Windows CI enforces 93%
-# instead, see .github/workflows/ci.yml — posix-only code paths such as
-# PTY bash and the `tree`/`find` fallbacks cannot execute on Windows, so
-# the same floor would be unmeetable there).
+# Linux/macOS gate: 95%.  Windows CI enforces 94% with tools/bash.py
+# omitted instead (see .github/workflows/ci.yml): that module is the
+# posix PTY/spawn backend whose body cannot execute on Windows, where
+# tools/bash_win.py runs in its place.
 fail_under = 95
