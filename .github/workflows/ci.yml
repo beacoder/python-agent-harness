@@ -93,6 +93,7 @@ jobs:
       # Windows coverage is ~93.5% overall and ~95.5% without bash.py (a
       # lower bound: real CI has git, mcp and prompt_toolkit available).
       - name: Coverage report (enforces fail_under)
+        shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             coverage report --fail-under=94 --omit="python_agent_harness/tools/bash.py"
