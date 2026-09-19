@@ -299,28 +299,6 @@ You are a personal assistant. You do NOT modify files or run shell commands.
 | **Tools** | Can restrict (`allow_planexit=False`) | All tools, minus the agent's `exclude_tools` |
 | **Ctrl-C** | Restores to default prompt | Stays on the custom agent |
 
-## Project layout
-
-```text
-python_agent_harness/
-├── agent.py           # Agent FSM core: states, transitions, supervision
-├── tool_runner.py     # Tool-call execution/delivery + history salvage
-├── context_manager.py # Context-ratio tracking + compaction
-├── client.py          # OpenAI-compatible streaming client (httpx)
-├── token_estimator.py # CJK-aware token estimation + calibration
-├── planmode.py        # Plan/build modes + plan-file lifecycle
-├── prompts.py         # Prompt loading + system-prompt assembly
-├── persistence.py     # Session persistence + titles
-├── session.py         # Session wiring hub + MCP lifecycle
-├── commands.py        # Init/review/custom command definitions
-├── cli.py             # CLI entry points
-├── tui/               # Rich + prompt_toolkit TUI (package)
-├── lsp/               # Built-in LSP client
-├── mcp/               # Optional MCP client
-├── tools/             # Tool implementations + registry
-└── ...                # Other modules
-```
-
 ## Development
 
 Requires Python ≥ 3.11. CI runs against Python 3.11, 3.12, and 3.13 on Linux, MacOS and Windows.
