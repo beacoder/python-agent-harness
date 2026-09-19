@@ -14,8 +14,10 @@ of the rendering.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import signal
 import sys
 import threading
 from typing import Any, TextIO
@@ -23,6 +25,17 @@ from typing import Any, TextIO
 from ..io.text_filter import strip_final_check
 from ..session.session import Session
 from .controller import Controller
+
+
+def _cancelled_now(session: Any) -> bool:
+    """Whether the session's cancel event is actually set.
+
+    ``is True`` (not ``bool(...)``) on purpose: test doubles return a
+    truthy Mock from ``is_set()`` — only a real ``threading.Event``
+    reports a genuine ``True``.
+    """
+    event = getattr(session, "cancel_event", None)
+    return event is not None and event.is_set() is True
 
 
 def final_answer_text(session: Session) -> str:
@@ -38,6 +51,47 @@ def final_answer_text(session: Session) -> str:
             continue
         return strip_final_check(msg.text_without_reasoning()).strip()
     return ""
+
+
+class signal_canceller:
+    """Context manager wiring SIGINT/SIGTERM to ``session.cancel()``.
+
+    The protocol-level cancel path for unattended runs: a driving
+    process sends SIGTERM to the sandbox exec, and instead of the
+    process dying mid-run the session's cancel machinery runs — the
+    agent loop unwinds through its normal cancel path and the runner
+    still emits its final ``result`` line (with ``cancelled: true``).
+    Windows delivers only SIGINT (CTRL_C_EVENT / CTRL_BREAK): SIGTERM
+    registration is attempted but a failure (ValueError on some
+    platforms/signals) is tolerated — on Windows a hard kill leaves
+    no final line, which the driver already handles as "process died".
+
+    The previous handlers are restored on exit (including when the
+    body raises).  Only the main thread may install handlers; from
+    other threads (ValueError) this degrades to a no-op, which
+    matches the test-runner use of the runner functions.
+    """
+
+    def __init__(self, session: Any) -> None:
+        self._session = session
+        self._installed: list[tuple[int, Any]] = []
+
+    def _handle(self, signum: int, frame: Any) -> None:
+        self._session.cancel()
+
+    def __enter__(self) -> signal_canceller:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(ValueError, OSError):
+                # not the main thread (ValueError), or the platform
+                # lacks the signal (OSError) — degrade to a no-op
+                self._installed.append((sig, signal.signal(sig, self._handle)))
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        for sig, handler in reversed(self._installed):
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(sig, handler)
+        self._installed.clear()
 
 
 class HeadlessView:
@@ -188,6 +242,9 @@ def run_headless(
     err: TextIO | None = None,
     restore: str | None = None,
     model: str | None = None,
+    max_rounds: int | None = None,
+    timeout: float | None = None,
+    run_id: str | None = None,
 ) -> int:
     """Run one prompt headlessly; return the process exit code.
 
@@ -197,9 +254,13 @@ def run_headless(
     When *restore* is given, a saved session is loaded first so the
     run continues that conversation.  When *model* is given, that
     profile (or raw model name) is selected after the restore, so an
-    explicit choice wins over the restored session's model.  Returns
+    explicit choice wins over the restored session's model.
+    MAX_ROUNDS/TIMEOUT opt the unattended run into round/wall-clock
+    budgets (default off).  SIGINT/SIGTERM cancel the run gracefully
+    (the partial answer is still written before exit).  Returns
     1 when the prompt was only failed ``@file`` references (nothing
-    to send), the run raised an agent error, or the restore failed.
+    to send), the run raised an agent error, the restore failed, or
+    the run was cancelled by a signal.
     """
     controller = Controller(session)
     view = HeadlessView(out=out, err=err)
@@ -208,15 +269,23 @@ def run_headless(
         return 1
     if model is not None:
         _select_model(controller, model, view.err)
-    handle = controller.submit(prompt)
-    if handle is None:
-        view.err.write("nothing to send\n")
+    with signal_canceller(session):
+        handle = controller.submit(
+            prompt,
+            max_rounds=max_rounds,
+            timeout=timeout,
+        )
+        if handle is None:
+            view.err.write("nothing to send\n")
+            view.err.flush()
+            return 1
+        for warning in handle.warnings:
+            view.err.write(f"warning: {warning}\n")
         view.err.flush()
+        handle.worker.join()
+    if _cancelled_now(session):
+        view.err.write("\n[cancelled]\n")
         return 1
-    for warning in handle.warnings:
-        view.err.write(f"warning: {warning}\n")
-    view.err.flush()
-    handle.worker.join()
     answer = final_answer_text(session)
     if answer:
         view.out.write(answer + "\n")
@@ -246,6 +315,16 @@ class JsonlView(HeadlessView):
     ends after ``result`` — which is also the only line when the run
     fails before start (restore failure, nothing to send).
 
+    Every line carries ``seq`` (a per-stream monotonic counter starting
+    at 1, so a driver can detect drops/reorder across reconnects) and
+    ``run_id`` (a caller-supplied correlation id echoed on every line,
+    e.g. one id per sandbox exec).  The ``result`` line adds
+    ``usage`` (cumulative input/output tokens and LLM rounds of the
+    run, main + sub-agents, when the session provides accounting),
+    ``model`` (the model that served the run) and ``cancelled``
+    (True when the run was stopped by a signal — SIGINT/SIGTERM —
+    rather than finishing on its own).
+
     Events that arrive before ``emit_start`` (the worker thread starts
     as soon as the prompt is submitted) are buffered and flushed right
     behind the ``start`` line, so ``start`` is guaranteed to be first.
@@ -254,14 +333,30 @@ class JsonlView(HeadlessView):
     ``emit_start``/``emit_result``.
     """
 
-    def __init__(self, out: TextIO | None = None, err: TextIO | None = None) -> None:
+    def __init__(
+        self,
+        out: TextIO | None = None,
+        err: TextIO | None = None,
+        run_id: str | None = None,
+    ) -> None:
         super().__init__(out=out, err=err)
         self._lock = threading.Lock()
         # None = live mode (write through); a list = buffering mode.
         self._buffer: list[dict[str, Any]] | None = []
+        # Per-stream monotonic line counter (1-based) written on every
+        # line; lets a driver detect drops and keep ordering across a
+        # reconnect.
+        self._seq = 0
+        # Caller-supplied correlation id echoed on every line (the
+        # controller's exec id, typically); None omits the field.
+        self.run_id = run_id
 
     def _write(self, payload: dict[str, Any]) -> None:
-        self.out.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        self._seq += 1
+        line = {"seq": self._seq, **payload}
+        if self.run_id is not None:
+            line["run_id"] = self.run_id
+        self.out.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
         self.out.flush()
 
     def _emit(self, payload: dict[str, Any]) -> None:
@@ -298,18 +393,35 @@ class JsonlView(HeadlessView):
             for payload in buffered or []:
                 self._write(payload)
 
-    def emit_result(self, answer: str, errors: list[str] | None = None) -> None:
+    def emit_result(
+        self,
+        answer: str,
+        errors: list[str] | None = None,
+        usage: dict[str, Any] | None = None,
+        model: str | None = None,
+        cancelled: bool = False,
+    ) -> None:
         """Write the terminal ``result`` line (always written, even when
-        the run failed before ``emit_start``)."""
+        the run failed before ``emit_start``).
+
+        ``usage`` (when given) rides on the result line so a driving
+        process can bill for the run without parsing notify events;
+        ``model`` names the model that served the run; ``cancelled``
+        marks a signal-triggered stop.
+        """
         with self._lock:
             self._buffer = None
-            self._write(
-                {
-                    "type": "result",
-                    "answer": answer,
-                    "errors": list(self.errors if errors is None else errors),
-                }
-            )
+            payload: dict[str, Any] = {
+                "type": "result",
+                "answer": answer,
+                "errors": list(self.errors if errors is None else errors),
+                "cancelled": cancelled,
+            }
+            if model is not None:
+                payload["model"] = model
+            if usage is not None:
+                payload["usage"] = usage
+            self._write(payload)
 
     def run(self) -> None:
         pass
@@ -322,29 +434,68 @@ def run_headless_jsonl(
     err: TextIO | None = None,
     restore: str | None = None,
     model: str | None = None,
+    run_id: str | None = None,
+    max_rounds: int | None = None,
+    timeout: float | None = None,
 ) -> int:
     """Run one prompt headlessly with a JSON-lines event stream on *out*.
-
     The ``--json`` counterpart of ``run_headless``: same submit/restore/
     model-selection flow and exit-code semantics, but ``JsonlView``
-    replaces plain-text output — see its docstring for the line kinds.
-    Exit code is 0 unless the prompt had nothing to send, the restore
-    failed, or an ``error`` notification occurred (same rules as
-    ``run_headless``).
+    replaces plain-text output — see its docstring for the line kinds
+    (seq/run_id on every line; usage/model/cancelled on ``result``).
+
+    ``run_id`` is echoed on every line for correlation; ``max_rounds``
+    opts the run into a round budget and ``timeout`` into a wall-clock
+    limit (both off by default).  SIGINT/SIGTERM cancel the run
+    gracefully: the worker unwinds through the normal cancel path and
+    the final ``result`` line is still emitted with ``cancelled: true``
+    (exit code 1).  Exit code is 0 unless the prompt had nothing to
+    send, the restore failed, an ``error`` notification occurred, or
+    the run was cancelled.
     """
     controller = Controller(session)
-    view = JsonlView(out=out, err=err)
+    view = JsonlView(out=out, err=err, run_id=run_id)
     controller.attach_view(view)
+    totals = getattr(session, "usage_totals", None)
+    usage: dict[str, Any] | None = (
+        {"input": 0, "output": 0, "rounds": 0} if isinstance(totals, dict) else None
+    )
+
+    def emit_final(
+        answer: str,
+        errors: list[str] | None = None,
+        cancelled: bool = False,
+    ) -> None:
+        """The terminal result line: snapshots usage and model so every
+        result line — including early failures — carries the same
+        fields for the driving process."""
+        if usage is not None and isinstance(totals, dict):
+            with totals.get("_lock", threading.Lock()):
+                for key in ("input", "output", "rounds"):
+                    value = totals.get(key)
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        usage[key] = int(value)
+        view.emit_result(
+            answer, errors=errors, usage=usage, model=session.model, cancelled=cancelled
+        )
+
     if restore is not None and not restore_session(controller, restore, view.err):
-        view.emit_result("", errors=["restore failed"])
+        emit_final("", errors=["restore failed"])
         return 1
     if model is not None:
         _select_model(controller, model, view.err)
-    handle = controller.submit(prompt)
-    if handle is None:
-        view.emit_result("", errors=["nothing to send"])
-        return 1
-    view.emit_start(prompt, list(handle.warnings))
-    handle.worker.join()
-    view.emit_result(final_answer_text(session))
-    return 1 if view.errors else 0
+    with signal_canceller(session):
+        handle = controller.submit(
+            prompt,
+            max_rounds=max_rounds,
+            timeout=timeout,
+        )
+        if handle is None:
+            emit_final("", errors=["nothing to send"])
+            return 1
+        view.emit_start(prompt, list(handle.warnings))
+        handle.worker.join()
+    answer = final_answer_text(session)
+    cancelled = _cancelled_now(session)
+    emit_final(answer, cancelled=cancelled)
+    return 1 if view.errors or cancelled else 0

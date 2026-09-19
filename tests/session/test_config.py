@@ -745,5 +745,53 @@ class TestConfigCli(unittest.TestCase):
         self.assertFalse(on.no_stream)
 
 
+class TestHeadlessLimitsConfig(unittest.TestCase):
+    """Config-file unattended-run limits: the ``headless`` object with
+    ``max_rounds``/``timeout`` (server-side defaults for headless runs)."""
+
+    def _write(self, content: str) -> str:
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_missing_section_yields_none(self):
+        self.assertEqual(config.load_headless_limits(self._write("{}")), (None, None))
+
+    def test_rounds_and_timeout_loaded(self):
+        path = self._write('{"headless": {"max_rounds": 25, "timeout": 300.5}}')
+        self.assertEqual(config.load_headless_limits(path), (25, 300.5))
+
+    def test_zero_and_negative_disable(self):
+        path = self._write('{"headless": {"max_rounds": 0, "timeout": -5}}')
+        self.assertEqual(config.load_headless_limits(path), (None, None))
+
+    def test_null_values_disable(self):
+        path = self._write('{"headless": {"max_rounds": null, "timeout": null}}')
+        self.assertEqual(config.load_headless_limits(path), (None, None))
+
+    def test_missing_file_yields_none(self):
+        self.assertEqual(config.load_headless_limits("/no/such/config.json"), (None, None))
+
+    def test_bool_rejected(self):
+        path = self._write('{"headless": {"max_rounds": true}}')
+        with self.assertRaises(ValueError):
+            config.load_headless_limits(path)
+
+    def test_string_rejected(self):
+        path = self._write('{"headless": {"timeout": "soon"}}')
+        with self.assertRaises(ValueError):
+            config.load_headless_limits(path)
+
+    def test_non_object_section_rejected(self):
+        path = self._write('{"headless": [1]}')
+        with self.assertRaises(ValueError):
+            config.load_headless_limits(path)
+
+    def test_template_documents_section(self):
+        self.assertIn('"headless"', config.CONFIG_TEMPLATE)
+
+
 if __name__ == "__main__":
     unittest.main()

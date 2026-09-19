@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 import threading
@@ -22,6 +23,7 @@ from python_agent_harness.entry.headless import (
     restore_session,
     run_headless,
     run_headless_jsonl,
+    signal_canceller,
 )
 from tests.support import (
     plan_cleanup,  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
@@ -142,7 +144,7 @@ class TestRunHeadless(unittest.TestCase):
         self.assertEqual(rc, 0)
         ctrl_cls.assert_called_once_with(session)
         ctrl.attach_view.assert_called_once()
-        ctrl.submit.assert_called_once_with("hello")
+        ctrl.submit.assert_called_once_with("hello", max_rounds=None, timeout=None)
         self.assertFalse(worker.is_alive())  # join() completed
 
     def test_returns_1_when_nothing_to_send(self):
@@ -451,13 +453,28 @@ class TestJsonlView(unittest.TestCase):
         view.on_log("warming up")
         view.emit_result("Done.")
         lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
-        self.assertEqual(lines[0], {"type": "start", "prompt": "do it", "warnings": ["w1"]})
-        self.assertEqual(lines[1], {"type": "delta", "text": "hello "})
-        self.assertEqual(lines[2], {"type": "notify", "kind": "tool_start", "data": ["Read"]})
-        self.assertEqual(lines[3], {"type": "notify", "kind": "error", "data": "no quota"})
-        self.assertEqual(lines[4], {"type": "log", "message": "warming up"})
+        self.assertEqual(
+            lines[0], {"seq": 1, "type": "start", "prompt": "do it", "warnings": ["w1"]}
+        )
+        self.assertEqual(lines[1], {"seq": 2, "type": "delta", "text": "hello "})
+        self.assertEqual(
+            lines[2], {"seq": 3, "type": "notify", "kind": "tool_start", "data": ["Read"]}
+        )
+        self.assertEqual(
+            lines[3], {"seq": 4, "type": "notify", "kind": "error", "data": "no quota"}
+        )
+        self.assertEqual(lines[4], {"seq": 5, "type": "log", "message": "warming up"})
         # the error seen during the run is reported on the result line
-        self.assertEqual(lines[5], {"type": "result", "answer": "Done.", "errors": ["no quota"]})
+        self.assertEqual(
+            lines[5],
+            {
+                "seq": 6,
+                "type": "result",
+                "answer": "Done.",
+                "errors": ["no quota"],
+                "cancelled": False,
+            },
+        )
         # each line is compact single-line JSON: no embedded newlines
         self.assertTrue(all("\n" not in line for line in out.getvalue().splitlines()))
 
@@ -476,9 +493,11 @@ class TestJsonlView(unittest.TestCase):
         view.emit_result("ok")
         lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
         self.assertEqual(lines[0]["type"], "start")
-        self.assertEqual(lines[1], {"type": "delta", "text": "early "})
-        self.assertEqual(lines[2], {"type": "notify", "kind": "tool_start", "data": ["Bash"]})
-        self.assertEqual(lines[3], {"type": "delta", "text": "live"})
+        self.assertEqual(lines[1], {"seq": 2, "type": "delta", "text": "early "})
+        self.assertEqual(
+            lines[2], {"seq": 3, "type": "notify", "kind": "tool_start", "data": ["Bash"]}
+        )
+        self.assertEqual(lines[3], {"seq": 4, "type": "delta", "text": "live"})
         self.assertEqual(lines[-1]["type"], "result")
 
     def test_concurrent_emit_and_start_never_corrupts_stream(self):
@@ -562,6 +581,9 @@ class TestRunHeadlessJsonl(unittest.TestCase):
                 content="Done.\n\n[FINAL CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence: e",
             ),
         ]
+        session.cancel_event = threading.Event()
+        session.model = "m-test"
+        session.usage_totals = {"input": 0, "output": 0, "rounds": 0}
         worker = threading.Thread(target=lambda: None)
         handle = self._fake_handle(worker)
         out = io.StringIO()
@@ -571,9 +593,20 @@ class TestRunHeadlessJsonl(unittest.TestCase):
             rc = run_headless_jsonl(session, "hello", out=out)
         self.assertEqual(rc, 0)
         lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
-        self.assertEqual(lines[0], {"type": "start", "prompt": "hello", "warnings": []})
-        self.assertEqual(lines[-1], {"type": "result", "answer": "Done.", "errors": []})
-        ctrl.submit.assert_called_once_with("hello")
+        self.assertEqual(lines[0], {"seq": 1, "type": "start", "prompt": "hello", "warnings": []})
+        self.assertEqual(
+            lines[-1],
+            {
+                "seq": 2,
+                "type": "result",
+                "answer": "Done.",
+                "errors": [],
+                "cancelled": False,
+                "usage": {"input": 0, "output": 0, "rounds": 0},
+                "model": "m-test",
+            },
+        )
+        ctrl.submit.assert_called_once_with("hello", max_rounds=None, timeout=None)
 
     def test_submit_warnings_on_start_line(self):
         import json
@@ -598,6 +631,9 @@ class TestRunHeadlessJsonl(unittest.TestCase):
 
         session = mock.Mock()
         session.last_messages = []
+        session.cancel_event = threading.Event()
+        session.model = "m-test"
+        session.usage_totals = {"input": 0, "output": 0, "rounds": 0}
         out = io.StringIO()
         with mock.patch("python_agent_harness.entry.headless.Controller") as ctrl_cls:
             ctrl_cls.return_value.submit.return_value = None
@@ -606,7 +642,18 @@ class TestRunHeadlessJsonl(unittest.TestCase):
         lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
         # result is the only line (no start), with the failure reason
         self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0], {"type": "result", "answer": "", "errors": ["nothing to send"]})
+        self.assertEqual(
+            lines[0],
+            {
+                "seq": 1,
+                "type": "result",
+                "answer": "",
+                "errors": ["nothing to send"],
+                "cancelled": False,
+                "usage": {"input": 0, "output": 0, "rounds": 0},
+                "model": "m-test",
+            },
+        )
 
     def test_returns_1_when_error_notified(self):
         """An "error" notification during the run must yield exit code 1."""
@@ -645,6 +692,9 @@ class TestRunHeadlessJsonl(unittest.TestCase):
 
         session = mock.Mock()
         session.last_messages = []
+        session.cancel_event = threading.Event()
+        session.model = "m-test"
+        session.usage_totals = {"input": 0, "output": 0, "rounds": 0}
         out = io.StringIO()
         err = io.StringIO()
         with (
@@ -661,7 +711,18 @@ class TestRunHeadlessJsonl(unittest.TestCase):
         lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
         # result is the only line (no start), with the failure reason
         self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0], {"type": "result", "answer": "", "errors": ["restore failed"]})
+        self.assertEqual(
+            lines[0],
+            {
+                "seq": 1,
+                "type": "result",
+                "answer": "",
+                "errors": ["restore failed"],
+                "cancelled": False,
+                "usage": {"input": 0, "output": 0, "rounds": 0},
+                "model": "m-test",
+            },
+        )
 
     def test_jsonl_model_selection_applied(self):
         session = mock.Mock()
@@ -816,6 +877,254 @@ class TestCliHeadless(unittest.TestCase):
         self.assertEqual(args.command, "headless")
         self.assertEqual(args.prompt, "p")
         self.assertEqual(args.project, "/tmp/proj")
+
+
+class TestProtocolHardening(unittest.TestCase):
+    """--json exec-protocol hardening: seq/run_id correlation, usage and
+    model on every result line, graceful signal cancel, run budgets."""
+
+    def _session(self) -> mock.Mock:
+        s = mock.Mock()
+        s.last_messages = []
+        s.cancel_event = threading.Event()
+        s.model = "m-test"
+        s.usage_totals = {"input": 120, "output": 45, "rounds": 2}
+        return s
+
+    def test_seq_monotonic_across_all_lines(self):
+        out = io.StringIO()
+        view = JsonlView(out=out)
+        view.on_delta("a")
+        view.on_log("l")
+        view.emit_start("p", [])
+        view.on_delta("b")
+        view.emit_result("done")
+        seqs = [json.loads(line)["seq"] for line in out.getvalue().splitlines() if line]
+        self.assertEqual(seqs, [1, 2, 3, 4, 5])
+
+    def test_run_id_echoed_on_every_line(self):
+        out = io.StringIO()
+        view = JsonlView(out=out, run_id="exec-42")
+        view.emit_start("p", [])
+        view.on_notify("tool_start", ["Read"])
+        view.emit_result("done")
+        lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
+        self.assertTrue(lines)
+        self.assertTrue(all(line["run_id"] == "exec-42" for line in lines))
+
+    def test_no_run_id_field_when_unset(self):
+        out = io.StringIO()
+        view = JsonlView(out=out)
+        view.emit_start("p", [])
+        lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
+        self.assertNotIn("run_id", lines[0])
+
+    def test_result_line_carries_usage_model_cancelled(self):
+        session = self._session()
+        session.last_messages = [Message(role="assistant", content="done")]
+        worker = threading.Thread(target=lambda: None)
+        worker.start()
+        handle = RunHandle(worker=worker, seq=1, display_text="hi", errors=[], warnings=[])
+        out = io.StringIO()
+        with mock.patch("python_agent_harness.entry.headless.Controller") as ctrl_cls:
+            ctrl_cls.return_value.submit.return_value = handle
+            rc = run_headless_jsonl(session, "hi", out=out)
+        self.assertEqual(rc, 0)
+        result = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(result["usage"], {"input": 120, "output": 45, "rounds": 2})
+        self.assertEqual(result["model"], "m-test")
+        self.assertIs(result["cancelled"], False)
+
+    def test_cancel_produces_result_line_and_exit_1(self):
+        session = self._session()
+        session.cancel_event.set()
+        worker = threading.Thread(target=lambda: None)
+        worker.start()
+        handle = RunHandle(worker=worker, seq=1, display_text="hi", errors=[], warnings=[])
+        out = io.StringIO()
+        with mock.patch("python_agent_harness.entry.headless.Controller") as ctrl_cls:
+            ctrl_cls.return_value.submit.return_value = handle
+            rc = run_headless_jsonl(session, "hi", out=out)
+        self.assertEqual(rc, 1)
+        result = json.loads(out.getvalue().splitlines()[-1])
+        self.assertIs(result["cancelled"], True)
+        self.assertEqual(result["errors"], [])
+
+    def test_budget_params_passed_to_submit(self):
+        session = self._session()
+        worker = threading.Thread(target=lambda: None)
+        worker.start()
+        handle = RunHandle(worker=worker, seq=1, display_text="hi", errors=[], warnings=[])
+        out = io.StringIO()
+        with mock.patch("python_agent_harness.entry.headless.Controller") as ctrl_cls:
+            ctrl_cls.return_value.submit.return_value = handle
+            rc = run_headless_jsonl(session, "hi", out=out, max_rounds=7, timeout=120.0)
+        self.assertEqual(rc, 0)
+        ctrl_cls.return_value.submit.assert_called_once_with("hi", max_rounds=7, timeout=120.0)
+
+    def test_signal_handler_cancels_and_restores(self):
+        import signal as signal_mod
+
+        class _Cancellable:
+            def __init__(self) -> None:
+                self.cancel_event = threading.Event()
+
+            def cancel(self) -> None:
+                self.cancel_event.set()
+
+        session = _Cancellable()
+        delivered: list[int] = []
+        orig_int = signal_mod.getsignal(signal_mod.SIGINT)
+        orig_term = signal_mod.getsignal(signal_mod.SIGTERM)
+        self.addCleanup(signal_mod.signal, signal_mod.SIGINT, orig_int)
+        self.addCleanup(signal_mod.signal, signal_mod.SIGTERM, orig_term)
+        canceller = signal_canceller(session)
+        with canceller:
+            for sig in (signal_mod.SIGINT, signal_mod.SIGTERM):
+                handler = signal_mod.getsignal(sig)
+                # the installed handler IS the canceller's: invoke it the
+                # way the OS would deliver the signal
+                self.assertTrue(callable(handler))
+                handler(sig, None)
+                delivered.append(sig)
+            self.assertTrue(session.cancel_event.is_set())
+        # previous handlers restored on exit
+        self.assertIs(signal_mod.getsignal(signal_mod.SIGINT), orig_int)
+        self.assertIs(signal_mod.getsignal(signal_mod.SIGTERM), orig_term)
+        self.assertEqual(delivered, [signal_mod.SIGINT, signal_mod.SIGTERM])
+
+    def test_signal_canceller_noop_outside_main_thread(self):
+        session = self._session()
+        errors: list[BaseException] = []
+        done = threading.Event()
+
+        def run() -> None:
+            try:
+                with signal_canceller(session):
+                    pass  # ValueError from signal.signal is swallowed
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+            finally:
+                done.set()
+
+        t = threading.Thread(target=run)
+        t.start()
+        t.join(timeout=5)
+        self.assertTrue(done.is_set())
+        self.assertEqual(errors, [])
+
+    def test_plain_runner_reports_cancelled(self):
+        session = self._session()
+        session.cancel_event.set()
+        worker = threading.Thread(target=lambda: None)
+        worker.start()
+        handle = RunHandle(worker=worker, seq=1, display_text="hi", errors=[], warnings=[])
+        err = io.StringIO()
+        out = io.StringIO()
+        with mock.patch("python_agent_harness.entry.headless.Controller") as ctrl_cls:
+            ctrl_cls.return_value.submit.return_value = handle
+            rc = run_headless(session, "hi", out=out, err=err)
+        self.assertEqual(rc, 1)
+        self.assertIn("[cancelled]", err.getvalue())
+
+    def test_plain_runner_budget_params_passed(self):
+        session = self._session()
+        worker = threading.Thread(target=lambda: None)
+        worker.start()
+        handle = RunHandle(worker=worker, seq=1, display_text="hi", errors=[], warnings=[])
+        with mock.patch("python_agent_harness.entry.headless.Controller") as ctrl_cls:
+            ctrl_cls.return_value.submit.return_value = handle
+            rc = run_headless(session, "hi", max_rounds=3, timeout=10.0)
+        self.assertEqual(rc, 0)
+        ctrl_cls.return_value.submit.assert_called_once_with("hi", max_rounds=3, timeout=10.0)
+
+
+class TestCliBudgetFlags(unittest.TestCase):
+    """CLI plumbing for the unattended-run budget flags."""
+
+    def test_parser_accepts_budget_and_run_id_flags(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(
+            ["headless", "p", "--max-rounds", "25", "--timeout", "300.5", "--run-id", "exec-9"]
+        )
+        self.assertEqual(args.max_rounds, 25)
+        self.assertEqual(args.timeout, 300.5)
+        self.assertEqual(args.run_id, "exec-9")
+
+    def test_budget_flags_default_to_none(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["headless", "p"])
+        self.assertIsNone(args.max_rounds)
+        self.assertIsNone(args.timeout)
+        self.assertIsNone(args.run_id)
+
+    def test_flags_passed_to_jsonl_runner(self):
+        session = mock.Mock()
+        with (
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
+            mock.patch("python_agent_harness.entry.headless.run_headless_jsonl") as rhj,
+        ):
+            cli.main(
+                [
+                    "headless",
+                    "hi",
+                    "--json",
+                    "--max-rounds",
+                    "7",
+                    "--timeout",
+                    "120",
+                    "--run-id",
+                    "exec-1",
+                ]
+            )
+        self.assertEqual(rhj.call_args.kwargs["max_rounds"], 7)
+        self.assertEqual(rhj.call_args.kwargs["timeout"], 120.0)
+        self.assertEqual(rhj.call_args.kwargs["run_id"], "exec-1")
+
+    def test_flags_passed_to_plain_runner(self):
+        session = mock.Mock()
+        with (
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
+            mock.patch("python_agent_harness.entry.headless.run_headless") as rh,
+        ):
+            cli.main(["headless", "hi", "--max-rounds", "7"])
+        self.assertEqual(rh.call_args.kwargs["max_rounds"], 7)
+
+    def test_config_defaults_used_when_flags_unset(self):
+        session = mock.Mock()
+        with (
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
+            mock.patch("python_agent_harness.entry.headless.run_headless") as rh,
+            mock.patch(
+                "python_agent_harness.session.config.load_headless_limits",
+                return_value=(15, 90.0),
+            ),
+        ):
+            cli.main(["headless", "hi"])
+        self.assertEqual(rh.call_args.kwargs["max_rounds"], 15)
+        self.assertEqual(rh.call_args.kwargs["timeout"], 90.0)
+
+    def test_flag_zero_disables_config_budget(self):
+        session = mock.Mock()
+        with (
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
+            mock.patch("python_agent_harness.entry.headless.run_headless") as rh,
+            mock.patch(
+                "python_agent_harness.session.config.load_headless_limits",
+                return_value=(15, 90.0),
+            ),
+        ):
+            cli.main(["headless", "hi", "--max-rounds", "0", "--timeout", "0"])
+        self.assertIsNone(rh.call_args.kwargs["max_rounds"])
+        self.assertIsNone(rh.call_args.kwargs["timeout"])
 
 
 if __name__ == "__main__":

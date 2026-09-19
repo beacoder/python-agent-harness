@@ -230,6 +230,12 @@ class Session:
         # bumped by cancel(): a cancelled run with no successor still
         # owns the session and may salvage its partial history.
         self.run_generation = 0
+        # Cumulative token usage of the current run (main + sub-agents;
+        # sub-agent tokens spend the same API key).  Reset by
+        # Controller.submit at the start of each run; the JSONL driver
+        # reads it for the result line.  ``_lock`` serializes updates
+        # from concurrent sub-agent loops.
+        self.usage_totals: dict = {"input": 0, "output": 0, "rounds": 0, "_lock": threading.Lock()}
         self._skill_dir = self._find_skill_dir()
         # (skill_dir, index) cache: rebuilt whenever the resolved skill
         # directory changes (tests swap _skill_dir after construction)

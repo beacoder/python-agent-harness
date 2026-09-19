@@ -255,6 +255,11 @@ CONFIG_TEMPLATE = """\
     "stream": null,
     "supports_image_input": null
   }},
+  "headless": {{
+    "_comment": "Optional server-side limits for unattended `headless` runs: 'max_rounds' caps LLM rounds (opt-in round budget) and 'timeout' caps wall-clock seconds. CLI --max-rounds/--timeout override these per call; values <= 0 or null disable. Unset = unlimited (interactive behavior).",
+    "max_rounds": null,
+    "timeout": null
+  }},
   "default_agent": null,
   "paths": {{
     "_comment": "Optional overrides for context and skill directories. Absolute paths or ~ expansion supported.",
@@ -423,6 +428,37 @@ def load_subagent_llm_config(
         if val is not None:
             main[key] = val
     return main
+
+
+def load_headless_limits(path: str | os.PathLike | None = None) -> tuple[int | None, float | None]:
+    """Load unattended-run limits from the config file's ``headless`` object.
+
+    Returns ``(max_rounds, timeout)``: server-side defaults for the
+    round budget and wall-clock limit of headless runs.  A missing
+    file/section or unreadable JSON yields ``(None, None)``; a
+    malformed section or non-numeric value raises ValueError so config
+    errors surface at session start.  Values <= 0 disable the
+    respective budget (same as null/absent).
+    """
+    try:
+        data = _read_config(path)
+    except ValueError:
+        return (None, None)
+    section = data.get("headless") or {}
+    if not isinstance(section, dict):
+        raise ValueError(f"config file {_config_path(path)}: headless must be an object")
+
+    def _numeric(key: str) -> float | None:
+        val = section.get(key)
+        if val is None:
+            return None
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            raise ValueError(f"config file {_config_path(path)}: headless.{key} must be a number")
+        return float(val) if val > 0 else None
+
+    rounds = _numeric("max_rounds")
+    timeout = _numeric("timeout")
+    return (int(rounds) if rounds is not None else None, timeout)
 
 
 def load_paths_config(path: str | os.PathLike | None = None) -> dict:

@@ -1493,3 +1493,136 @@ class TestAgentLoop(unittest.TestCase):
             max_rounds=0,
         )
         self.assertIsNone(loop.run())
+
+
+class TestRunBudgetsAndUsage(unittest.TestCase):
+    """Unattended-run budgets (top-level round budget / wall-clock limit)
+    and per-run usage accounting."""
+
+    def test_top_level_unbudgeted_by_default(self):
+        """A top-level loop ignores max_rounds unless budget_top_level."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.client.script = ["a", "b", "c"]  # 3 rounds would bust 2
+        loop = AgentLoop(
+            session,
+            messages=[Message(role="user", content="hi")],
+            max_rounds=2,
+        )
+        self.assertIsNone(loop.max_rounds)
+
+    def test_top_level_opted_in_budget_routes_errs(self):
+        """An opted-in top-level budget is a HARD stop: ERRS with an
+        explicit error (exit-code semantics for unattended drivers)."""
+        session = RecordingSession()
+        session.client.script = [
+            ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            ("", [ToolCall(id="2", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            ("final answer", None),
+        ]
+        notified: list[tuple[str, object]] = []
+        session.notify_fn = lambda kind, data=None: notified.append((kind, data))
+        loop = AgentLoop(
+            session,
+            messages=[Message(role="user", content="hi")],
+            max_rounds=2,
+            budget_top_level=True,
+        )
+        result = loop.run()
+        self.assertEqual(loop.state, AgentLoop.ERRS)
+        self.assertEqual(result, "Error: round budget exhausted before the run finished")
+        self.assertIn(("error", result), notified)
+
+    def test_subagent_budget_keeps_soft_done_path(self):
+        """Sub-agent exhaustion keeps the historical behavior: DONE with
+        a best-effort final answer (info["budget"] path)."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.client.script = [
+            ("partial", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+        ]
+        loop = AgentLoop(
+            session,
+            messages=[Message(role="user", content="do it")],
+            top_level=False,
+            max_rounds=1,
+        )
+        self.assertEqual(loop.run(), "partial")
+        self.assertEqual(loop.state, AgentLoop.DONE)
+
+    def test_wall_clock_timeout_routes_errs(self):
+        """A run outliving its wall-clock budget aborts with an explicit
+        wall-clock error instead of hanging."""
+        session = RecordingSession()
+        session.client.script = [
+            ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            "done",
+        ]
+        loop = AgentLoop(
+            session,
+            messages=[Message(role="user", content="hi")],
+            timeout=60.0,
+        )
+        # Expire the deadline after the first scripted response so the
+        # NEXT WAIT entry trips the mid-run wall-clock check (run()
+        # itself sets a live deadline at start).
+        orig_chat = session.client.chat
+
+        def expiring_chat(*args, **kwargs):
+            result = orig_chat(*args, **kwargs)
+            loop._local.deadline = time.monotonic() - 1
+            return result
+
+        session.client.chat = expiring_chat
+        result = loop.run()
+        self.assertEqual(loop.state, AgentLoop.ERRS)
+        self.assertEqual(result, "Error: run exceeded the 60s wall-clock limit")
+
+    def test_timeout_not_set_for_subagent_thread(self):
+        """The deadline is thread-local: a sub-agent loop in a sibling
+        thread does not see (or clear) the parent's deadline."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        loop = AgentLoop(session, messages=[], timeout=10.0)
+        seen: list[object] = []
+
+        def probe() -> None:
+            seen.append(loop._deadline)
+
+        t = threading.Thread(target=probe)
+        t.start()
+        t.join()
+        self.assertEqual(seen, [None])
+
+    def test_usage_accumulates_per_round(self):
+        """usage_totals accumulates input/output/rounds across rounds
+        (FakeClient reports input=100 per call, including nudged
+        re-requests)."""
+        session = RecordingSession()
+        session.tools_enabled = True
+        with mock.patch("python_agent_harness.session.config.MAX_NUDGES", 1):
+            session.client.script = [
+                (
+                    "working",
+                    [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')],
+                ),
+                "done",
+            ]
+        AgentLoop(session, messages=[Message(role="user", content="hi")]).run()
+        totals = session.usage_totals
+        # FakeClient reports input=100 for the 2 scripted calls; further
+        # script-exhaustion calls report Usage() (zeros), so rounds can
+        # exceed scripted calls while input stays 200.
+        self.assertEqual(totals["input"], 200)
+        self.assertGreaterEqual(totals["rounds"], 2)
+        self.assertEqual(totals["output"], 0)
+
+    def test_usage_totals_missing_attribute_is_tolerated(self):
+        """Duck-typed sessions without usage_totals (older embedders,
+        some test doubles) must not break the loop."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.client.script = ["ok"]
+        del session.usage_totals
+        loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
+        self.assertEqual(loop.run(), "ok")

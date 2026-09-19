@@ -219,6 +219,8 @@ class Controller:
         text: str | Message,
         system: str | None = None,
         restore: Any = None,
+        max_rounds: int | None = None,
+        timeout: float | None = None,
     ) -> RunHandle | None:
         """Start an agent run in a worker thread; return its handle.
 
@@ -228,7 +230,10 @@ class Controller:
         directly).  SYSTEM overrides the session's system prompt for
         this run only.  RESTORE (if given) runs when the run finishes
         — used by slash commands to put back state they borrowed
-        (e.g. project_dir).
+        (e.g. project_dir).  MAX_ROUNDS (when given) opts this
+        unattended run into a round budget; TIMEOUT sets a wall-clock
+        limit — both default to the interactive behavior (unbounded),
+        and both apply to the top-level loop only.
 
         Returns None when the text was only failed ``@file``
         references with nothing else to send (the view surfaces the
@@ -249,9 +254,19 @@ class Controller:
         self.session.run_generation += 1
         self.session.cancel_event.clear()
         seq = self.session.run_generation
+        # Fresh usage accounting for this run (the previous run's totals
+        # were already emitted on its result line): a fresh dict, not a
+        # clear(), so a late sub-agent still writing into the old dict
+        # cannot pollute this run's numbers.
+        self.session.usage_totals = {
+            "input": 0,
+            "output": 0,
+            "rounds": 0,
+            "_lock": threading.Lock(),
+        }
         worker = threading.Thread(
             target=self._run_worker,
-            args=(user_msg, seq, system, restore),
+            args=(user_msg, seq, system, restore, max_rounds, timeout),
             daemon=True,
         )
         worker.start()
@@ -324,6 +339,8 @@ class Controller:
         seq: int,
         system: str | None = None,
         restore: Any = None,
+        max_rounds: int | None = None,
+        timeout: float | None = None,
     ) -> None:
         """Worker-thread body of a submitted run: drive the agent loop.
 
@@ -342,6 +359,9 @@ class Controller:
                 messages=list(self.conversation_history),
                 top_level=True,
                 system=system or self.system_prompt,
+                budget_top_level=max_rounds is not None,
+                max_rounds=max_rounds if max_rounds is not None else 60,
+                timeout=timeout,
             )
             if seq == self.session.run_generation and self.session.last_messages:
                 self.conversation_history = list(self.session.last_messages)

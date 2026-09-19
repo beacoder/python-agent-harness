@@ -207,11 +207,27 @@ def cmd_headless(args: argparse.Namespace) -> int:
         if prompt is None:
             prompt = sys.stdin.read()
         runner = run_headless_jsonl if getattr(args, "json", False) else run_headless
+        # Unattended budgets: explicit flags win over the config file's
+        # headless section (0/negative disables the budget entirely).
+        cfg_max_rounds, cfg_timeout = config.load_headless_limits(args.config)
+        max_rounds = getattr(args, "max_rounds", None)
+        if max_rounds is None:
+            max_rounds = cfg_max_rounds
+        elif max_rounds <= 0:
+            max_rounds = None
+        timeout = getattr(args, "timeout", None)
+        if timeout is None:
+            timeout = cfg_timeout
+        elif timeout <= 0:
+            timeout = None
         return runner(
             session,
             prompt,
             restore=getattr(args, "restore", None),
             model=getattr(args, "model", None),
+            run_id=getattr(args, "run_id", None),
+            max_rounds=max_rounds,
+            timeout=timeout,
         )
     finally:
         session.close()
@@ -299,6 +315,15 @@ def cmd_config(args: argparse.Namespace) -> int:
     # Show default agent
     default_agent = config.load_default_agent(args.path)
     print(f"default_agent: {default_agent or '(default: agent.md)'}")
+    max_rounds, timeout = config.load_headless_limits(args.path)
+    if max_rounds is None and timeout is None:
+        print(
+            "headless: (unlimited — set headless.max_rounds/timeout or use --max-rounds/--timeout)"
+        )
+    else:
+        print(
+            f"headless: max_rounds={max_rounds or '(unlimited)'}, timeout={timeout or '(unlimited)'}s"
+        )
     return 0
 
 
@@ -371,6 +396,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="emit the run as JSON lines on stdout (start/delta/notify/log/"
         "result events) for programmatic driving; diagnostics stay on stderr",
+    )
+    p_headless.add_argument(
+        "--run-id",
+        metavar="ID",
+        default=None,
+        help="correlation id echoed on every --json line (e.g. the controller's exec id)",
+    )
+    p_headless.add_argument(
+        "--max-rounds",
+        metavar="N",
+        type=int,
+        default=None,
+        help="cap the run at N LLM rounds (unattended budget; default: config "
+        "headless.max_rounds, else unlimited)",
+    )
+    p_headless.add_argument(
+        "--timeout",
+        metavar="SECONDS",
+        type=float,
+        default=None,
+        help="wall-clock limit for the run in seconds (unattended budget; "
+        "default: config headless.timeout, else unlimited)",
     )
 
     p_config = sub.add_parser("config", help="show effective LLM config or write a template file")

@@ -35,6 +35,8 @@ to them via ``_tool_runner`` / ``_context_manager``.
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any, Protocol
 
 from ..llm.client import LLMClient
@@ -48,6 +50,13 @@ from .tool_runner import (
     ToolRunner,
     sanitize_tool_result,  # noqa: F401  (tests import it from .agent)
 )
+
+
+def _deadline_message(timeout: float | None) -> str:
+    """Result text for a wall-clock abort."""
+    if timeout:
+        return f"run exceeded the {timeout:g}s wall-clock limit"
+    return "run exceeded its wall-clock limit"
 
 
 class _SupervisorSession(Protocol):
@@ -76,6 +85,8 @@ class AgentLoop:
         system: str | None = None,
         max_rounds: int = 60,
         client: LLMClient | None = None,
+        budget_top_level: bool = False,
+        timeout: float | None = None,
     ) -> None:
         self.session = session
         self.messages: list[Message] = messages if messages is not None else []
@@ -96,6 +107,13 @@ class AgentLoop:
         # max_rounds only bounds sub-agent loops: the main agent runs until
         # the model gives a terminal response or the user aborts it (Ctrl-C)
         self.max_rounds = max_rounds if not top_level else None
+        if top_level and budget_top_level:
+            # unattended (headless/CI) top-level runs may opt in to a
+            # round budget: an interactive TUI run still runs until the
+            # model finishes or the user aborts
+            self.max_rounds = max_rounds
+        # Optional wall-clock budget for unattended runs (None = off)
+        self.timeout = timeout
         self.pending: list[ToolCall] = []
         self.error: str | None = None
         self.harness_injected: bool = False
@@ -114,6 +132,9 @@ class AgentLoop:
         self.info: dict[str, Any] = {}
         self.history: list[str] = []
         self.rounds = 0
+        # Thread-local wall-clock deadline bookkeeping: sub-agent loops
+        # run in their own threads, so a shared attribute would race
+        self._local = threading.local()
         self.terminal_text: str | None = None
         self.result: str | None = None
         # Cancellation identity for this run: cancel() bumps the session
@@ -132,7 +153,6 @@ class AgentLoop:
 
     def _is_cancelled(self) -> bool:
         """Whether THIS run must stop (cancelled or superseded).
-
         The plain event is not enough: `_start_agent` clears it before
         every run, so a worker from a cancelled run that finishes late
         (e.g. after a long tool call) would otherwise see it cleared and
@@ -155,6 +175,46 @@ class AgentLoop:
         clobber the new run's).
         """
         return self.session.run_generation != self._run_gen
+
+    @property
+    def _deadline(self) -> float | None:
+        """This thread's wall-clock deadline (None = unbounded).
+
+        Sub-agent loops run in their own threads; the thread-local keeps
+        the parent's deadline from leaking into (or being cleared by)
+        their bookkeeping, while sibling sub-agents under one session
+        each read their own entry.
+        """
+        return getattr(self._local, "deadline", None)
+
+    def _deadline_exceeded(self) -> bool:
+        """Whether this thread's wall-clock budget has run out."""
+        deadline = self._deadline
+        return deadline is not None and time.monotonic() >= deadline
+
+    def _check_budget_at_wait(self) -> bool:
+        """WAIT-entry budget enforcement; True when a budget tripped.
+
+        Sub-agent exhaustion keeps the historical soft path (``info[
+        "budget"]`` -> DONE with a best-effort final answer).  An
+        opted-in top-level budget (headless/CI) is a hard stop: it
+        routes ERRS with an explicit error so the driving process gets
+        a failed exit code instead of silently truncated work.
+        """
+        if self.max_rounds is not None and self.rounds >= self.max_rounds:
+            if self.top_level:
+                self.error = "Error: round budget exhausted before the run finished"
+                self.info["error"] = self.error
+                self.session.notify("error", self.error)
+            else:
+                self.info["budget"] = True
+            return True
+        if self._deadline_exceeded():
+            self.error = f"Error: {_deadline_message(self.timeout)}"
+            self.info["error"] = self.error
+            self.session.notify("error", self.error)
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # finite state machine
@@ -346,6 +406,11 @@ class AgentLoop:
         handler.
         """
         session = self.session
+        if self.timeout is not None:
+            # Wall-clock budget for THIS run's thread.  Thread-local on
+            # purpose: sub-agent loops run in sibling threads and must
+            # not inherit (or clear) the parent's deadline.
+            self._local.deadline = time.monotonic() + self.timeout
         try:
             # The machine starts directly in WAIT — an asynchronous
             # INIT state is not needed for the synchronous driver.
@@ -420,8 +485,7 @@ class AgentLoop:
         """
         session = self.session
         self.info.clear()
-        if self.max_rounds is not None and self.rounds >= self.max_rounds:
-            self.info["budget"] = True
+        if self._check_budget_at_wait():
             return
         self.rounds += 1
         if self._is_cancelled():
@@ -505,6 +569,18 @@ class AgentLoop:
 
         if self._is_cancelled():
             return  # response arrived after cancel: drop it
+
+        # Usage accounting: every loop under this session (main and
+        # sub-agents alike — sub-agent tokens spend the same API key)
+        # adds its per-round usage; a run's driver reads the totals
+        # when the run finishes.  Sessions without the attribute (test
+        # doubles) skip silently.
+        totals = getattr(session, "usage_totals", None)
+        if isinstance(totals, dict):
+            with totals.setdefault("_lock", threading.Lock()):
+                totals["input"] = totals.get("input", 0) + usage.input_tokens
+                totals["output"] = totals.get("output", 0) + usage.output_tokens
+                totals["rounds"] = totals.get("rounds", 0) + 1
 
         # persist the assistant response in the conversation history
         # (text and/or tool calls) so later turns and the UI see it;
@@ -636,11 +712,17 @@ def run_agent_loop(
     system: str | None = None,
     max_rounds: int = 60,
     client: LLMClient | None = None,
+    budget_top_level: bool = False,
+    timeout: float | None = None,
 ) -> str | None:
     """Convenience wrapper running a full agent run (FSM).
 
     ``client`` (when given) overrides the session's client for this
-    run — the per-invocation sub-agent clone."""
+    run — the per-invocation sub-agent clone.  ``budget_top_level``
+    opts an unattended top-level run into the ``max_rounds`` budget;
+    ``timeout`` adds a wall-clock limit (both default off, matching
+    the interactive TUI behavior).
+    """
     loop = AgentLoop(
         session,
         messages=messages,
@@ -648,6 +730,8 @@ def run_agent_loop(
         system=system,
         max_rounds=max_rounds,
         client=client,
+        budget_top_level=budget_top_level,
+        timeout=timeout,
     )
     result = loop.run()
     # Notify run_done only for a successfully completed top-level run:
