@@ -760,6 +760,66 @@ class TestTuiRender(unittest.TestCase):
         self.assertIn("tool: Bash", out)
         self.assertNotIn("ls", out)
 
+    def test_tool_call_args_shown(self):
+        """Short arguments render inside the tool label."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="go"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[ToolCall(id="1", name="Read", arguments='{"file_path": "a.py"}')],
+            ),
+            Message(role="tool", content="x", tool_call_id="1", name="Read"),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("tool: Read(file_path='a.py')", out)
+
+    def test_tool_call_long_args_truncated_not_dropped(self):
+        """A long argument value (e.g. a long Bash command) is truncated
+        with an ellipsis, not dropped from the label."""
+        tui, buf = make_tui()
+        cmd = "echo " + "y" * 300
+        tui.session.last_messages = [
+            Message(role="user", content="go"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[ToolCall(id="1", name="Bash", arguments=f'{{"command": "{cmd}"}}')],
+            ),
+            Message(role="tool", content="ok", tool_call_id="1", name="Bash"),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("tool: Bash(command=", out)
+        self.assertIn("…", out)  # truncation marker present
+        self.assertNotIn(cmd, out)  # full value not rendered
+        self.assertIn("y" * 50, out)  # head of the value shown
+
+    def test_tool_call_content_arg_hidden(self):
+        """The 'content' argument stays hidden (huge payloads, noise)."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="go"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="1",
+                        name="Write",
+                        arguments='{"file_path": "a.py", "content": "huge body"}',
+                    )
+                ],
+            ),
+            Message(role="tool", content="ok", tool_call_id="1", name="Write"),
+        ]
+        tui.console.print(tui._render_conversation())
+        out = buf.getvalue()
+        self.assertIn("tool: Write(file_path='a.py')", out)
+        self.assertNotIn("huge body", out)
+
     # ------------------------------------------------------------------
     # row budget: visible-row cap and line estimates
     # ------------------------------------------------------------------

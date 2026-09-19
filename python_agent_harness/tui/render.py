@@ -69,6 +69,18 @@ def _head_chars(text: str, n: int) -> str:
     return text[:n] + "…"
 
 
+def _arg_repr(value: Any, limit: int = 100) -> str:
+    """repr() of a tool-call argument, truncated to LIMIT chars total.
+
+    Long values (a long Bash command, a big JSON payload) are cut with
+    an ellipsis instead of being dropped from the label entirely.
+    """
+    r = repr(value)
+    if len(r) <= limit:
+        return r
+    return r[: limit - 1] + "…"
+
+
 def _tool_result_preview(content: str) -> str:
     """Preview of a tool result: first N lines, capped at N chars.
 
@@ -228,9 +240,7 @@ class RenderMixin:
                                 args = {}
                         if isinstance(args, dict):
                             params = " ".join(
-                                f"{k}={v!r}"
-                                for k, v in args.items()
-                                if k != "content" and len(repr(v)) < 80
+                                f"{k}={_arg_repr(v)}" for k, v in args.items() if k != "content"
                             )
                         else:
                             params = ""
