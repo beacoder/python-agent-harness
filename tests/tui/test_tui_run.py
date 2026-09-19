@@ -448,7 +448,8 @@ class TestTuiRun(unittest.TestCase):
         )
         with (
             mock.patch(
-                "python_agent_harness.entry.controller.run_agent_loop", side_effect=RuntimeError("stop")
+                "python_agent_harness.entry.controller.run_agent_loop",
+                side_effect=RuntimeError("stop"),
             ),
             mock.patch.object(tui, "_run_dumb", return_value=False) as dumb,
         ):
@@ -466,7 +467,8 @@ class TestTuiRun(unittest.TestCase):
         tui.question = q
         with (
             mock.patch(
-                "python_agent_harness.entry.controller.run_agent_loop", side_effect=RuntimeError("stop")
+                "python_agent_harness.entry.controller.run_agent_loop",
+                side_effect=RuntimeError("stop"),
             ),
             mock.patch.object(tui, "_run_live", side_effect=KeyboardInterrupt),
         ):

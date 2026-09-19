@@ -686,7 +686,9 @@ class TestCliHeadless(unittest.TestCase):
 
         session = mock.Mock()
         with (
-            mock.patch("python_agent_harness.entry.cli.make_session_with_mcp", return_value=session),
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
             mock.patch("python_agent_harness.entry.headless.run_headless") as rh,
         ):
             rc = cli.main(["headless", "fix it", "--project", "/tmp/proj"])
@@ -701,7 +703,9 @@ class TestCliHeadless(unittest.TestCase):
 
         session = mock.Mock()
         with (
-            mock.patch("python_agent_harness.entry.cli.make_session_with_mcp", return_value=session),
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
             mock.patch("python_agent_harness.entry.headless.run_headless") as rh,
             mock.patch("sys.stdin", io.StringIO("from stdin")),
         ):
@@ -715,7 +719,9 @@ class TestCliHeadless(unittest.TestCase):
 
         session = mock.Mock()
         with (
-            mock.patch("python_agent_harness.entry.cli.make_session_with_mcp", return_value=session),
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
             mock.patch(
                 "python_agent_harness.entry.headless.run_headless",
                 side_effect=RuntimeError("boom"),
@@ -730,7 +736,9 @@ class TestCliHeadless(unittest.TestCase):
 
         session = mock.Mock()
         with (
-            mock.patch("python_agent_harness.entry.cli.make_session_with_mcp", return_value=session),
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
             mock.patch("python_agent_harness.entry.headless.run_headless") as rh,
         ):
             cli.main(["headless", "hi", "--model", "fast"])
@@ -741,7 +749,9 @@ class TestCliHeadless(unittest.TestCase):
 
         session = mock.Mock()
         with (
-            mock.patch("python_agent_harness.entry.cli.make_session_with_mcp", return_value=session),
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
             mock.patch("python_agent_harness.entry.headless.run_headless") as rh,
         ):
             cli.main(["headless", "fix it", "--restore", "my-session"])
@@ -752,7 +762,9 @@ class TestCliHeadless(unittest.TestCase):
 
         session = mock.Mock()
         with (
-            mock.patch("python_agent_harness.entry.cli.make_session_with_mcp", return_value=session),
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
             mock.patch("python_agent_harness.entry.headless.run_headless") as rh,
         ):
             cli.main(["headless", "fix it", "--restore"])
@@ -763,7 +775,9 @@ class TestCliHeadless(unittest.TestCase):
 
         session = mock.Mock()
         with (
-            mock.patch("python_agent_harness.entry.cli.make_session_with_mcp", return_value=session),
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
             mock.patch("python_agent_harness.entry.headless.run_headless_jsonl") as rhj,
             mock.patch("python_agent_harness.entry.headless.run_headless") as rh,
         ):
@@ -779,7 +793,9 @@ class TestCliHeadless(unittest.TestCase):
 
         session = mock.Mock()
         with (
-            mock.patch("python_agent_harness.entry.cli.make_session_with_mcp", return_value=session),
+            mock.patch(
+                "python_agent_harness.entry.cli.make_session_with_mcp", return_value=session
+            ),
             mock.patch("python_agent_harness.entry.headless.run_headless_jsonl") as rhj,
             mock.patch("python_agent_harness.entry.headless.run_headless") as rh,
         ):

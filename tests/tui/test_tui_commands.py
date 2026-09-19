@@ -826,7 +826,9 @@ class TestTuiCommandsExtra(unittest.TestCase):
         """With no custom commands the help omits the custom block —
         exercising the empty-custom branch of the listing."""
         tui, buf = make_tui()
-        with mock.patch("python_agent_harness.session.commands.load_custom_commands", return_value=[]):
+        with mock.patch(
+            "python_agent_harness.session.commands.load_custom_commands", return_value=[]
+        ):
             tui._handle_slash("/help")
         out = buf.getvalue()
         self.assertIn("/sessions", out)
