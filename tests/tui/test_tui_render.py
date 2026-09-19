@@ -892,6 +892,21 @@ class TestTuiRender(unittest.TestCase):
         out = buf.getvalue()
         self.assertNotIn("Todos", out)
 
+    def test_todos_panel_survives_malformed_items(self):
+        """Regression: todos are model-controlled; a non-dict item or a
+        non-str content/status (which bypasses the session normalizer
+        via direct assignment) must not crash the main render thread."""
+        tui, buf = make_tui()
+        tui.session.todos = ["junk", 42, {"content": "real", "status": "pending"}]  # type: ignore[list-item]
+        tui.console.print(tui._render_frame())
+        out = buf.getvalue()
+        self.assertIn("Todos", out)
+        self.assertIn("real", out)
+        self.assertIn("'junk'", out)
+        tui.session.todos = [{"content": "a", "status": ["weird", "list"]}]  # type: ignore[dict-item]
+        tui.console.print(tui._render_frame())
+        self.assertIn("a", buf.getvalue())
+
     # ------------------------------------------------------------------
     # status bar markers / compacted summary rendering
     # ------------------------------------------------------------------

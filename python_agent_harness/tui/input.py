@@ -354,6 +354,8 @@ class InputMixin:
 
         def _flush(self) -> None: ...
 
+        def _on_log(self, msg: str) -> None: ...
+
     def _input_prompt(self) -> FormattedText:
         """Styled input prompt: short model name + caret.
 
@@ -396,18 +398,52 @@ class InputMixin:
         return text
 
     def _ask_question_blocking(self) -> None:
+        """Answer the pending question on the main thread.
+
+        Containment boundary for the whole method: the question text is
+        model-controlled, and a render/resolve crash here would kill the
+        TUI from the main thread — outside every tool-containment
+        try/except in the worker (the worker only blocks on
+        ``q.event.wait`` in ``_ask_sync``).  On any unexpected exception
+        the question is answered with an error string (the blocked
+        worker unblocks and the failure reaches the model as a tool
+        result instead of wedging it forever), and the message goes to
+        the status bar.
+        """
         q = self.question
         if q is None:
             return
+        try:
+            answer = self._render_and_ask(q)
+        except (EOFError, KeyboardInterrupt):
+            raise
+        except Exception as e:  # noqa: BLE001 - containment boundary
+            self.question = None
+            q.answer = f"Error: question render failed — {e}"
+            q.event.set()
+            self._data_event.set()
+            self._on_log(f"error: question render failed — {e}")
+            return
+        q.answer = answer
+        q.event.set()
+        self.question = None
+        self._data_event.set()  # re-render promptly after the answer
+
+    def _render_and_ask(self, q: UiQuestion) -> str:
+        """Render the question UI and read one answer (may raise)."""
         self.console.print(self._render_frame())
         self.console.print()
         self._flush()
+        # prompt/options come from the model: coerce to str so a
+        # non-string "question" field can never raise rich's
+        # TypeError from Text.append / concatenation on the main thread
+        prompt_text = str(q.prompt)
         options = q.options or []
         keys = q.keys or []
         if keys and options and len(keys) == len(options):
             # keyed choices (e.g. y/n confirm): type the key to pick —
             # same list look as the Question tool, keys instead of numbers
-            self.console.print(Text(q.prompt))
+            self.console.print(Text(prompt_text))
             for key, opt in zip(keys, options, strict=True):
                 line = Text(f"  {key}) ", style="cyan")
                 line.append(opt)
@@ -419,7 +455,7 @@ class InputMixin:
             prompt = "> "
         elif options:
             # option labels get a numbered list: type the number to pick
-            self.console.print(Text(q.prompt))
+            self.console.print(Text(prompt_text))
             for i, opt in enumerate(options, 1):
                 line = Text(f"  {i}) ", style="cyan")
                 line.append(opt)
@@ -430,19 +466,15 @@ class InputMixin:
             self.console.print(f"[dim]{hint}[/dim]")
             prompt = "> "
         else:
-            prompt = q.prompt + " > "
+            prompt = prompt_text + " > "
         try:
             with _safe_patch_stdout():
                 answer = self.prompt_session.prompt(prompt, multiline=False)
         except (EOFError, KeyboardInterrupt):
             answer = ""
         if keys:
-            q.answer = _resolve_keyed_choice(answer, options, keys)
-        else:
-            q.answer = _resolve_numbered_choice(answer, options)
-        q.event.set()
-        self.question = None
-        self._data_event.set()  # re-render promptly after the answer
+            return _resolve_keyed_choice(answer, options, keys)
+        return _resolve_numbered_choice(answer, options)
 
     def _ask_sync(self, q: UiQuestion) -> str:
         """Block the worker thread until the main thread answers.

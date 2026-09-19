@@ -270,14 +270,26 @@ class RenderMixin:
 
     def _todos_panel(self) -> Group | None:
         """Todos section — rebuilt every frame (not cached), so a
-        TodoWrite call shows up immediately even mid-run."""
+        TodoWrite call shows up immediately even mid-run.
+
+        Defensive against non-dict items / non-str fields: todos come
+        from the model, and this runs on the main render thread where a
+        raise would kill the TUI (session.update_todos already
+        normalizes at the boundary; this covers direct assignment).
+        """
         if not self._controller.todos:
             return None
         t = Table.grid(padding=(0, 1))
-        for todo in self._controller.todos[-8:]:
-            status = todo.get("status", "")
-            mark = {"completed": "✅", "in_progress": "⏳", "pending": "⬜"}.get(status, "•")
-            t.add_row(mark, todo.get("content", ""))
+        for raw in self._controller.todos[-8:]:
+            if isinstance(raw, dict):
+                status = raw.get("status", "")
+                if not isinstance(status, str):
+                    status = ""  # dict.get needs a hashable key
+                mark = {"completed": "✅", "in_progress": "⏳", "pending": "⬜"}.get(status, "•")
+                content = str(raw.get("content", ""))
+            else:
+                mark, content = "•", repr(raw)
+            t.add_row(mark, content)
         return Group(Text("Todos", style="bold"), t)
 
     def _history_rows(self) -> list[Any]:

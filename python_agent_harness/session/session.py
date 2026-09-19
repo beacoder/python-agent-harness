@@ -448,8 +448,30 @@ class Session:
     # ToolContext-facing API
     # ------------------------------------------------------------------
     def update_todos(self, todos: list[dict]) -> None:
-        """Store TODOS so the pinned TUI panel shows the current list."""
-        self.todos = list(todos)
+        """Store TODOS so the pinned TUI panel shows the current list.
+
+        Normalizes model-supplied items at the boundary: the panel and
+        row-cap math on the main render thread do ``todo.get(...)``
+        every frame, so anything that is not a {content, status}-like
+        dict would crash the TUI there (outside every worker-side tool
+        containment).  Non-dict items and missing "content" become a
+        deterministic string form instead.
+        """
+        normalized: list[dict] = []
+        if isinstance(todos, (list, tuple)):
+            for t in todos:
+                if isinstance(t, dict):
+                    item = dict(t)
+                    # coerce non-str fields: the panel does dict lookups
+                    # and str() rendering on the main thread every frame
+                    if "content" in item and not isinstance(item["content"], str):
+                        item["content"] = str(item["content"])
+                    if "status" in item and not isinstance(item["status"], str):
+                        item["status"] = str(item["status"])
+                    normalized.append(item)
+                else:
+                    normalized.append({"content": repr(t), "status": ""})
+        self.todos = normalized
         self.notify("todos")
 
     def clear_todos(self) -> None:

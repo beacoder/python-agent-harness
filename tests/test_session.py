@@ -770,6 +770,40 @@ class TestTodos(unittest.TestCase):
         self.assertEqual(session.todos, [])
         self.assertEqual(notified, ["todos"])
 
+    def test_update_todos_normalizes_non_dict_items(self):
+        """Non-dict items (model schema violation) become deterministic
+        string rows instead of crashing the render thread's todo.get."""
+        session = RecordingSession()
+        session.update_todos(["junk", 42, ["nested"], {"content": "real", "status": "pending"}])
+        self.assertEqual(
+            session.todos,
+            [
+                {"content": "'junk'", "status": ""},
+                {"content": "42", "status": ""},
+                {"content": "['nested']", "status": ""},
+                {"content": "real", "status": "pending"},
+            ],
+        )
+
+    def test_update_todos_normalizes_bad_content_and_status(self):
+        """Dicts with non-str content or non-str status are coerced in
+        place; str fields pass through untouched."""
+        session = RecordingSession()
+        session.update_todos([{"content": 7, "status": "x"}, {"content": "ok", "status": 3}])
+        self.assertEqual(
+            session.todos,
+            [{"content": "7", "status": "x"}, {"content": "ok", "status": "3"}],
+        )
+
+    def test_update_todos_rejects_non_sequence(self):
+        """A model sending todos as a bare string/list-like junk stores
+        an empty list instead of blowing up the render loop."""
+        session = RecordingSession()
+        session.update_todos("abc")  # type: ignore[arg-type]
+        self.assertEqual(session.todos, [])
+        session.update_todos(None)  # type: ignore[arg-type]
+        self.assertEqual(session.todos, [])
+
 
 class TestPlanExit(unittest.TestCase):
     """PlanExit: approved switches to build and queues the approved

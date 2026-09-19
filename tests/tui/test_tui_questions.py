@@ -271,6 +271,66 @@ class TestTuiQuestions(unittest.TestCase):
         self.assertEqual(_option_label(42), "42")
         self.assertEqual(_option_label(None), "None")
 
+    # ------------------------------------------------------------------
+    # containment: a crash while rendering a model-controlled question
+    # must resolve the pending question instead of killing the TUI
+    # (the worker blocks on q.event in _ask_sync and only tool execution
+    # is guarded — this render runs on the main thread)
+    # ------------------------------------------------------------------
+    def test_ask_question_crash_resolves_question_and_reports_error(self):
+        """A render crash inside _ask_question_blocking answers the
+        question with an error string, clears tui.question, sets the
+        worker's event, and surfaces the message on the status bar."""
+        tui, _ = make_tui()
+        q = UiQuestion("Pick", options=["a", "b"])
+        tui.question = q
+        with mock.patch.object(tui, "_render_and_ask", side_effect=TypeError("boom")):
+            tui._ask_question_blocking()
+        self.assertIsNone(tui.question)
+        self.assertTrue(q.event.is_set())
+        self.assertEqual(q.answer, "Error: question render failed — boom")
+        self.assertIn("error", tui.status.lower())
+        self.assertIn("question render failed", tui.status)
+
+    def test_ask_question_eof_propagates_out_of_containment(self):
+        """EOFError/KeyboardInterrupt pass through the containment: they
+        are interactive-cancel signals, not render bugs, and the
+        pending question stays for a later retry (run loop re-prompts)."""
+        tui, _ = make_tui()
+        q = UiQuestion("Pick", options=["a", "b"])
+        tui.question = q
+        with (
+            mock.patch.object(tui, "_render_and_ask", side_effect=EOFError),
+            self.assertRaises(EOFError),
+        ):
+            tui._ask_question_blocking()
+        self.assertIs(tui.question, q)
+        self.assertIsNone(q.answer)
+        self.assertFalse(q.event.is_set())
+
+    def test_ask_question_non_string_prompt_renders(self):
+        """A model sending a non-string 'question' field must not crash
+        the render thread with rich's TypeError."""
+        tui, buf = make_tui()
+        q = UiQuestion(123, options=["a", "b"])
+        tui.question = q
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="1"):
+            tui._ask_question_blocking()
+        self.assertEqual(q.answer, "a")
+        self.assertIn("123", buf.getvalue())
+
+    def test_ask_question_still_answers_on_success_path(self):
+        """Success path unchanged after the containment refactor."""
+        tui, buf = make_tui()
+        q = UiQuestion("Proceed?", options=["y", "n"])
+        tui.question = q
+        with mock.patch.object(tui.prompt_session, "prompt", return_value="2"):
+            tui._ask_question_blocking()
+        self.assertEqual(q.answer, "n")
+        self.assertIsNone(tui.question)
+        self.assertTrue(q.event.is_set())
+        self.assertIn("1) y", buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
