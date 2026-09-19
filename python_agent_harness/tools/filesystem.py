@@ -165,10 +165,13 @@ def _glob_to_regex(pattern: str) -> str:
                 out.append(re.escape(c))
                 i += 1
             else:
+                # The class body is regex-compatible as-is (\], \\, ranges,
+                # and member brackets mean the same thing in both dialects);
+                # only the negation sigil differs (! -> ^).
                 body = pattern[i + 1 : end]
                 if body.startswith("!"):
                     body = "^" + body[1:]
-                out.append("[" + body.replace("\\", "\\\\") + "]")
+                out.append("[" + body + "]")
                 i = end + 1
         else:
             out.append(re.escape(c))

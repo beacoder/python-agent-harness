@@ -85,10 +85,14 @@ jobs:
       - name: Run tests with coverage
         run: coverage run -m unittest discover -s tests -v
 
-      # `coverage report` enforces `fail_under` from pyproject.toml (95%),
-      # so an insufficiently-tested change fails this job.
+      # `coverage report` enforces `fail_under` (95% from pyproject.toml;
+      # Windows runs at a lower floor via --fail-under below, because
+      # posix-only code paths — PTY bash, `tree`/`find` fallbacks — cannot
+      # execute there and Wine-verified real Windows coverage is ~93.5%).
       - name: Coverage report (enforces fail_under)
-        run: coverage report
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then FLOOR=93; else FLOOR=95; fi
+          coverage report --fail-under=$FLOOR
 
       - name: Coverage XML
         if: always()

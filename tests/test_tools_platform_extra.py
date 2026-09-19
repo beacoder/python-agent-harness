@@ -369,6 +369,24 @@ class TestGlobWindowsFallback(unittest.TestCase):
         self.assertTrue(re.compile(_glob_to_regex("a?c")).fullmatch("abc"))
         self.assertTrue(re.compile(_glob_to_regex("setup.cfg")).fullmatch("setup.cfg"))
 
+    def test_glob_to_regex_char_classes(self):
+        from python_agent_harness.tools.filesystem import _glob_to_regex
+
+        self.assertTrue(re.compile(_glob_to_regex("[abc].py")).fullmatch("a.py"))
+        self.assertFalse(re.compile(_glob_to_regex("[abc].py")).fullmatch("d.py"))
+        self.assertTrue(re.compile(_glob_to_regex("[!abc].py")).fullmatch("d.py"))
+        self.assertFalse(re.compile(_glob_to_regex("[!abc].py")).fullmatch("a.py"))
+        # unterminated class: the bracket is a literal
+        self.assertTrue(re.compile(_glob_to_regex("[abc")).fullmatch("[abc"))
+        # ']' right after '[' (or '[!') is a literal member
+        self.assertTrue(re.compile(_glob_to_regex("[]]")).fullmatch("]"))
+        self.assertTrue(re.compile(_glob_to_regex("[!]]")).fullmatch("x"))
+        # escaped bracket inside the class
+        self.assertTrue(re.compile(_glob_to_regex(r"[a\]b]")).fullmatch("]"))
+        self.assertTrue(re.compile(_glob_to_regex(r"[a\]b]")).fullmatch("b"))
+        # hyphen ranges survive translation
+        self.assertTrue(re.compile(_glob_to_regex("[a-z0-9].py")).fullmatch("7.py"))
+
     def test_glob_depth_limit(self):
         from python_agent_harness.tools.glob_win import GlobWindows
 
