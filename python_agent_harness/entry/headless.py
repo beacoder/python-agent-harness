@@ -456,10 +456,6 @@ def run_headless_jsonl(
     controller = Controller(session)
     view = JsonlView(out=out, err=err, run_id=run_id)
     controller.attach_view(view)
-    totals = getattr(session, "usage_totals", None)
-    usage: dict[str, Any] | None = (
-        {"input": 0, "output": 0, "rounds": 0} if isinstance(totals, dict) else None
-    )
 
     def emit_final(
         answer: str,
@@ -469,7 +465,13 @@ def run_headless_jsonl(
         """The terminal result line: snapshots usage and model so every
         result line — including early failures — carries the same
         fields for the driving process."""
-        if usage is not None and isinstance(totals, dict):
+        usage: dict[str, Any] | None = None
+        # Read the CURRENT usage_totals, not a reference captured before
+        # submit(): Controller.submit swaps in a fresh dict per run, so
+        # a pre-submit reference would always snapshot zeros.
+        totals = getattr(session, "usage_totals", None)
+        if isinstance(totals, dict):
+            usage = {"input": 0, "output": 0, "rounds": 0}
             with totals.get("_lock", threading.Lock()):
                 for key in ("input", "output", "rounds"):
                     value = totals.get(key)

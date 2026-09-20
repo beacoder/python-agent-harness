@@ -935,6 +935,29 @@ class TestProtocolHardening(unittest.TestCase):
         self.assertEqual(result["model"], "m-test")
         self.assertIs(result["cancelled"], False)
 
+    def test_usage_read_after_submit_swaps_totals(self):
+        """submit() replaces session.usage_totals with a fresh dict; the
+        result line must snapshot the CURRENT totals (the ones the run
+        actually bumped), not the pre-submit reference (always zeros)."""
+        session = self._session()
+        session.last_messages = [Message(role="assistant", content="done")]
+        worker = threading.Thread(target=lambda: None)
+        worker.start()
+        handle = RunHandle(worker=worker, seq=1, display_text="hi", errors=[], warnings=[])
+
+        def swap_totals(prompt, **kwargs):
+            # emulate Controller.submit: the run bumps a NEW dict
+            session.usage_totals = {"input": 500, "output": 42, "rounds": 3}
+            return handle
+
+        out = io.StringIO()
+        with mock.patch("python_agent_harness.entry.headless.Controller") as ctrl_cls:
+            ctrl_cls.return_value.submit.side_effect = swap_totals
+            rc = run_headless_jsonl(session, "hi", out=out)
+        self.assertEqual(rc, 0)
+        result = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(result["usage"], {"input": 500, "output": 42, "rounds": 3})
+
     def test_cancel_produces_result_line_and_exit_1(self):
         session = self._session()
         session.cancel_event.set()
