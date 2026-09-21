@@ -27,7 +27,7 @@ class FakeSession:
     def __init__(self) -> None:
         self.cancel_event = threading.Event()
         self.model = "m-test"
-        self.usage_totals = {"input": 1, "output": 2, "rounds": 3}
+        self.usage_totals: dict = {"input": 1, "output": 2, "rounds": 3}
         self.last_messages: list = []
         self.on_delta = None
         self.log_fn = None
@@ -100,6 +100,11 @@ class FakeController:
         self.submits: list[str] = []
         self.script = RunScript()
         self.gate: threading.Event | None = None
+        # real Controller.submit() swaps in a fresh zeroed usage_totals
+        # dict per run (the run mutates it in place); these knobs let
+        # tests exercise that lifecycle and the nothing-to-send path.
+        self.reset_usage_on_submit = False
+        self.submit_returns_none = False
 
     def attach_view(self, view) -> None:
         self.view = view
@@ -112,12 +117,30 @@ class FakeController:
 
     def submit(self, prompt: str, **kwargs):
         self.submits.append(prompt)
+        if self.submit_returns_none:
+            return None
+        if self.reset_usage_on_submit:
+            # real Controller.submit(): a fresh dict per run, zeroed
+            self.session.usage_totals = {
+                "input": 0,
+                "output": 0,
+                "rounds": 0,
+                "_lock": threading.Lock(),
+                "_accumulate": True,
+            }
         if self.gate is not None:
             self.gate.wait(5)
         script = self.script
 
         def _drive() -> None:
             try:
+                totals = self.session.usage_totals
+                if self.reset_usage_on_submit and isinstance(totals, dict):
+                    # the agent loop mutates the totals in place during
+                    # the run (mirrors the real run's token accounting)
+                    totals["input"] += 5
+                    totals["output"] += 7
+                    totals["rounds"] += 2
                 script.drive(self.session, prompt)
             except RuntimeError as e:
                 self.session.log(f"agent error: {e}")
@@ -246,6 +269,26 @@ class TestSubmit(ServerTestBase):
         self.assertEqual(lines[-1]["usage"], {"input": 1, "output": 2, "rounds": 3})
         self.assertEqual(lines[-1]["model"], "m-test")
         self.assertFalse(lines[-1]["cancelled"])
+
+    def test_usage_reports_run_totals_not_zeros(self):
+        """usage on the result line must be the run's accumulated totals.
+
+        Regression: the snapshot was taken right after submit(), which
+        (like the real Controller) swaps in a fresh zeroed totals dict
+        — result lines always reported zeros and billing lost every run.
+        """
+        server = self._server()
+        self.controller.reset_usage_on_submit = True
+        lines = self._submit_and_wait(server)
+        self.assertEqual(lines[-1]["usage"], {"input": 5, "output": 7, "rounds": 2})
+
+    def test_nothing_to_send_reports_zero_usage(self):
+        """A run that never started must not leak previous totals."""
+        server = self._server()
+        self.controller.submit_returns_none = True
+        lines = self._submit_and_wait(server, prompt="@missing.txt")
+        self.assertEqual(lines[-1]["errors"], ["nothing to send"])
+        self.assertEqual(lines[-1]["usage"], {"input": 0, "output": 0, "rounds": 0})
 
     def test_submit_requires_run_id(self):
         server = self._server()

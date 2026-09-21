@@ -329,15 +329,16 @@ class AgentServer:
             # (the run must unwind; TUI parity for a Ctrl-C at turn start).
             self._cancel_pending.clear()
             self.session.cancel()
-        usage = self._usage_snapshot()
         model = self.session.model
         if handle is None:
             # Failure before start, headless contract: the result line is
-            # the only line of the run (seq 1, run_id echoed).
+            # the only line of the run (seq 1, run_id echoed).  Nothing
+            # ran, so usage is zeros — the previous run's totals must
+            # not leak onto this run's result line.
             view.emit_result(
                 "",
                 errors=["nothing to send"],
-                usage=usage,
+                usage={"input": 0, "output": 0, "rounds": 0},
                 model=model,
             )
             return
@@ -345,6 +346,11 @@ class AgentServer:
         # emit_start contract: start is guaranteed to be the first line).
         view.emit_start(prompt, list(handle.warnings))
         handle.worker.join()
+        # Snapshot usage AFTER the run: Controller.submit() swaps in a
+        # fresh zeroed totals dict, so a pre-run snapshot would always
+        # report zeros (billing data lost).  The run mutates the dict
+        # in place; read the CURRENT values here.
+        usage = self._usage_snapshot()
         cancelled = self._cancelled_now()
         errors = list(view.errors)
         if not errors and not cancelled and not self._final_answer():
