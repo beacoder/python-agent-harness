@@ -615,6 +615,32 @@ class TestCancel(ServerTestBase):
         os.close(w)
         reader_fd.close()
 
+    def test_cancel_racing_run_start_is_not_swallowed(self):
+        """A cancel op landing between op_submit and Controller.submit
+        must survive submit()'s cancel_event.clear() — the run thread
+        re-applies it after submit (verified race without the fix)."""
+        server = self._server()
+        script = RunScript(mode="ask")
+        self.controller.script = script
+        # make submit() simulate the race: the cancel op fires while the
+        # run thread is between op_submit's guard-set and submit()
+        original = self.controller.submit
+
+        def racing_submit(prompt, **kwargs):
+            # reader thread processes op_cancel right here
+            server.op_cancel({"op": "cancel", "run_id": "r1"})
+            return original(prompt, **kwargs)
+
+        self.controller.submit = racing_submit  # type: ignore[method-assign]
+        server.op_submit({"op": "submit", "prompt": "q", "run_id": "r1"})
+        self._wait_idle(server, timeout=10)
+        lines = _lines(server.out)  # type: ignore[arg-type]
+        self.assertEqual(lines[-1]["type"], "result")
+        self.assertTrue(lines[-1]["cancelled"])
+        # once from op_cancel, once re-applied by the run thread after
+        # submit cleared the event
+        self.assertEqual(self.session.cancel_calls, 2)
+
     def test_shutdown_during_active_run_cancels_and_waits(self):
         """EOF/shutdown with a run still active: cancel it and wait for
         the run thread to unwind before the loop returns."""

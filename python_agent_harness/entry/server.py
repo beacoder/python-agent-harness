@@ -39,6 +39,7 @@ on the wire stay strictly ordered by ``seq``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import threading
@@ -117,6 +118,17 @@ class ServerView(JsonlView):
             if deadline is not None and time.monotonic() >= deadline:
                 return "Unanswered"
 
+    def _safe_emit(self, payload: dict[str, Any]) -> None:
+        """Emit a run line, tolerating a dead host pipe.
+
+        ``_emit``/``_write`` raise on a closed stdout (host death or
+        shutdown-while-running); a crashed worker callback would tear
+        down the agent loop with a BrokenPipeError instead of ending
+        the run cleanly.
+        """
+        with contextlib.suppress(BrokenPipeError, ValueError, OSError):
+            self._emit(payload)
+
     def answer(self, answers: list[str]) -> bool:
         """Resolve the pending ask/confirm with *answers* (host-side).
 
@@ -162,7 +174,7 @@ class ServerView(JsonlView):
         state = _AskState(self.run_id, "confirm")
         with self._pending_lock:
             self._pending = state
-        self._emit(
+        self._safe_emit(
             {
                 "type": "notify",
                 "kind": "ask",
@@ -176,7 +188,7 @@ class ServerView(JsonlView):
         state = _AskState(self.run_id, "ask")
         with self._pending_lock:
             self._pending = state
-        self._emit(
+        self._safe_emit(
             {"type": "notify", "kind": "ask", "data": {"kind": "ask", "questions": questions}}
         )
         return self._wait_answer(state)
@@ -225,6 +237,11 @@ class AgentServer:
         self.view: ServerView | None = None
         self._active_run_id: str | None = None
         self._active_guard = threading.Lock()  # active-run transitions
+        # A cancel op that arrived before the run thread reached
+        # ``Controller.submit``: submit() clears the session cancel
+        # event at run start, which would swallow the cancel (verified
+        # race).  The run thread re-applies it right after submit.
+        self._cancel_pending = threading.Event()
         self._stopped = threading.Event()
 
     # -- outbound lines ---------------------------------------------------------
@@ -238,15 +255,25 @@ class AgentServer:
         the same lock here keeps every line whole — without it an
         ``error`` emitted mid-run could interleave with a streamed
         event line on the wire.
+
+        A dead host (EOF/closed pipe) makes writes raise; that is not
+        a server fault — the pump sees EOF and the loop exits.  Swallow
+        the write error so unwinding threads (result line after host
+        death, error inside an except handler) never die with a
+        secondary BrokenPipeError traceback.
         """
+        text = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
         view = self.view
-        if view is not None:
-            with view._lock:
-                self.out.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        try:
+            if view is not None:
+                with view._lock:
+                    self.out.write(text)
+                    self.out.flush()
+            else:
+                self.out.write(text)
                 self.out.flush()
-        else:
-            self.out.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
-            self.out.flush()
+        except (BrokenPipeError, ValueError, OSError):
+            pass  # host is gone; the reader loop's EOF handles shutdown
 
     def _error(self, message: str) -> None:
         self._write_line({"type": "error", "error": message})
@@ -296,6 +323,12 @@ class AgentServer:
         self.view = view
         self.controller.attach_view(view)
         handle = self.controller.submit(prompt)
+        if self._cancel_pending.is_set():
+            # A cancel op landed before submit() — submit cleared the
+            # session cancel event at run start, so re-apply it now
+            # (the run must unwind; TUI parity for a Ctrl-C at turn start).
+            self._cancel_pending.clear()
+            self.session.cancel()
         usage = self._usage_snapshot()
         model = self.session.model
         if handle is None:
@@ -359,6 +392,7 @@ class AgentServer:
             with self._active_guard:
                 self._active_run_id = None
                 self.view = None
+            self._cancel_pending.clear()
 
     def op_answer(self, op: dict[str, Any]) -> None:
         run_id = str(op.get("run_id") or "")
@@ -379,6 +413,10 @@ class AgentServer:
         if self._active_run_id != run_id:
             self._error(f"run {run_id or '(missing)'} is not active")
             return
+        # The run thread may not have reached Controller.submit yet (it
+        # clears the cancel event at run start); remember the intent so
+        # _execute_run re-applies it after submit.
+        self._cancel_pending.set()
         self.session.cancel()
         if self.view is not None:
             self.view.cancel_pending()
