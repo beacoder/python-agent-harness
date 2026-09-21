@@ -4,6 +4,8 @@ Commands:
   run                      interactive TUI agent session (default)
   headless [prompt]        non-interactive: submit one prompt, print the result
                            (--json emits the run as JSON lines instead)
+  serve                    resident JSONL server over stdin/stdout: submit
+                           runs repeatedly, answer mid-run questions, cancel
   config [--init]          show effective LLM config / write a template file
 
 Custom commands (prompts/commands/*.md) — like init, review,
@@ -233,6 +235,24 @@ def cmd_headless(args: argparse.Namespace) -> int:
         session.close()
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    project_dir = getattr(args, "project", None) or os.getcwd()
+    session = make_session_with_mcp(
+        project_dir,
+        config_path=args.config,
+        stream=False if getattr(args, "no_stream", False) else None,
+    )
+    try:
+        from .server import run_serve
+
+        return run_serve(
+            session,
+            answer_timeout=float(getattr(args, "answer_timeout", 0.0) or 0.0),
+        )
+    finally:
+        session.close()
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     path = config._config_path(args.path)
     if args.init:
@@ -424,6 +444,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_config.add_argument("--init", action="store_true", help="write a config template")
     p_config.add_argument("--path", metavar="PATH", help="config file path")
     p_config.set_defaults(func=cmd_config)
+
+    p_serve = sub.add_parser(
+        "serve",
+        help="resident JSONL server: multiple runs per process, mid-run Q&A",
+    )
+    _add_config_arg(p_serve, suppress=True)
+    p_serve.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="disable streaming (one-shot responses; overrides config file)",
+    )
+    p_serve.add_argument(
+        "--project",
+        metavar="DIR",
+        help="project directory (default: cwd)",
+    )
+    p_serve.add_argument(
+        "--answer-timeout",
+        metavar="SECONDS",
+        type=float,
+        default=0.0,
+        help="give up waiting for a host answer after N seconds (0 = wait "
+        'forever, the default; the host can answer via {"op": "answer"})',
+    )
     return parser
 
 
@@ -434,6 +478,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(args)
     if args.command == "headless":
         return cmd_headless(args)
+    if args.command == "serve":
+        return cmd_serve(args)
     if args.command == "config":
         return cmd_config(args)
     parser.print_help()

@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import certifi
 import httpx
 
 from python_agent_harness.core.models import Message, ToolCall, ToolSpec, Usage
@@ -695,21 +696,15 @@ class TestClientHelpers(unittest.TestCase):
         used."""
         from python_agent_harness.llm.client import _httpx_verify
 
-        # A valid PEM the SSL layer accepts as a CA file: reuse certifi's
-        # bundle when available, else the system default context's certs.
-        ctx_default = ssl.create_default_context()
-        with tempfile.NamedTemporaryFile("w", prefix="pah-ca-", suffix=".pem", delete=False) as f:
-            # A self-contained CA bundle written from the default trust store.
-            pems = [
-                ssl.DER_cert_to_PEM_cert(der) for der in ctx_default.get_ca_certs(binary_form=True)
-            ]
-            f.write("".join(pems))
-            ca_path = f.name
-        try:
-            result = _httpx_verify(ca_path)
-            self.assertIsInstance(result, ssl.SSLContext)
-        finally:
-            os.unlink(ca_path)
+        # certifi is a hard dependency (httpx pulls it in), so its bundle
+        # exists in every environment this suite runs in.  The old
+        # approach (enumerate the DEFAULT context's certs) breaks on hosts
+        # whose OpenSSL default cafile is missing: there the default
+        # context legitimately enumerates zero certs and an empty bundle
+        # is not a loadable CA file.
+        ca_path = certifi.where()
+        result = _httpx_verify(ca_path)
+        self.assertIsInstance(result, ssl.SSLContext)
 
     def test_httpx_verify_bool_passthrough(self):
         """True/False are httpx's own on/off toggles and pass through

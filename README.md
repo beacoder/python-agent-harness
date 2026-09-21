@@ -79,6 +79,7 @@ Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_
 - **MCP support** — optional MCP integration through the `[mcp]` extra. MCP tools become ordinary agent tools such as `mcp__<server>__<tool>`. Supports `stdio`, `streamable-http`, and `sse` transports.
 - **Slash commands** — built-in `/init`, `/review`, `/explain`, and other commands, plus custom commands loaded from `prompts/commands/*.md`.
 - **Custom agents** — switch the main agent's system prompt at runtime with `/agent`. Agent prompt files live in `prompts/agents/*.md`. Use `default_agent` in the config file to start sessions with a specific agent.
+- **Embeddable runtime boundaries** — drive the agent from programs: `headless --json` for one-shot CI/scripting (write-only JSONL stream), `serve` for hosting apps (resident process, bidirectional protocol: multi-turn memory, mid-run Q&A, protocol-level cancel).
 
 ## Inspired by opencode
 
@@ -246,6 +247,48 @@ Interactive prompts are auto-answered (`confirm` → yes, `ask` →
 
 - Exit code is 0 on success, 1 when the prompt was empty (only failed
   `@file` references), the run raised an agent error, or the restore failed.
+
+### Serve mode (resident JSONL server)
+
+```sh
+python-agent-harness serve [--project DIR] [--answer-timeout SECONDS]
+```
+
+A persistent, bidirectional runtime boundary for hosting applications
+(a web backend, an IDE, a CI driver).  Unlike `headless --json` (one
+prompt per process, write-only stream), `serve` keeps the
+`Controller`/`Session` resident and speaks a request/response protocol
+over stdin/stdout — the same process boundary (containerizable), but
+the host can:
+
+- submit multiple prompts over the process's lifetime — no per-turn
+  interpreter spawn, and conversation history is retained between them
+  (multi-turn memory);
+- answer the agent's mid-run questions (the `Question` tool and
+  plan-exit confirmation) via an `answer` op;
+- cancel a run as a protocol message (no signal semantics).
+
+Protocol (one JSON object per line):
+
+```
+host → agent: {"op": "submit", "prompt": ..., "run_id": ...}
+              {"op": "answer", "run_id": ..., "answers": [...]}
+              {"op": "cancel", "run_id": ...}
+              {"op": "ping"} | {"op": "shutdown"}
+agent → host: {"type": "ready"}                       first line
+              {"seq": N, "type": "start"|"delta"|"notify"|"log", "run_id": ...}
+              {"seq": N, "type": "result", "run_id": ..., "answer": ...,
+               "errors": [...], "usage": {...}, "cancelled": bool}
+              {"type": "error", "error": ...}         protocol failures
+```
+
+A mid-run question arrives as a `notify` with `kind: "ask"` (data has
+`kind: "ask"|"confirm"`); reply with `answer`.  One run at a time; a
+`submit` while one is active is rejected with an `error` line.
+`--answer-timeout SECONDS` bounds how long a pending question waits
+for the host's answer (default: forever).  The result line's shape is
+identical to `headless --json`'s, so a driver can speak both
+protocols with one parser.
 
 ### Slash commands
 
