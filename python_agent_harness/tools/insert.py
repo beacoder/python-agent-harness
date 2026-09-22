@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 
 from ..io.diffrender import unified_diff
-from .base import Tool, ToolContext, atomic_write_text
+from .base import Tool, ToolContext
 from .edit import _to_crlf, _uses_crlf
 
 
@@ -77,6 +77,8 @@ class Insert(Tool):
         else:
             lines.insert(ln, new_str)
         new_content = "".join(lines)
+        from .filesystem import atomic_write_text
+
         try:
             atomic_write_text(path, new_content)
         except OSError as e:

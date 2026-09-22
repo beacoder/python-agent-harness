@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from python_agent_harness.tools.base import ToolContext, ToolRuntime, atomic_write_text
+from python_agent_harness.tools.base import ToolContext, ToolRuntime
 from python_agent_harness.tools.diffapply import apply_unified_diff, diff_targets
 from python_agent_harness.tools.edit_mac import EditMac
 from python_agent_harness.tools.edit_win import EditWindows
@@ -28,6 +28,7 @@ from python_agent_harness.tools.filesystem import (
     Write,
     _fix_patch_headers,
     _strip_diff_fence,
+    atomic_write_text,
 )
 from python_agent_harness.tools.glob_mac import GlobMac
 from python_agent_harness.tools.glob_win import GlobWindows

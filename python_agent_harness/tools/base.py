@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-import contextlib
-import os
-import stat
 import threading
-import uuid
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from ..core.models import ToolSpec

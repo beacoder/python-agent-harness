@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 from ..io.diffrender import unified_diff
-from .base import Tool, ToolContext, atomic_write_text
+from .base import Tool, ToolContext
 
 
 class Write(Tool):
@@ -82,6 +82,8 @@ class Write(Tool):
             # mirrors the read side; both together keep Write's behavior
             # identical on every platform.  Both are handled by
             # atomic_write_text, which also makes the overwrite crash-safe.
+            from .filesystem import atomic_write_text
+
             atomic_write_text(path, content)
         except OSError as e:
             return f"Error: {e}"

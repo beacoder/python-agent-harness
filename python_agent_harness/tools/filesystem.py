@@ -1,12 +1,13 @@
 """Filesystem tool helpers and compatibility re-exports.
 
 This module hosts the SHARED helper machinery for the filesystem
-tools — spooling oversized tool results to temp files
-(`gptel-agent--truncate-buffer` parity), git-root detection, and the
-``natnump`` predicate — and re-exports the tool classes that live in
-per-tool modules (`read.py`, `glob.py`, `grep.py`, `edit.py`,
-`write.py`, `insert.py`, `mkdir.py`), so existing imports such as
-``from .tools.filesystem import Read`` keep working.
+tools — atomic file replacement (``atomic_write_text``), spooling
+oversized tool results to temp files (`gptel-agent--truncate-buffer`
+parity), git-root detection, and the ``natnump`` predicate — and
+re-exports the tool classes that live in per-tool modules (`read.py`,
+`glob.py`, `grep.py`, `edit.py`, `write.py`, `insert.py`, `mkdir.py`),
+so existing imports such as ``from .tools.filesystem import Read``
+keep working.
 
 The helpers must stay defined HERE (not in a separate ``_common``
 module): tests monkey-patch ``filesystem._spool_dir`` and read
@@ -31,13 +32,16 @@ full output remains readable via the Read tool.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil  # noqa: F401  (mock target for tests)
+import stat
 import subprocess  # noqa: F401  (mock target for tests)
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TypeGuard
@@ -232,13 +236,15 @@ def atomic_write_text(path: str, content: str) -> None:
     """Replace PATH's contents with CONTENT atomically.
 
     THE single write path for every tool that rewrites a file (``Edit``,
-    ``Insert``, ``Write``, and the pure-Python diff applier).  It lives
-    here, in the module every tool already imports, so the four callers
-    cannot drift apart -- and because ``base`` imports nothing from
-    ``tools``, putting it here is also the only placement that avoids a
-    circular import: ``filesystem.py`` re-imports ``edit``/``write``/
-    ``insert`` at its bottom, so a helper defined *there* would make
-    ``edit`` import a half-initialised ``filesystem``.
+    ``Insert``, ``Write``, and the pure-Python diff applier), so the four
+    callers cannot drift apart.  It lives in this module with the other
+    shared helpers, and the four callers import it LAZILY (inside the
+    method that writes) rather than at module level, because this module
+    re-imports ``edit``/``write``/``insert``/``diffapply`` at its bottom
+    for the compatibility re-exports: a module-level import here would
+    close the cycle on a half-initialised module (``tools/__init__``
+    loads ``edit`` first, whose import of this module would then ask the
+    half-initialised ``edit`` for ``Edit``).
 
     A plain ``open(path, "w")`` TRUNCATES the file before writing, so a
     write that fails partway through -- ENOSPC, a quota, an I/O error,
@@ -345,6 +351,7 @@ __all__ = [
     "MAX_OUTPUT",
     "READ_SIZE_LIMIT",
     "SPOOL_LINES",
+    "atomic_write_text",
     "cleanup_spooled_files",
     "_fix_patch_headers",
     "_git_glob_results",

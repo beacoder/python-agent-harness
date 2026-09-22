@@ -16,7 +16,7 @@ import shutil
 import subprocess
 
 from ..io.diffrender import unified_diff
-from .base import Tool, ToolContext, atomic_write_text
+from .base import Tool, ToolContext
 
 # Any line ending, as a single compiled pattern (CRLF first so a CRLF is
 # never rewritten as two endings).
@@ -168,6 +168,8 @@ class Edit(Tool):
                 "for the replacement, or a unified diff"
             )
         new = content.replace(old, new_str, 1)
+        from .filesystem import atomic_write_text
+
         try:
             atomic_write_text(path, new)
         except OSError as e:

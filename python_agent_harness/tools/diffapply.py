@@ -26,8 +26,6 @@ from __future__ import annotations
 import os
 import re
 
-from .base import atomic_write_text
-
 _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _FILE_OLD_RE = re.compile(r"^---[ \t]")
 _FILE_NEW_RE = re.compile(r"^\+\+\+[ \t]")
@@ -257,6 +255,8 @@ def _apply_section(section: _Section, cwd: str, fallback_path: str | None) -> tu
     ending = _file_line_ending(file_lines)
     for hunk, pos in reversed(plan):  # bottom-up: earlier positions stay valid
         _apply_hunk(hunk, pos, new_lines, ending)
+    from .filesystem import atomic_write_text
+
     try:
         atomic_write_text(target, "".join(new_lines))
     except OSError as e:
