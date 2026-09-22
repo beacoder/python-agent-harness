@@ -26,6 +26,8 @@ from __future__ import annotations
 import os
 import re
 
+from .base import atomic_write_text
+
 _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _FILE_OLD_RE = re.compile(r"^---[ \t]")
 _FILE_NEW_RE = re.compile(r"^\+\+\+[ \t]")
@@ -224,7 +226,11 @@ def _resolve_target(new_path: str, cwd: str, fallback_path: str | None) -> str:
 
 
 def _apply_section(section: _Section, cwd: str, fallback_path: str | None) -> tuple[bool, str]:
-    target = _resolve_target(section.new_path, cwd, fallback_path)
+    # realpath BEFORE writing (the same resolution diff_targets applies):
+    # the write goes through atomic_write_text, whose os.replace would
+    # otherwise overwrite a symlink with a regular file and leave the real
+    # target untouched.  Edit/Insert/Write resolve their own paths already.
+    target = os.path.realpath(_resolve_target(section.new_path, cwd, fallback_path))
     if not os.path.isfile(target):
         return False, f"target file does not exist: {target}"
     # surrogateescape + newline="": invalid UTF-8 bytes and the file's own
@@ -252,8 +258,7 @@ def _apply_section(section: _Section, cwd: str, fallback_path: str | None) -> tu
     for hunk, pos in reversed(plan):  # bottom-up: earlier positions stay valid
         _apply_hunk(hunk, pos, new_lines, ending)
     try:
-        with open(target, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
-            f.writelines(new_lines)
+        atomic_write_text(target, "".join(new_lines))
     except OSError as e:
         return False, f"cannot write {target}: {e}"
     return True, f"patched {target}"
