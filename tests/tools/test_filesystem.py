@@ -2583,9 +2583,12 @@ class TestAtomicWriteText(unittest.TestCase):
             self.assertEqual(f.read(), self.orig)
         self.assertEqual(self._strays(), [])
 
+    @unittest.skipIf(sys.platform == "win32", "Windows chmod cannot make a directory unwritable")
     def test_directory_not_writable_fails_safely(self):
         # the temp file needs a writable DIRECTORY; when it is not, the
-        # helper must fail without touching the original
+        # helper must fail without touching the original.  POSIX only:
+        # os.chmod on Windows only toggles the read-only flag and does not
+        # stop file creation inside a directory (and os.geteuid is absent).
         if os.geteuid() == 0:
             self.skipTest("root ignores directory permissions")
         os.chmod(self.tmp.name, 0o500)
