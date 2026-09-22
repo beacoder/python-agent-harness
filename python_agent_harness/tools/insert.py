@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 
 from ..io.diffrender import unified_diff
-from .base import Tool, ToolContext
+from .base import Tool, ToolContext, atomic_write_text
 from .edit import _to_crlf, _uses_crlf
 
 
@@ -78,8 +78,7 @@ class Insert(Tool):
             lines.insert(ln, new_str)
         new_content = "".join(lines)
         try:
-            with open(path, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
-                f.write(new_content)
+            atomic_write_text(path, new_content)
         except OSError as e:
             return f"Error: {e}"
         diff_text = unified_diff(old_content, new_content, path)
