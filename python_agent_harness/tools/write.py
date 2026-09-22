@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 from ..io.diffrender import unified_diff
-from .base import Tool, ToolContext
+from .base import Tool, ToolContext, atomic_write_text
 
 
 class Write(Tool):
@@ -80,9 +80,9 @@ class Write(Tool):
             # and (b) broke the symmetric byte-exact read above (the same
             # logical content no longer compared equal).  surrogateescape
             # mirrors the read side; both together keep Write's behavior
-            # identical on every platform.
-            with open(path, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
-                f.write(content)
+            # identical on every platform.  Both are handled by
+            # atomic_write_text, which also makes the overwrite crash-safe.
+            atomic_write_text(path, content)
         except OSError as e:
             return f"Error: {e}"
         diff_text = unified_diff(old_content, content, path)
