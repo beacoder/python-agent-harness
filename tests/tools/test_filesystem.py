@@ -5,14 +5,16 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from python_agent_harness.tools.base import ToolContext, ToolRuntime
+from python_agent_harness.tools.base import ToolContext, ToolRuntime, atomic_write_text
 from python_agent_harness.tools.diffapply import apply_unified_diff, diff_targets
 from python_agent_harness.tools.edit_mac import EditMac
 from python_agent_harness.tools.edit_win import EditWindows
@@ -1304,12 +1306,16 @@ class TestWriteEditInsertMkdirErrors(unittest.TestCase):
             self.assertEqual(f.read(), "new\n")
 
     def test_write_open_failure_reported(self):
-        with mock.patch("builtins.open", side_effect=OSError("disk full")):
+        # the write goes to a temp file via Path.write_text before the
+        # os.replace, so that is the failure point to inject now
+        with mock.patch("pathlib.Path.write_text", side_effect=OSError("disk full")):
             out = Write().run(
                 {"path": self.tmp.name, "filename": "never.txt", "content": "x"},
                 self.ctx,
             )
         self.assertIn("Error", out)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "never.txt")))
+        self.assertEqual(os.listdir(self.tmp.name), [])  # no temp residue
 
     def test_edit_read_oserror_reported(self):
         p = os.path.join(self.tmp.name, "f.txt")
@@ -1335,16 +1341,13 @@ class TestWriteEditInsertMkdirErrors(unittest.TestCase):
         p = os.path.join(self.tmp.name, "f.txt")
         with open(p, "w") as f:
             f.write("a\n")
-        real_open = open
-
-        def fake_open(path, mode="r", *args, **kwargs):
-            if "w" in mode:
-                raise OSError("disk full")
-            return real_open(path, mode, *args, **kwargs)
-
-        with mock.patch("builtins.open", side_effect=fake_open):
+        # the new content goes to a temp file via Path.write_text first
+        with mock.patch("pathlib.Path.write_text", side_effect=OSError("disk full")):
             out = Edit().run({"path": p, "old_str": "a", "new_str": "b"}, self.ctx)
         self.assertIn("Error: disk full", out)
+        with open(p) as f:
+            self.assertEqual(f.read(), "a\n")  # original intact, not truncated
+        self.assertEqual(os.listdir(self.tmp.name), ["f.txt"])  # no temp residue
 
     def test_insert_read_oserror_reported(self):
         p = os.path.join(self.tmp.name, "f.txt")
@@ -1358,16 +1361,13 @@ class TestWriteEditInsertMkdirErrors(unittest.TestCase):
         p = os.path.join(self.tmp.name, "f.txt")
         with open(p, "w") as f:
             f.write("a\n")
-        real_open = open
-
-        def fake_open(path, mode="r", *args, **kwargs):
-            if "w" in mode:
-                raise OSError("disk full")
-            return real_open(path, mode, *args, **kwargs)
-
-        with mock.patch("builtins.open", side_effect=fake_open):
+        # the new content goes to a temp file via Path.write_text first
+        with mock.patch("pathlib.Path.write_text", side_effect=OSError("disk full")):
             out = Insert().run({"path": p, "line_number": 0, "new_str": "x"}, self.ctx)
         self.assertIn("Error: disk full", out)
+        with open(p) as f:
+            self.assertEqual(f.read(), "a\n")  # original intact, not truncated
+        self.assertEqual(os.listdir(self.tmp.name), ["f.txt"])  # no temp residue
 
 
 @unittest.skipUnless(shutil.which("patch"), "patch not available")
@@ -2336,6 +2336,266 @@ class TestTildeExpansion(unittest.TestCase):
             f.write("needle\n")
         out = grep_tool().run({"regex": "needle", "path": "~/proj"}, ToolContext())
         self.assertIn("needle", out)
+
+
+class TestWritesAreAtomic(unittest.TestCase):
+    """Edit / Insert / Write / the diff applier must never destroy a file.
+
+    A truncating ``open(path, "w")`` empties the file BEFORE writing, so a
+    write that failed partway through (ENOSPC, a quota, an I/O error, the
+    process being killed) left the file empty and the original content
+    unrecoverable while the tool returned a tidy "Error: ..." string.  All
+    four writers now go through a sibling temp file plus ``os.replace``
+    (the same discipline as ``SessionPersistence.save``).  These tests pin
+    the resulting contract: on failure the original survives byte-for-byte
+    and no temp file is left behind.
+    """
+
+    ORIG = "line1\nline2\nline3\n"
+    DIFF = "--- a/victim.txt\n+++ b/victim.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+CHANGED\n line3\n"
+
+    def setUp(self):
+        self.ctx = ToolContext()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "victim.txt")
+        with open(self.path, "w") as f:
+            f.write(self.ORIG)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _contents(self):
+        with open(self.path) as f:
+            return f.read()
+
+    def _strays(self):
+        return [n for n in sorted(os.listdir(self.tmp.name)) if n != "victim.txt"]
+
+    def _failing_write(self):
+        """Make the temp-file write fail the way a full disk would."""
+        return mock.patch(
+            "pathlib.Path.write_text", side_effect=OSError(28, "No space left on device")
+        )
+
+    def test_edit_preserves_file_when_write_fails(self):
+        with self._failing_write():
+            out = Edit().run(
+                {"path": self.path, "old_str": "line2", "new_str": "CHANGED"}, self.ctx
+            )
+        self.assertTrue(out.startswith("Error"))
+        self.assertEqual(self._contents(), self.ORIG)
+        self.assertEqual(self._strays(), [])
+
+    def test_insert_preserves_file_when_write_fails(self):
+        with self._failing_write():
+            out = Insert().run({"path": self.path, "line_number": 1, "new_str": "X"}, self.ctx)
+        self.assertTrue(out.startswith("Error"))
+        self.assertEqual(self._contents(), self.ORIG)
+        self.assertEqual(self._strays(), [])
+
+    def test_write_preserves_file_when_write_fails(self):
+        with self._failing_write():
+            out = Write().run(
+                {"path": self.tmp.name, "filename": "victim.txt", "content": "clobber"},
+                self.ctx,
+            )
+        self.assertTrue(out.startswith("Error"))
+        self.assertEqual(self._contents(), self.ORIG)
+        self.assertEqual(self._strays(), [])
+
+    def test_diff_applier_preserves_file_when_write_fails(self):
+        # the pure-Python applier behind EditMac / EditWindows
+        with self._failing_write():
+            ok, msg = apply_unified_diff(self.DIFF, cwd=self.tmp.name, fallback_path=self.path)
+        self.assertFalse(ok)
+        self.assertIn("cannot write", msg)
+        self.assertEqual(self._contents(), self.ORIG)
+        self.assertEqual(self._strays(), [])
+
+    def test_rename_failure_preserves_file(self):
+        # everything wrote fine but the final swap failed
+        with mock.patch("os.replace", side_effect=OSError("cross-device link")):
+            out = Edit().run(
+                {"path": self.path, "old_str": "line2", "new_str": "CHANGED"}, self.ctx
+            )
+        self.assertTrue(out.startswith("Error"))
+        self.assertEqual(self._contents(), self.ORIG)
+        self.assertEqual(self._strays(), [])
+
+    def test_successful_edit_leaves_no_temp_file(self):
+        out = Edit().run({"path": self.path, "old_str": "line2", "new_str": "CHANGED"}, self.ctx)
+        self.assertNotIn("Error", out)
+        self.assertEqual(self._contents(), "line1\nCHANGED\nline3\n")
+        self.assertEqual(self._strays(), [])
+
+    def test_successful_diff_apply_leaves_no_temp_file(self):
+        ok, msg = apply_unified_diff(self.DIFF, cwd=self.tmp.name, fallback_path=self.path)
+        self.assertTrue(ok, msg)
+        self.assertEqual(self._contents(), "line1\nCHANGED\nline3\n")
+        self.assertEqual(self._strays(), [])
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits")
+    def test_edit_preserves_permission_bits(self):
+        # the replacement is a fresh temp file, so its mode must be copied
+        # from the original -- an edited script has to stay executable.
+        # The inode check pins that the atomic path really ran; without it
+        # this test would also pass for a plain in-place write.
+        os.chmod(self.path, 0o750)
+        before = os.stat(self.path).st_ino
+        Edit().run({"path": self.path, "old_str": "line2", "new_str": "CHANGED"}, self.ctx)
+        self.assertNotEqual(os.stat(self.path).st_ino, before)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o750)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits")
+    def test_write_new_file_uses_umask_default(self):
+        Write().run({"path": self.tmp.name, "filename": "new.txt", "content": "hi\n"}, self.ctx)
+        current = os.umask(0o022)
+        os.umask(current)
+        mode = stat.S_IMODE(os.stat(os.path.join(self.tmp.name, "new.txt")).st_mode)
+        self.assertEqual(mode, 0o666 & ~current)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX symlink semantics")
+    def test_edit_through_symlink_rewrites_target(self):
+        # the tool resolves the realpath, so the rename must land on the
+        # target file and leave the symlink itself in place
+        link = os.path.join(self.tmp.name, "link.txt")
+        os.symlink(self.path, link)
+        Edit().run({"path": link, "old_str": "line2", "new_str": "CHANGED"}, self.ctx)
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(self._contents(), "line1\nCHANGED\nline3\n")
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX symlink semantics")
+    def test_diff_applier_through_symlink_rewrites_target(self):
+        # os.replace onto a symlink would overwrite the LINK with a regular
+        # file and leave the real target stale; _apply_section resolves the
+        # realpath first.  This is the EditMac / EditWindows write path.
+        link = os.path.join(self.tmp.name, "link.txt")
+        os.symlink(self.path, link)
+        diff = self.DIFF.replace("victim.txt", "link.txt")
+        ok, msg = apply_unified_diff(diff, cwd=self.tmp.name, fallback_path=link)
+        self.assertTrue(ok, msg)
+        self.assertTrue(os.path.islink(link), "symlink was replaced by a regular file")
+        self.assertEqual(self._contents(), "line1\nCHANGED\nline3\n")
+
+    def test_edit_keeps_crlf_and_invalid_utf8_bytes(self):
+        # the temp write must be byte-exact: CRLF endings and undecodable
+        # bytes survive the read -> write -> replace round trip
+        raw = b"a\r\nline2\r\n\xff\xfe binary-ish\r\n"
+        p = os.path.join(self.tmp.name, "raw.txt")
+        with open(p, "wb") as f:
+            f.write(raw)
+        Edit().run({"path": p, "old_str": "line2", "new_str": "line2"}, self.ctx)
+        with open(p, "rb") as f:
+            self.assertEqual(f.read(), raw)
+
+
+class TestAtomicWriteText(unittest.TestCase):
+    """Direct tests for the shared helper the four writers delegate to.
+
+    The per-tool tests in TestWritesAreAtomic cover the integration; these
+    pin the helper's own contract so a future change cannot quietly weaken
+    it for all four callers at once.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "f.txt")
+        self.orig = "line1\nline2\n"
+        with open(self.path, "w") as f:
+            f.write(self.orig)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _strays(self):
+        return [n for n in sorted(os.listdir(self.tmp.name)) if n != "f.txt"]
+
+    def test_replaces_contents(self):
+        atomic_write_text(self.path, "new\n")
+        with open(self.path) as f:
+            self.assertEqual(f.read(), "new\n")
+        self.assertEqual(self._strays(), [])
+
+    def test_creates_a_missing_file(self):
+        fresh = os.path.join(self.tmp.name, "fresh.txt")
+        atomic_write_text(fresh, "hi\n")
+        with open(fresh) as f:
+            self.assertEqual(f.read(), "hi\n")
+
+    def test_write_failure_leaves_original_and_no_temp(self):
+        with (
+            mock.patch("pathlib.Path.write_text", side_effect=OSError("disk full")),
+            self.assertRaises(OSError),
+        ):
+            atomic_write_text(self.path, "new\n")
+        with open(self.path) as f:
+            self.assertEqual(f.read(), self.orig)
+        self.assertEqual(self._strays(), [])
+
+    def test_rename_failure_leaves_original_and_no_temp(self):
+        with (
+            mock.patch("os.replace", side_effect=OSError("cross-device link")),
+            self.assertRaises(OSError),
+        ):
+            atomic_write_text(self.path, "new\n")
+        with open(self.path) as f:
+            self.assertEqual(f.read(), self.orig)
+        self.assertEqual(self._strays(), [])
+
+    def test_temp_name_is_unique_per_call(self):
+        # a fixed ".tmp" would let concurrent sub-agent writers rename
+        # each other's half-written file into place
+        seen = []
+        real = Path.write_text
+
+        def record(self_path, *a, **k):
+            seen.append(str(self_path))
+            return real(self_path, *a, **k)
+
+        with mock.patch("pathlib.Path.write_text", new=record):
+            atomic_write_text(self.path, "one\n")
+            atomic_write_text(self.path, "two\n")
+        self.assertEqual(len(seen), 2)
+        self.assertNotEqual(seen[0], seen[1])
+        for name in seen:
+            self.assertTrue(name.startswith(self.path) and name.endswith(".tmp"), name)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits")
+    def test_existing_mode_is_inherited(self):
+        # assert the inode really was replaced, otherwise this would also
+        # pass for an in-place write (which preserves the mode trivially)
+        os.chmod(self.path, 0o750)
+        before = os.stat(self.path).st_ino
+        atomic_write_text(self.path, "new\n")
+        self.assertNotEqual(os.stat(self.path).st_ino, before)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o750)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits")
+    def test_chmod_failure_is_not_swallowed(self):
+        # a real mode-copy failure must abort (leaving the file intact)
+        # rather than silently shipping a file with the wrong permissions
+        with (
+            mock.patch("os.chmod", side_effect=PermissionError("nope")),
+            self.assertRaises(OSError),
+        ):
+            atomic_write_text(self.path, "new\n")
+        with open(self.path) as f:
+            self.assertEqual(f.read(), self.orig)
+        self.assertEqual(self._strays(), [])
+
+    def test_directory_not_writable_fails_safely(self):
+        # the temp file needs a writable DIRECTORY; when it is not, the
+        # helper must fail without touching the original
+        if os.geteuid() == 0:
+            self.skipTest("root ignores directory permissions")
+        os.chmod(self.tmp.name, 0o500)
+        try:
+            with self.assertRaises(OSError):
+                atomic_write_text(self.path, "new\n")
+            with open(self.path) as f:
+                self.assertEqual(f.read(), self.orig)
+        finally:
+            os.chmod(self.tmp.name, 0o700)
 
 
 if __name__ == "__main__":
