@@ -1,4 +1,4 @@
-"""Tool base classes, the tool registry, and shared tool helpers."""
+"""Tool base classes, the tool registry."""
 
 from __future__ import annotations
 
