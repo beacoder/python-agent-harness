@@ -108,6 +108,28 @@ class TestFinalAnswerText(unittest.TestCase):
         ]
         self.assertEqual(final_answer_text(session), "So the answer is 2.")
 
+    def test_skips_check_only_trailing_message(self):
+        session = mock.Mock()
+        session.last_messages = [
+            Message(role="user", content="hi"),
+            Message(role="assistant", content="Hello! How can I help you today?"),
+            Message(
+                role="assistant",
+                content="[FINAL CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence: e",
+            ),
+        ]
+        self.assertEqual(final_answer_text(session), "Hello! How can I help you today?")
+
+    def test_empty_when_all_assistant_messages_check_only(self):
+        session = mock.Mock()
+        session.last_messages = [
+            Message(
+                role="assistant",
+                content="[FINAL CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence: e",
+            ),
+        ]
+        self.assertEqual(final_answer_text(session), "")
+
     def test_empty_when_no_assistant_message(self):
         session = mock.Mock()
         session.last_messages = [Message(role="user", content="hi")]
