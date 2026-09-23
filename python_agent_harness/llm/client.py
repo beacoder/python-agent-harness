@@ -268,9 +268,6 @@ def _resolve_ca_bundle() -> str | bool:
         "/etc/pki/tls/certs/ca-bundle.crt",
         "/etc/ssl/certs/ca-certificates.crt",
         "/etc/ssl/ca-bundle.pem",
-        # Windows (Git for Windows, conda, etc.)
-        os.path.join(os.environ.get("PROGRAMFILES", ""), "Git", "mingw64", "ssl", "cert.pem"),
-        os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "Git", "mingw64", "ssl", "cert.pem"),
         os.path.join(os.environ.get("CONDA_PREFIX", ""), "ssl", "cert.pem"),
     ):
         if cand and os.path.isfile(cand):
@@ -1049,16 +1046,9 @@ def _shutdown_and_close(sock: _socket.socket) -> None:
     after, so a new socket could reuse the fd number before the
     reader observed the EOF.  The grace sleep delays the fd release
     so the woken thread can observe the EOF on the old fd first.
-
-    On Windows, ``shutdown(SHUT_RDWR)`` on the client socket causes
-    ``WinError 10058`` on the server side when it tries to read,
-    producing noisy BrokenPipeError tracebacks.  Skipping shutdown
-    and just closing the fd is sufficient — Windows ``close()``
-    triggers a TCP RST that reliably wakes the blocked read.
     """
-    if sys.platform != "win32":
-        with contextlib.suppress(OSError):
-            sock.shutdown(_socket.SHUT_RDWR)
+    with contextlib.suppress(OSError):
+        sock.shutdown(_socket.SHUT_RDWR)
     if sys.platform == "darwin":
         # macOS only; on Linux shutdown() alone reliably wakes the
         # blocked recv (measured: <200ms unblock, no sleeps needed).
