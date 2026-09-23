@@ -152,7 +152,7 @@ class CommandMixin:
 
         Backslashes are pre-escaped so POSIX shlex keeps them literal
         (``\\U`` etc. would otherwise be consumed as escape sequences
-        and mangle Windows paths like ``C:\\Users\\...``).
+        and mangle paths containing backslashes).
         """
         try:
             return shlex.split(arg.replace("\\", "\\\\"))
