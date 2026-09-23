@@ -306,6 +306,7 @@ protocols with one parser.
 | `/clear` | Start a fresh conversation |
 | `/model [name]` | Switch LLM profiles; `default` restores the session's original model |
 | `/agent [name]` | Switch agent system prompt; `default` restores the built-in `agent.md` |
+| `/help` | List the available commands |
 | `/exit` | Quit |
 
 Custom commands from `prompts/commands/*.md` are registered as slash commands as well (TUI only).
@@ -350,12 +351,13 @@ Requires Python ≥ 3.11. CI runs against Python 3.11, 3.12, and 3.13 on Linux a
 make test                           # unit tests
 venv/bin/pip install -e ".[dev]"    # development tools
 venv/bin/ruff check .               # lint
+venv/bin/ruff format --check .      # formatting (CI blocks on this too)
 venv/bin/pyright                    # type checking
 venv/bin/python -m build            # build sdist + wheel
 venv/bin/pip-audit                  # dependency audit
 ```
 
-CI blocks on Ruff and Pyright failures.
+CI blocks on Ruff (lint **and** `format --check`) and Pyright failures.
 
 ## Design philosophy
 
