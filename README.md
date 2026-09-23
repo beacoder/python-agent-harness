@@ -344,7 +344,7 @@ You are a personal assistant. You do NOT modify files or run shell commands.
 
 ## Development
 
-Requires Python ≥ 3.11. CI runs against Python 3.11, 3.12, and 3.13 on Linux, MacOS and Windows.
+Requires Python ≥ 3.11. CI runs against Python 3.11, 3.12, and 3.13 on Linux and MacOS.
 
 ```sh
 make test                           # unit tests
