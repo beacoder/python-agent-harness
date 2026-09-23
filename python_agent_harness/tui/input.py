@@ -5,7 +5,6 @@ InputMixin that provides prompt reading and question blocking.
 from __future__ import annotations
 
 import os
-import sys
 import threading
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
@@ -44,13 +43,13 @@ def _option_label(opt: Any) -> str:
 @contextmanager
 def _safe_patch_stdout():
     """patch_stdout that degrades to a no-op when the terminal output
-    cannot be created (e.g. headless Windows CI without a console).
+    cannot be created (e.g. headless CI without a console).
 
     ``patch_stdout`` fails in ``__enter__``: StdoutProxy reads
     ``app_session.output``, which triggers ``create_output`` and raises
-    ``NoConsoleScreenBufferError`` on a headless Windows console.  We
-    force output creation up front; if it fails, skip patching (the
-    body's own exceptions still propagate normally).
+    when no console is available.  We force output creation up front;
+    if it fails, skip patching (the body's own exceptions still
+    propagate normally).
     """
     try:
         from prompt_toolkit.application.current import get_app_session
@@ -152,15 +151,11 @@ def _make_prompt_session(
     then bails out without inserting the common part).  Tab must be the
     single, deterministic trigger.
 
-    ``enable_suspend`` is off on Windows: Ctrl-Z (suspend) is a Unix
-    terminal feature with no Windows equivalent.
-
-    On Windows without a real console (headless CI, redirected stdout),
-    prompt_toolkit raises ``NoConsoleScreenBufferError`` while creating
-    the default ``Win32Output``.  The fallback rebuilds the session with
-    a no-op ``DummyOutput`` so the TUI can still be constructed; on a
-    real terminal the first attempt succeeds and the fallback is never
-    reached.
+    Without a real console (headless CI, redirected stdout),
+    prompt_toolkit raises while creating the default output.  The
+    fallback rebuilds the session with a no-op ``DummyOutput`` so the
+    TUI can still be constructed; on a real terminal the first attempt
+    succeeds and the fallback is never reached.
     """
     try:
         return PromptSession(
@@ -169,11 +164,11 @@ def _make_prompt_session(
             completer=completer,
             complete_while_typing=False,
             multiline=True,
-            enable_suspend=sys.platform != "win32",
+            enable_suspend=True,
             **kwargs,
         )
     except Exception:
-        # No console available (headless Windows CI): use a no-op output.
+        # No console available (headless CI): use a no-op output.
         from prompt_toolkit.output import DummyOutput
 
         return PromptSession(
