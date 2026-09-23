@@ -112,8 +112,6 @@ def _uri_to_path(uri: str) -> str:
     parsed = urlparse(uri)
     if parsed.scheme == "file":
         path = unquote(parsed.path)
-        if os.name == "nt" and path.startswith("/") and len(path) >= 3 and path[2] == ":":
-            path = path[1:]
         return os.path.normpath(path)
     return uri
 
