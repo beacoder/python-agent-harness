@@ -1,11 +1,6 @@
 PYTHON ?= python3
 VENV ?= venv
-# Windows venvs use Scripts/ instead of bin/
-ifeq ($(OS),Windows_NT)
-    BIN := Scripts
-else
-    BIN := bin
-endif
+BIN := bin
 PIP = $(VENV)/$(BIN)/pip
 PY = $(VENV)/$(BIN)/python
 
