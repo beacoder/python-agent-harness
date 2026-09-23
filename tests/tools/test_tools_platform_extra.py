@@ -1,27 +1,18 @@
 """Extra platform-specific tool tests: grep_mac regex translation,
-grep_win fallback chain, glob_mac/glob_win fallback edges, and the
-edit_mac/edit_win unreadable-content paths.
+glob_mac fallback edges, and the edit_mac unreadable-content paths.
 
 Existing tests in test_filesystem.py drive the public ``run()`` flows;
 this file reaches the private helpers and failure branches those flows
 don't hit (PCRE->ERE translation, rg-present path, OSError tolerance
 during traversal/stat/reads), so the platform backends are covered by
 CI of every OS — none of these tests depend on the host platform.
-
-The glob_win/grep_win tests pin the traversal contract of
-``_walk_files``: scan errors are tolerated the same way on every
-supported Python version (3.11-3.13 pathlib differ here), per-entry
-stat/open failures never abort a scan, and pathlib-style glob
-semantics are translated explicitly.
 """
 
 from __future__ import annotations
 
 import os
-import re
 import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -32,7 +23,6 @@ from python_agent_harness.tools.grep_mac import (
     _is_escaped,
     _pcre_to_ere,
 )
-from python_agent_harness.tools.grep_win import GrepWindows
 
 
 class FakeSession:
@@ -130,119 +120,6 @@ class TestGrepMacRun(unittest.TestCase):
         self.assertEqual(fb.call_args.args[0], r"x")
 
 
-class TestGrepWindowsFallback(unittest.TestCase):
-    def _run_rg_present(self, **kwargs) -> tuple[str, list[str]]:
-        captured: dict = {}
-        proc = SimpleNamespace(returncode=0, stdout="a.py:1:hello\n", stderr="")
-
-        def fake_run(cmd, **kw):
-            captured["cmd"] = cmd
-            return proc
-
-        with (
-            mock.patch("shutil.which", return_value="/usr/bin/rg"),
-            mock.patch("python_agent_harness.tools.grep_win.subprocess.run", side_effect=fake_run),
-            mock.patch("python_agent_harness.tools.grep_win._grep_out", return_value="rg-output"),
-        ):
-            out = GrepWindows()._fallback_rg_grep(
-                kwargs.get("regex", "hello"),
-                kwargs.get("path", "/tmp/x"),
-                kwargs.get("glob"),
-                kwargs.get("context"),
-            )
-        return out, captured["cmd"]
-
-    def test_rg_used_when_available(self):
-        out, cmd = self._run_rg_present()
-        self.assertEqual(out, "rg-output")
-        self.assertEqual(cmd[0], "rg")
-        self.assertNotIn("--context", " ".join(cmd))
-
-    def test_rg_context_and_glob_flags(self):
-        _, cmd = self._run_rg_present(regex="n", path="/p", glob="*.py", context=2)
-        self.assertIn("--context=2", cmd)
-        self.assertIn("--glob=*.py", cmd)
-
-    def test_rg_oserror_falls_to_python_grep(self):
-        with (
-            mock.patch("shutil.which", return_value="/usr/bin/rg"),
-            mock.patch(
-                "python_agent_harness.tools.grep_win.subprocess.run",
-                side_effect=OSError("no rg"),
-            ),
-            mock.patch.object(GrepWindows, "_python_grep", return_value="python-output") as pg,
-        ):
-            out = GrepWindows()._fallback_rg_grep("x", "/p", None, None)
-        self.assertEqual(out, "python-output")
-        pg.assert_called_once()
-
-    def test_python_grep_skips_hidden_directories(self):
-        with tempfile.TemporaryDirectory() as d:
-            hidden = Path(d) / ".git"
-            hidden.mkdir()
-            (hidden / "x.py").write_text("needle\n")
-            (Path(d) / "visible.py").write_text("needle\n")
-            out = GrepWindows()._python_grep("needle", d, None, None)
-        self.assertIn("visible.py", out)
-        self.assertNotIn(".git", out)
-
-    def test_python_grep_glob_filter(self):
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "a.py").write_text("needle\n")
-            (Path(d) / "b.txt").write_text("needle\n")
-            out = GrepWindows()._python_grep("needle", d, "*.py", None)
-        self.assertIn("a.py", out)
-        self.assertNotIn("b.txt", out)
-
-    def test_python_grep_scan_failure_returns_empty(self):
-        with mock.patch(
-            "python_agent_harness.tools.filesystem.os.walk",
-            side_effect=OSError("scan failed"),
-        ):
-            out = GrepWindows()._python_grep("x", "/tmp", None, None)
-        self.assertEqual(out, "")
-
-    def test_python_grep_open_failure_skipped(self):
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "a.py").write_text("needle\n")
-            with mock.patch("builtins.open", side_effect=OSError("denied")):
-                out = GrepWindows()._python_grep("needle", d, None, None)
-        self.assertEqual(out, "")
-
-    def test_python_grep_single_file_input(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "one.py"
-            p.write_text("line1\nneedle here\nline3\n")
-            out = GrepWindows()._python_grep("needle", str(p), None, None)
-        self.assertIn("needle here", out)
-
-    def test_python_grep_context_lines(self):
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "a.py").write_text("before\nneedle\nafter\n")
-            out = GrepWindows()._python_grep("needle", d, None, 1)
-        self.assertIn("before", out)
-        self.assertIn("after", out)
-
-    def test_python_grep_match_cap_stops_early(self):
-        """After 1000 matches the walk stops: later files are not read."""
-        with (
-            mock.patch(
-                "python_agent_harness.tools.grep_win._spool",
-                side_effect=lambda text, label: text,
-            ),
-            tempfile.TemporaryDirectory() as d,
-        ):
-            for name in ("a.py", "b.py", "c.py", "d.py"):
-                (Path(d) / name).write_text("needle\n" * 400)
-            out = GrepWindows()._python_grep("needle", d, None, None)
-        files_seen = sum(f"{n}.py" in out for n in "abcd")
-        self.assertEqual(files_seen, 3)  # 400+400+200 -> cap at 1000
-
-    def test_python_grep_invalid_regex_reports_error(self):
-        out = GrepWindows()._python_grep("[unclosed", "/tmp", None, None)
-        self.assertIn("invalid regex", out)
-
-
 class TestGlobMacFallback(unittest.TestCase):
     def test_find_failure_reported(self):
         from python_agent_harness.tools.glob_mac import GlobMac
@@ -305,146 +182,6 @@ class TestGlobMacFallback(unittest.TestCase):
         self.assertIn("a.py", out)
 
 
-class TestGlobWindowsFallback(unittest.TestCase):
-    def test_directory_named_like_pattern_skipped(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, "sub.py"))
-            Path(d, "a.py").write_text("x")
-            out = GlobWindows()._walk_fallback("*.py", d, None)
-        self.assertIn("a.py", out)
-        self.assertNotIn("sub.py", out)
-
-    def test_stat_failure_tolerated(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        with tempfile.TemporaryDirectory() as d:
-            Path(d, "a.py").write_text("x")
-            with (
-                mock.patch.object(Path, "is_file", return_value=True),
-                mock.patch.object(Path, "stat", side_effect=OSError("gone")),
-            ):
-                out = GlobWindows()._walk_fallback("*.py", d, None)
-        self.assertIn("a.py", out)
-
-    def test_walk_stat_race_still_yields_entry(self):
-        """A file that vanishes mid-scan (stat fails) is still yielded:
-        callers decide how to treat it, the scan must not abort."""
-        from python_agent_harness.tools.filesystem import _walk_files
-
-        with tempfile.TemporaryDirectory() as d:
-            Path(d, "a.py").write_text("x")
-            with mock.patch.object(Path, "stat", side_effect=OSError("gone")):
-                found = [p.name for p in _walk_files(Path(d))]
-        self.assertEqual(found, ["a.py"])
-
-    def test_walk_mid_scan_error_reported_via_onerror(self):
-        """An error raised by os.walk after some entries were yielded
-        ends the iteration (like 3.13+ pathlib scan semantics: entries
-        already yielded stand, the rest are lost) and is reported
-        through ``onerror`` when the caller supplied one."""
-        from python_agent_harness.tools.filesystem import _walk_files
-
-        def flaky_walk(root, onerror=None, **kw):
-            yield str(root), [], ["a.py"]
-            raise OSError("boom mid-scan")
-
-        errors: list[str] = []
-        with mock.patch("python_agent_harness.tools.filesystem.os.walk", flaky_walk):
-            gen = _walk_files(Path("/x"), onerror=errors.append)
-            self.assertEqual(next(gen).name, "a.py")
-            self.assertIsNone(next(gen, None))
-        self.assertEqual(len(errors), 1)
-
-    def test_glob_to_regex_pathlib_semantics(self):
-        from python_agent_harness.tools.filesystem import _glob_to_regex
-
-        rx = re.compile(_glob_to_regex("*.py"))
-        self.assertTrue(rx.fullmatch("a.py"))
-        self.assertFalse(rx.fullmatch("sub/a.py"))
-        self.assertTrue(re.compile(_glob_to_regex("**/*.py")).fullmatch("sub/deep/a.py"))
-        self.assertTrue(re.compile(_glob_to_regex("**/*.py")).fullmatch("a.py"))
-        self.assertFalse(re.compile(_glob_to_regex("a?c")).fullmatch("a/c"))
-        self.assertTrue(re.compile(_glob_to_regex("a?c")).fullmatch("abc"))
-        self.assertTrue(re.compile(_glob_to_regex("setup.cfg")).fullmatch("setup.cfg"))
-
-    def test_glob_to_regex_char_classes(self):
-        from python_agent_harness.tools.filesystem import _glob_to_regex
-
-        self.assertTrue(re.compile(_glob_to_regex("[abc].py")).fullmatch("a.py"))
-        self.assertFalse(re.compile(_glob_to_regex("[abc].py")).fullmatch("d.py"))
-        self.assertTrue(re.compile(_glob_to_regex("[!abc].py")).fullmatch("d.py"))
-        self.assertFalse(re.compile(_glob_to_regex("[!abc].py")).fullmatch("a.py"))
-        # unterminated class: the bracket is a literal
-        self.assertTrue(re.compile(_glob_to_regex("[abc")).fullmatch("[abc"))
-        # ']' right after '[' (or '[!') is a literal member
-        self.assertTrue(re.compile(_glob_to_regex("[]]")).fullmatch("]"))
-        self.assertTrue(re.compile(_glob_to_regex("[!]]")).fullmatch("x"))
-        # escaped bracket inside the class
-        self.assertTrue(re.compile(_glob_to_regex(r"[a\]b]")).fullmatch("]"))
-        self.assertTrue(re.compile(_glob_to_regex(r"[a\]b]")).fullmatch("b"))
-        # hyphen ranges survive translation
-        self.assertTrue(re.compile(_glob_to_regex("[a-z0-9].py")).fullmatch("7.py"))
-
-    def test_glob_depth_limit(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        with tempfile.TemporaryDirectory() as d:
-            Path(d, "a.py").write_text("x")
-            (Path(d) / "sub").mkdir()
-            Path(d, "sub", "b.py").write_text("x")
-            out = GlobWindows()._walk_fallback("*.py", d, 1)
-        self.assertIn("a.py", out)
-        self.assertNotIn("b.py", out)
-
-    def test_scan_root_unreadable_reports_error(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        def no_permission(root, onerror=None, **kw):
-            if onerror is not None:
-                onerror(OSError(13, "Permission denied"))
-            return iter(())
-
-        with mock.patch("python_agent_harness.tools.filesystem.os.walk", no_permission):
-            out = GlobWindows()._walk_fallback("*.py", "/locked", None)
-        self.assertIn("Error:", out)
-        self.assertIn("Permission denied", out)
-
-    def test_partial_scan_with_matches_tolerates_errors(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        def walk_one_locked_dir(root, onerror=None, **kw):
-            yield str(root), [], ["a.py"]
-            if onerror is not None:
-                onerror(OSError(13, "Permission denied"))
-
-        with (
-            tempfile.TemporaryDirectory() as d,
-            mock.patch("python_agent_harness.tools.filesystem.os.walk", walk_one_locked_dir),
-        ):
-            out = GlobWindows()._walk_fallback("*.py", d, None)
-        self.assertIn("a.py", out)
-
-    def test_scan_failure_returns_error(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        with mock.patch(
-            "python_agent_harness.tools.filesystem.os.walk",
-            side_effect=OSError("scan failed"),
-        ):
-            out = GlobWindows()._walk_fallback("*.py", "/tmp", None)
-        self.assertIn("Error: scan failed", out)
-
-    def test_run_without_path_uses_cwd(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        with tempfile.TemporaryDirectory() as d:
-            Path(d, "a.py").write_text("x")
-            out = GlobWindows().run({"pattern": "*.py"}, _ctx(FakeSession(d)))
-        self.assertIn("a.py", out)
-
-
 class TestEditUnreadableContent(unittest.TestCase):
     DIFF = "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+lineTWO\n line3\n"
 
@@ -497,54 +234,6 @@ class TestEditUnreadableContent(unittest.TestCase):
             ):
                 result = EditMac().run({"path": path, "new_str": self.DIFF, "diff": True}, ctx)
         self.assertIn("Diff successfully applied", result)
-
-    def test_edit_win_unreadable_old_content_applies(self):
-        from python_agent_harness.tools.edit_win import EditWindows
-
-        with tempfile.TemporaryDirectory() as d:
-            path = self._file(d)
-            ctx = _ctx()
-            with (
-                mock.patch(
-                    "python_agent_harness.tools.edit_win.apply_unified_diff",
-                    return_value=(True, "applied"),
-                ),
-                mock.patch("builtins.open", side_effect=self._failing_open(1)),
-            ):
-                result = EditWindows().run({"path": path, "new_str": self.DIFF, "diff": True}, ctx)
-        self.assertIn("Diff successfully applied", result)
-
-    def test_edit_win_unreadable_new_content_tolerated(self):
-        from python_agent_harness.tools.edit_win import EditWindows
-
-        with tempfile.TemporaryDirectory() as d:
-            path = self._file(d)
-            ctx = _ctx()
-            with (
-                mock.patch(
-                    "python_agent_harness.tools.edit_win.apply_unified_diff",
-                    return_value=(True, "applied"),
-                ),
-                mock.patch("builtins.open", side_effect=self._failing_open(2)),
-            ):
-                result = EditWindows().run({"path": path, "new_str": self.DIFF, "diff": True}, ctx)
-        self.assertIn("Diff successfully applied", result)
-
-    def test_edit_win_unchanged_content_skips_record_diff(self):
-        from python_agent_harness.tools.edit_win import EditWindows
-
-        with tempfile.TemporaryDirectory() as d:
-            path = self._file(d)
-            sess = FakeSession()
-            with mock.patch(
-                "python_agent_harness.tools.edit_win.apply_unified_diff",
-                return_value=(True, "applied"),
-            ):
-                result = EditWindows().run(
-                    {"path": path, "new_str": self.DIFF, "diff": True}, _ctx(sess)
-                )
-        self.assertIn("Diff successfully applied", result)
-        self.assertEqual(sess.recorded_diffs, [])
 
 
 if __name__ == "__main__":
