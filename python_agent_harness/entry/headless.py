@@ -25,6 +25,7 @@ from typing import Any, TextIO
 from ..io.text_filter import strip_final_check
 from ..session.session import Session
 from .controller import Controller
+from .view import FilteredDeltaStream
 
 
 def _cancelled_now(session: Any) -> bool:
@@ -355,6 +356,9 @@ class JsonlView(HeadlessView):
         # Caller-supplied correlation id echoed on every line (the
         # controller's exec id, typically); None omits the field.
         self.run_id = run_id
+        # [FINAL CHECK] filtering of the delta stream (see
+        # FilteredDeltaStream); reset at every message boundary.
+        self._deltas = FilteredDeltaStream()
 
     def _write(self, payload: dict[str, Any]) -> None:
         self._seq += 1
@@ -373,10 +377,27 @@ class JsonlView(HeadlessView):
 
     # deltas carry no meaning beyond concatenation, but stream them so
     # a driver can render progress; the result line remains canonical.
+    # The [FINAL CHECK] block is filtered out of the stream (TUI
+    # parity) — see FilteredDeltaStream.
     def on_delta(self, text: str) -> None:
-        self._emit({"type": "delta", "text": text})
+        chunk = self._deltas.feed(text)
+        if chunk:
+            self._emit({"type": "delta", "text": chunk})
+
+    def _flush_deltas(self) -> None:
+        """Release the delta stream's held tail and end the message."""
+        chunk = self._deltas.flush()
+        if chunk:
+            self._emit({"type": "delta", "text": chunk})
 
     def on_notify(self, kind: str, data: Any = None) -> None:
+        if kind in ("tool_start", "retry"):
+            # Message boundary: the streamed text is a committed
+            # assistant message (tool_start) or a discarded partial
+            # response (retry); either way the held tail can no longer
+            # turn into a [FINAL CHECK] block, so release it and start
+            # the next message with a fresh stream.
+            self._flush_deltas()
         self._emit({"type": "notify", "kind": kind, "data": data})
         # Mirror "error" onto stderr as plain text and record it (the
         # parent's contract) so a failed run is diagnosable without
@@ -414,6 +435,11 @@ class JsonlView(HeadlessView):
         ``model`` names the model that served the run; ``cancelled``
         marks a signal-triggered stop.
         """
+        # Release any tail the delta filter is still holding, so the
+        # concatenated deltas are complete before the result line lands.
+        # Done outside the lock: _emit acquires it and it is not
+        # reentrant.
+        self._flush_deltas()
         with self._lock:
             self._buffer = None
             payload: dict[str, Any] = {
