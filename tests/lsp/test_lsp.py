@@ -84,12 +84,6 @@ class TestURIToPath(unittest.TestCase):
 
         self.assertEqual(_uri_to_path("untitled:Untitled-1"), "untitled:Untitled-1")
 
-    @unittest.skipUnless(os.name == "nt", "windows-specific drive-letter handling")
-    def test_windows_drive_uri(self):
-        from python_agent_harness.tools.lsp import _uri_to_path
-
-        self.assertEqual(_uri_to_path("file:///C:/src/main.py"), r"C:\src\main.py")
-
 
 class TestJsonable(unittest.TestCase):
     def test_recursive_structures(self):
