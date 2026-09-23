@@ -358,7 +358,7 @@ class Session:
         if name == "Edit" and args.get("old_str") is None and args.get("diff") is not False:
             # diff/patch mode: the `path` argument is NOT enough — the
             # patch applies to the paths inside the diff itself, and the
-            # macOS/Windows Python applier honors absolute `+++` targets.
+            # Python applier honors absolute `+++` targets.
             content = args.get("new_str")
             if isinstance(content, str) and content.strip():
                 return self._plan_diff_verdict(args)
