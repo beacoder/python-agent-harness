@@ -43,7 +43,7 @@ from ..llm.client import LLMClient
 from ..session import config
 from ..tools.base import PendingToolResult
 from .context_manager import ContextManager
-from .models import Message, ToolCall
+from .models import Message, ToolCall, display_args
 from .token_estimator import context_window_for, estimate_payload_tokens
 from .tool_runner import (
     NIL_RESULT_PLACEHOLDER,  # noqa: F401  (re-exported for backward compat)
@@ -621,6 +621,15 @@ class AgentLoop:
             self.session.last_messages = list(self.messages)
             names = [tc.name for tc in self.pending]
             self.session.notify("tool_start", names)
+            # Additive companion event: the same round, but with each
+            # call's arguments so a hosting UI can show WHAT is about to
+            # run ("Bash(command='ls -la')"), which bare names cannot
+            # convey.  Kept separate from tool_start so the payload shape
+            # of the documented protocol stays backward compatible.
+            self.session.notify(
+                "tool_calls",
+                [{"name": tc.name, "args": display_args(tc.arguments)} for tc in self.pending],
+            )
         self._execute_pending()
 
     def _handle_tret(self) -> None:
