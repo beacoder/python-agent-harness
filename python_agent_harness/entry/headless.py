@@ -67,10 +67,9 @@ class signal_canceller:
     process dying mid-run the session's cancel machinery runs — the
     agent loop unwinds through its normal cancel path and the runner
     still emits its final ``result`` line (with ``cancelled: true``).
-    Windows delivers only SIGINT (CTRL_C_EVENT / CTRL_BREAK): SIGTERM
-    registration is attempted but a failure (ValueError on some
-    platforms/signals) is tolerated — on Windows a hard kill leaves
-    no final line, which the driver already handles as "process died".
+    SIGTERM registration is attempted but a failure (ValueError on
+    some platforms/signals) is tolerated — a hard kill leaves no final
+    line, which the driver already handles as "process died".
 
     The previous handlers are restored on exit (including when the
     body raises).  Only the main thread may install handlers; from
