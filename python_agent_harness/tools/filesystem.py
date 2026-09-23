@@ -262,7 +262,7 @@ def atomic_write_text(path: str, content: str) -> None:
     - ``errors="surrogateescape"`` and ``newline=""`` match the tools'
       read side, so invalid UTF-8 bytes (Latin-1, GBK, ...) round-trip
       and the content is written byte-for-byte instead of having "\\n"
-      translated to ``os.linesep`` on Windows.
+      translated to ``os.linesep``.
     - The temp name carries a random suffix rather than a fixed ".tmp":
       concurrent sub-agents can edit the same path, and a shared name
       would let one writer rename the other's half-written file into
