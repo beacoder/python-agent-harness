@@ -835,7 +835,7 @@ class TestPlanModeWriteGuard(unittest.TestCase):
     def test_plan_mode_diff_mode_cannot_escape_via_section_paths(self):
         """Regression: an Edit diff whose `path` was the plan file but
         whose `+++` header named another file used to be applied by the
-        macOS/Windows Python applier — the guard only checked `path`."""
+        Python applier — the guard only checked `path`."""
         with (
             tempfile.TemporaryDirectory(prefix="pah-prop-plan-") as tmpdir,
             tempfile.TemporaryDirectory(prefix="pah-prop-plan-out-") as outside,
