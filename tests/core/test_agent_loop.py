@@ -64,6 +64,31 @@ class TestAgentLoop(unittest.TestCase):
         kind, data = error_notifications[0]
         self.assertEqual(data, "Error: API error 429: no quota")
 
+    def test_tool_calls_notification_carries_names_and_args(self):
+        """``tool_start`` announces the round with bare names; the
+        additive ``tool_calls`` event carries each call's arguments so a
+        hosting UI can show WHAT is about to run.  Both must fire, and
+        tool_start's payload shape must stay a plain list of names (the
+        TUI joins it, and it is a documented protocol contract)."""
+        session = RecordingSession()
+        notified: list[tuple[str, object]] = []
+        session.notify_fn = lambda kind, data=None: notified.append((kind, data))
+        session.client.script = [
+            ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x.py"}')]),
+            "done",
+        ]
+        loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
+        loop.run()
+
+        starts = [d for k, d in notified if k == "tool_start"]
+        calls = [d for k, d in notified if k == "tool_calls"]
+        self.assertEqual(starts, [["Read"]])  # unchanged: plain names
+        self.assertEqual(calls, [[{"name": "Read", "args": {"file_path": "'/tmp/x.py'"}}]])
+        # tool_calls must follow tool_start, so a UI can enrich the row
+        # tool_start just opened
+        kinds = [k for k, _ in notified]
+        self.assertLess(kinds.index("tool_start"), kinds.index("tool_calls"))
+
     def test_subagent_budget_exhausted_returns_last_real_text(self):
         """Round-budget exhaustion must surface the last real assistant
         text, never a trailing tool result or an empty string."""
