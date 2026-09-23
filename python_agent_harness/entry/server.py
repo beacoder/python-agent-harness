@@ -167,6 +167,7 @@ class ServerView(JsonlView):
             self._seq = 0
         self._cancelled.clear()
         self.run_id = run_id
+        self._deltas.reset()
 
     # -- HeadlessView overrides -------------------------------------------------
 
