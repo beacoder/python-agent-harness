@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -65,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
@@ -86,20 +86,8 @@ jobs:
         run: coverage run -m unittest discover -t . -s tests -v
 
       # `coverage report` enforces `fail_under` (95% from pyproject.toml).
-      # Windows reports at a lower floor with tools/bash.py omitted: that
-      # module is the posix PTY/spawn backend — on Windows only its
-      # module-level definitions execute (tools/bash_win.py runs instead),
-      # so its body is structurally unmeasurable there.  Wine-measured
-      # Windows coverage is ~93.5% overall and ~95.5% without bash.py (a
-      # lower bound: real CI has git, mcp and prompt_toolkit available).
       - name: Coverage report (enforces fail_under)
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            coverage report --fail-under=94 --omit="python_agent_harness/tools/bash.py"
-          else
-            coverage report
-          fi
+        run: coverage report
 
       - name: Coverage XML
         if: always()
@@ -119,7 +107,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -136,9 +124,7 @@ jobs:
         shell: bash
         run: |
           python -m venv /tmp/wheeltest
-          # Find the venv's python (bin/ on Unix, Scripts/ on Windows)
           VENV_PY=/tmp/wheeltest/bin/python
-          if [ ! -f "$VENV_PY" ]; then VENV_PY=/tmp/wheeltest/Scripts/python; fi
           "$VENV_PY" -m pip install --upgrade pip
           "$VENV_PY" -m pip install dist/*.whl
 
@@ -152,14 +138,12 @@ jobs:
           NEUTRAL_DIR=$(mktemp -d)
           cd "$NEUTRAL_DIR"
           BIN=/tmp/wheeltest/bin/python-agent-harness
-          if [ ! -f "$BIN" ]; then BIN=/tmp/wheeltest/Scripts/python-agent-harness; fi
           # Console script is installed and importable
           "$BIN" --help
           # Config subcommand runs without any API key / network
           "$BIN" config
           # Module entry point works too
           PY=/tmp/wheeltest/bin/python
-          if [ ! -f "$PY" ]; then PY=/tmp/wheeltest/Scripts/python; fi
           "$PY" -m python_agent_harness --help
           # Import resolves to the INSTALLED wheel + bundled prompts shipped
           "$PY" - <<'PY'
@@ -185,7 +169,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
 
