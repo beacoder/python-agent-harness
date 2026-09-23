@@ -80,8 +80,7 @@ class TestPlanTempDir(unittest.TestCase):
     def test_tmpdir_env_wins(self):
         with mock.patch.dict(os.environ, {"TMPDIR": "/custom/tmp"}, clear=False):
             result = _plan_temp_dir()
-            # On Windows, abspath converts /custom/tmp to C:/custom/tmp or similar
-            # We just check it's a valid path and contains "custom" and "tmp"
+            # just check it's a valid path containing "custom" and "tmp"
             self.assertIn("custom", result)
             self.assertIn("tmp", result)
 
