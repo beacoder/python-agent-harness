@@ -819,6 +819,14 @@ class TestServerView(unittest.TestCase):
         m4.text_without_reasoning.return_value = "  "
         self.session.last_messages = [m4]
         self.assertEqual(server._final_answer(), "")
+        m5 = mock.Mock(role="assistant")
+        m5.text_without_reasoning.return_value = "real answer"
+        m6 = mock.Mock(role="assistant")
+        m6.text_without_reasoning.return_value = (
+            "[FINAL CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence: e"
+        )
+        self.session.last_messages = [m5, m6]
+        self.assertEqual(server._final_answer(), "real answer")
 
     def test_usage_snapshot_shape(self):
         """Non-numeric/bool usage entries are ignored; missing dict -> None."""
