@@ -3,7 +3,14 @@
 import json
 import unittest
 
-from python_agent_harness.core.models import Message, ToolCall, ToolSpec, Usage
+from python_agent_harness.core.models import (
+    Message,
+    ToolCall,
+    ToolSpec,
+    Usage,
+    arg_repr,
+    display_args,
+)
 
 
 class TestMessageText(unittest.TestCase):
@@ -124,6 +131,40 @@ class TestToolSpecAndUsage(unittest.TestCase):
     def test_usage_defaults(self):
         u = Usage()
         self.assertEqual((u.input_tokens, u.output_tokens), (0, 0))
+
+
+class TestDisplayArgs(unittest.TestCase):
+    """display_args builds the short tool-call labels shown by the TUI
+    and shipped to hosting UIs on the ``tool_calls`` notify event."""
+
+    def test_decoded_args_become_repr_pairs(self):
+        self.assertEqual(
+            display_args({"command": "ls -la", "timeout": 30}),
+            {"command": "'ls -la'", "timeout": "30"},
+        )
+
+    def test_raw_json_string_is_parsed(self):
+        self.assertEqual(display_args('{"file_path": "/tmp/a.py"}'), {"file_path": "'/tmp/a.py'"})
+
+    def test_unparseable_args_yield_nothing(self):
+        """A model can truncate its own JSON; a label is not worth raising."""
+        self.assertEqual(display_args("{file_path"), {})
+        self.assertEqual(display_args("[1, 2]"), {})  # valid JSON, not a dict
+
+    def test_content_is_excluded(self):
+        """A Write/Edit payload is megabytes -- far too big for a label,
+        and it is rendered as a diff instead."""
+        out = display_args({"file_path": "/a", "content": "x" * 5000})
+        self.assertEqual(out, {"file_path": "'/a'"})
+
+    def test_long_values_are_truncated(self):
+        out = display_args({"command": "echo " + "y" * 300})
+        self.assertEqual(len(out["command"]), 100)
+        self.assertTrue(out["command"].endswith("…"))
+
+    def test_arg_repr_keeps_short_values_intact(self):
+        self.assertEqual(arg_repr("ok"), "'ok'")
+        self.assertEqual(arg_repr(5), "5")
 
 
 if __name__ == "__main__":
