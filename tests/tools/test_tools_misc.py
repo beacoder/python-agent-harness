@@ -291,7 +291,6 @@ class TestAgentTool(unittest.TestCase):
         self.assertIn("Error: Task 'task' failed", result.wait())
 
 
-@unittest.skipUnless(sys.platform != "win32", "Bash process-group tests are Unix-only")
 class TestBashInternals(unittest.TestCase):
     """Bash process-group kill, bounded output collection, and
     read-failure containment."""
@@ -656,7 +655,7 @@ class TestToolInstructions(unittest.TestCase):
         self.assertIn("Edit", Read().instructions)
 
     def test_platform_variant_inherits_instructions(self):
-        """Platform-specific tool variants (Mac/Windows) must inherit
+        """Platform-specific tool variants (Mac) must inherit
         the instructions from their base class."""
         from python_agent_harness.tools.edit import Edit
         from python_agent_harness.tools.glob import GlobTool
@@ -664,7 +663,7 @@ class TestToolInstructions(unittest.TestCase):
 
         # Check that the instructions attribute is the same class-level
         # value (inherited, not overridden) on at least one platform
-        # variant — we can't test Mac/Windows variants directly on Linux,
+        # variant — we can't test Mac variants directly on Linux,
         # but we can verify the base classes have non-empty instructions
         self.assertTrue(Edit.instructions)
         self.assertTrue(GlobTool.instructions)
