@@ -7,7 +7,6 @@ Todos panel, and scrollback dump rendering.
 
 from __future__ import annotations
 
-import json
 import math
 import time
 from typing import TYPE_CHECKING, Any
@@ -19,7 +18,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ..core.models import ImagePart
+from ..core.models import ImagePart, display_args
 from ..io.diffrender import render_diff
 from ..io.text_filter import strip_final_check, strip_reasoning
 from ..prompts import _is_mode_reminder_text
@@ -67,18 +66,6 @@ def _head_chars(text: str, n: int) -> str:
     if len(text) <= n:
         return text
     return text[:n] + "…"
-
-
-def _arg_repr(value: Any, limit: int = 100) -> str:
-    """repr() of a tool-call argument, truncated to LIMIT chars total.
-
-    Long values (a long Bash command, a big JSON payload) are cut with
-    an ellipsis instead of being dropped from the label entirely.
-    """
-    r = repr(value)
-    if len(r) <= limit:
-        return r
-    return r[: limit - 1] + "…"
 
 
 def _tool_result_preview(content: str) -> str:
@@ -232,18 +219,7 @@ class RenderMixin:
                     rows.append(Text("reasoning ...", style="dim"))
                 if m.tool_calls:
                     for tc in m.tool_calls:
-                        args = tc.arguments
-                        if isinstance(args, str):
-                            try:
-                                args = json.loads(args)
-                            except (json.JSONDecodeError, ValueError):
-                                args = {}
-                        if isinstance(args, dict):
-                            params = " ".join(
-                                f"{k}={_arg_repr(v)}" for k, v in args.items() if k != "content"
-                            )
-                        else:
-                            params = ""
+                        params = " ".join(f"{k}={v}" for k, v in display_args(tc.arguments).items())
                         label = f"tool: {tc.name}({params})" if params else f"tool: {tc.name}"
                         rows.append(Text(f"▶ {label}", style="magenta"))
                 if body.strip():
