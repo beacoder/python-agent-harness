@@ -25,6 +25,8 @@ from python_agent_harness.entry.headless import (
     run_headless_jsonl,
     signal_canceller,
 )
+from python_agent_harness.entry.view import FilteredDeltaStream
+from python_agent_harness.io.text_filter import strip_final_check
 from tests.support import (
     plan_cleanup,  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
     session_sandbox,  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
@@ -478,19 +480,24 @@ class TestJsonlView(unittest.TestCase):
         self.assertEqual(
             lines[0], {"seq": 1, "type": "start", "prompt": "do it", "warnings": ["w1"]}
         )
-        self.assertEqual(lines[1], {"seq": 2, "type": "delta", "text": "hello "})
+        # "hello " streams as "hello": the delta filter holds trailing
+        # whitespace (strip_final_check would rstrip it away if a
+        # [FINAL CHECK] block followed) and releases it at the message
+        # boundary below.
+        self.assertEqual(lines[1], {"seq": 2, "type": "delta", "text": "hello"})
+        self.assertEqual(lines[2], {"seq": 3, "type": "delta", "text": " "})
         self.assertEqual(
-            lines[2], {"seq": 3, "type": "notify", "kind": "tool_start", "data": ["Read"]}
+            lines[3], {"seq": 4, "type": "notify", "kind": "tool_start", "data": ["Read"]}
         )
         self.assertEqual(
-            lines[3], {"seq": 4, "type": "notify", "kind": "error", "data": "no quota"}
+            lines[4], {"seq": 5, "type": "notify", "kind": "error", "data": "no quota"}
         )
-        self.assertEqual(lines[4], {"seq": 5, "type": "log", "message": "warming up"})
+        self.assertEqual(lines[5], {"seq": 6, "type": "log", "message": "warming up"})
         # the error seen during the run is reported on the result line
         self.assertEqual(
-            lines[5],
+            lines[6],
             {
-                "seq": 6,
+                "seq": 7,
                 "type": "result",
                 "answer": "Done.",
                 "errors": ["no quota"],
@@ -499,6 +506,113 @@ class TestJsonlView(unittest.TestCase):
         )
         # each line is compact single-line JSON: no embedded newlines
         self.assertTrue(all("\n" not in line for line in out.getvalue().splitlines()))
+
+    def test_delta_stream_filters_final_check_block(self):
+        """The [FINAL CHECK] block never reaches the delta stream, not even
+        as a half-streamed prefix: the tail is withheld until the block is
+        ruled out, so concatenated deltas equal the filtered answer."""
+        out = io.StringIO()
+        view = JsonlView(out=out)
+        view.emit_start("p", [])
+        view.on_delta("Done. ")
+        view.on_delta("\n\n[FINAL")
+        view.on_delta(" CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence: e")
+        view.emit_result("Done.")
+        lines = self._lines(out)
+        deltas = [line["text"] for line in lines if line["type"] == "delta"]
+        # exactly what the TUI shows -- no "[FINAL" fragment leaks out
+        self.assertEqual("".join(deltas), "Done.")
+        full = "Done. \n\n[FINAL CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence: e"
+        self.assertEqual("".join(deltas), strip_final_check(full))
+
+    def test_delta_stream_releases_tail_when_block_ruled_out(self):
+        """A header that never completes into a block is real content and
+        must still be streamed (released when the message ends)."""
+        out = io.StringIO()
+        view = JsonlView(out=out)
+        view.emit_start("p", [])
+        view.on_delta("see the ")
+        view.on_delta("[final check] section")
+        view.emit_result("x")
+        lines = self._lines(out)
+        deltas = [line["text"] for line in lines if line["type"] == "delta"]
+        self.assertEqual("".join(deltas), "see the [final check] section")
+
+    def test_delta_stream_holds_only_ambiguous_tail(self):
+        """Ordinary prose streams through unheld: a bracket that cannot
+        start a header is not mistaken for a block in flight."""
+        out = io.StringIO()
+        view = JsonlView(out=out)
+        view.emit_start("p", [])
+        view.on_delta("line one\n")
+        view.on_delta("see [1] and [2] here")
+        lines = self._lines(out)
+        deltas = [line["text"] for line in lines if line["type"] == "delta"]
+        self.assertEqual("".join(deltas), "line one\nsee [1] and [2] here")
+
+    def test_delta_stream_resets_on_tool_start_and_retry(self):
+        """A message boundary starts a fresh filtered stream: the next
+        message's [FINAL CHECK] must not be confused with the previous
+        message's already-emitted text."""
+        out = io.StringIO()
+        view = JsonlView(out=out)
+        view.emit_start("p", [])
+        view.on_delta("First answer.")
+        view.on_notify("tool_start", ["Bash"])
+        view.on_delta(
+            "Second answer.\n\n[FINAL CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence: e"
+        )
+        view.emit_result("x")
+        lines = self._lines(out)
+        deltas = [line["text"] for line in lines if line["type"] == "delta"]
+        self.assertEqual("".join(deltas), "First answer.Second answer.")
+
+    def test_delta_stream_retry_discards_partial(self):
+        out = io.StringIO()
+        view = JsonlView(out=out)
+        view.emit_start("p", [])
+        view.on_delta("partial ")
+        view.on_notify("retry")
+        view.on_delta("fresh start")
+        view.emit_result("x")
+        lines = self._lines(out)
+        deltas = [line["text"] for line in lines if line["type"] == "delta"]
+        self.assertEqual("".join(deltas), "partial fresh start")
+
+    def test_delta_stream_parity_holds_for_every_chunk_split(self):
+        """The invariant: concatenating the emitted chunks equals
+        strip_final_check over the whole message, whatever the network
+        chose as chunk boundaries.  Checked exhaustively for every single
+        split point plus the char-by-char worst case, because the leak
+        this guards against only appears at specific boundaries (a
+        half-streamed header, a decoration run before one)."""
+        messages = [
+            "Done. \n\n[FINAL CHECK]\n- Goal: g\n- Status: SUCCESS\n- Evidence: e",
+            "A.\n\n**[FINAL CHECK]**\n- **Goal**: g\n- **Status**: s\n- **Evidence**: e",
+            "A.\n\n## Final Check\nGoal: g\nStatus: s\nEvidence: e",
+            "a\n\n> **[FINAL CHECK]**\n> Goal: g\n> Status: s\n> Evidence: e",
+            "a\n\n> \n[FINAL CHECK]\nGoal: g\nStatus: s\nEvidence: e",
+            "s**[FINAL CHECK]**Goal: g Status: s Evidence: e",
+            "[FINAL CHECK]\n- Goal: g\n- Status: s\n- Evidence: e",  # check-only
+            "see the [final check] section",  # header that never completes
+            "let me do the final check now",
+            "line one\nsee [1] and [2] here",
+            "use 2 * 3 and a_b and #1 in prose",
+        ]
+        for msg in messages:
+            want = strip_final_check(msg)
+            # every single split point, and one chunk per character
+            splits = [[i] for i in range(1, len(msg))] + [list(range(1, len(msg)))]
+            for cuts in [[]] + splits:
+                stream = FilteredDeltaStream()
+                parts, prev = [], 0
+                for cut in cuts:
+                    parts.append(msg[prev:cut])
+                    prev = cut
+                parts.append(msg[prev:])
+                got = "".join(stream.feed(p) for p in parts) + stream.flush()
+                with self.subTest(msg=msg[:30], cuts=cuts[:3]):
+                    self.assertEqual(got, want)
 
     def test_events_before_start_are_buffered_behind_start_line(self):
         """The worker starts before emit_start runs, so early events must
@@ -515,11 +629,15 @@ class TestJsonlView(unittest.TestCase):
         view.emit_result("ok")
         lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
         self.assertEqual(lines[0]["type"], "start")
-        self.assertEqual(lines[1], {"seq": 2, "type": "delta", "text": "early "})
+        # trailing whitespace is held by the delta filter and released at
+        # the tool_start boundary, so "early " arrives as two deltas --
+        # buffering preserves their order behind the start line
+        self.assertEqual(lines[1], {"seq": 2, "type": "delta", "text": "early"})
+        self.assertEqual(lines[2], {"seq": 3, "type": "delta", "text": " "})
         self.assertEqual(
-            lines[2], {"seq": 3, "type": "notify", "kind": "tool_start", "data": ["Bash"]}
+            lines[3], {"seq": 4, "type": "notify", "kind": "tool_start", "data": ["Bash"]}
         )
-        self.assertEqual(lines[3], {"seq": 4, "type": "delta", "text": "live"})
+        self.assertEqual(lines[4], {"seq": 5, "type": "delta", "text": "live"})
         self.assertEqual(lines[-1]["type"], "result")
 
     def test_concurrent_emit_and_start_never_corrupts_stream(self):
