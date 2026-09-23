@@ -43,19 +43,16 @@ class TestTuiInput(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             os.mkdir(os.path.join(d, "workspace"))
             os.mkdir(os.path.join(d, "workbench"))
-            with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}):
+            with mock.patch.dict(os.environ, {"HOME": d}):
                 c = SlashCompleter(get_project_dir=lambda: "/tmp/fakeproj")
                 completions = list(
                     c.get_completions(Document(text="~/wor", cursor_position=5), None)
                 )
                 names = [x.text for x in completions]
-                # On Windows, paths may be converted; check for workspace/workbench variants
-                self.assertTrue(
-                    any("workspace" in n.lower() or "kspace" in n.lower() for n in names)
-                )
-                self.assertTrue(
-                    any("workbench" in n.lower() or "kbench" in n.lower() for n in names)
-                )
+                # the ~ prefix is stripped in the display, so the tail
+                # "kspace"/"kbench" is what the completer emits
+                self.assertTrue(any("kspace" in n.lower() for n in names))
+                self.assertTrue(any("kbench" in n.lower() for n in names))
                 # bare ~ -> the trailing slash only (home dir itself)
                 completions = list(c.get_completions(Document(text="~", cursor_position=1), None))
                 self.assertEqual([x.text for x in completions], ["/"])
