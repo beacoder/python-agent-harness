@@ -41,15 +41,21 @@ def _cancelled_now(session: Any) -> bool:
 def final_answer_text(session: Session) -> str:
     """The run's final assistant answer, TUI-filtered.
 
-    Takes the last assistant message from the session history, strips
-    the reasoning preamble (``text_without_reasoning``) and the
-    trailing [FINAL CHECK] block, and returns the result.  Empty when
-    the run produced no assistant message (e.g. it errored out).
+    Scans the session history backwards for the last assistant message
+    whose text survives the filters (reasoning preamble and the
+    trailing [FINAL CHECK] block).  Models following the
+    task-completion rules often end with a SEPARATE assistant message
+    holding only the [FINAL CHECK] block, so a check-only message
+    strips to empty and must be skipped in favor of the real answer
+    before it.  Empty when no assistant message has visible text
+    (e.g. the run errored out).
     """
     for msg in reversed(session.last_messages):
         if getattr(msg, "role", None) != "assistant":
             continue
-        return strip_final_check(msg.text_without_reasoning()).strip()
+        text = strip_final_check(msg.text_without_reasoning()).strip()
+        if text:
+            return text
     return ""
 
 
