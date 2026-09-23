@@ -151,6 +151,14 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
                 self._current_tool = label
                 self.status = f" ⏳ {label}"
                 self._history_dirty = True
+        elif kind == "tool_calls":
+            # Arguments for the round tool_start just announced, for
+            # hosting UIs.  The TUI already shows them on its own
+            # "▶ tool: name(args)" history rows, so there is nothing to
+            # do here -- but it must be handled explicitly, or the else
+            # branch below would replace tool_start's " ⏳ <names>"
+            # status with a bare " running".
+            pass
         elif kind == "tool_running":
             # Per-tool notification: update the current tool name shown
             # beside the spinner as each sync tool starts executing.
