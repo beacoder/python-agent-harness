@@ -125,13 +125,13 @@ class TestPlanModeGuard(unittest.TestCase):
     def test_plan_diff_escape_blocked_even_when_path_is_the_plan_file(self):
         """Regression: diff mode used to be allowed whenever `path` was
         the plan file, but the patch applies to the paths INSIDE the
-        diff — the macOS/Windows Python applier honors absolute `+++`
+        diff — the Python applier honors absolute `+++`
         targets, so the guard must verify every section."""
         session = self.make_plan_session()
         plan_file = session.plan_mode.plan_file
         # gettempdir()-joined so the path is ABSOLUTE on every platform
-        # (a hardcoded "/tmp/..." is not absolute on Windows, where the
-        # applier would then resolve the section to the fallback)
+        # (a hardcoded "/tmp/..." would let the applier resolve the
+        # section to the fallback)
         victim = os.path.join(tempfile.gettempdir(), "pah-escape-victim.txt")
         diff = f"--- a/victim.txt\n+++ {victim}\n@@ -1 +1 @@\n-old\n+HACKED\n"
         msg = session._plan_blocked("Edit", {"path": plan_file, "new_str": diff, "diff": True})
@@ -162,8 +162,7 @@ class TestPlanModeGuard(unittest.TestCase):
         session = RecordingSession()
         result1 = session._tool_path("Edit", {"path": "/a/b.py"})
         self.assertIsNotNone(result1)
-        # On Windows, abspath converts /a/b.py to C:/a/b.py or similar
-        # We just check it's a valid path and contains "a" and "b.py"
+        # just check it's a valid path containing "a" and "b.py"
         self.assertIn("a", result1)
         self.assertIn("b.py", result1)
 
