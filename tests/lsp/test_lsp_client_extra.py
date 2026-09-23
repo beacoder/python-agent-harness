@@ -107,11 +107,11 @@ class TestStartLifecycle(unittest.TestCase):
         self.assertEqual(initialized["method"], "initialized")
         self.assertEqual(client.position_encoding, "utf-8")
         self.assertTrue(client.alive)
-        # Release the reader before close(): on Windows, closing a stream
-        # that has a concurrent blocked read waits for that read to
-        # finish, and the mocked process never dies to break the pipe.
-        # Closing the server's write end gives the reader EOF; join it,
-        # then close the client (no pending read -> no wait).
+        # Release the reader before close(): closing a stream that has a
+        # concurrent blocked read waits for that read to finish, and the
+        # mocked process never dies to break the pipe.  Closing the
+        # server's write end gives the reader EOF; join it, then close
+        # the client (no pending read -> no wait).
         os.close(stdout_w)
         client._reader.join(timeout=5)
         client.close()
@@ -134,7 +134,7 @@ class TestStartLifecycle(unittest.TestCase):
             _read_framed(stdin_r)  # initialized
             t.join(timeout=5)
         self.assertEqual(client.position_encoding, "utf-16")
-        # same Windows hazard as above: EOF the reader, join, then close
+        # same hazard as above: EOF the reader, join, then close
         os.close(stdout_w)
         client._reader.join(timeout=5)
         client.close()
@@ -155,8 +155,8 @@ class TestStartLifecycle(unittest.TestCase):
         client = _make_client()
         # close() runs inside start()'s failure path, so the reader must
         # unblock on its own: an EOF-returning dummy stdout (and a write
-        # sink stdin) avoid the Windows "close waits for a pending read"
-        # hazard without needing to pre-release anything.
+        # sink stdin) avoid the "close waits for a pending read" hazard
+        # without needing to pre-release anything.
         eof_stream = SimpleNamespace(readline=lambda: b"", close=lambda: None)
         sink = SimpleNamespace(write=lambda b: None, flush=lambda: None, close=lambda: None)
         proc = SimpleNamespace(
