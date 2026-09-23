@@ -285,11 +285,18 @@ class AgentServer:
         return event is not None and event.is_set() is True
 
     def _final_answer(self) -> str:
-        """The run's final assistant answer, TUI-filtered (headless shape)."""
+        """The run's final assistant answer, TUI-filtered (headless shape).
+
+        Skips assistant messages that strip to empty (e.g. a trailing
+        check-only [FINAL CHECK] message) in favor of the real answer
+        before them — see ``headless.final_answer_text``.
+        """
         for msg in reversed(self.session.last_messages):
             if getattr(msg, "role", None) != "assistant":
                 continue
-            return strip_final_check(msg.text_without_reasoning()).strip()
+            text = strip_final_check(msg.text_without_reasoning()).strip()
+            if text:
+                return text
         return ""
 
     def _usage_snapshot(self) -> dict[str, Any] | None:
