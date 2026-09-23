@@ -17,7 +17,6 @@ from unittest import mock
 from python_agent_harness.tools.base import ToolContext, ToolRuntime
 from python_agent_harness.tools.diffapply import apply_unified_diff, diff_targets
 from python_agent_harness.tools.edit_mac import EditMac
-from python_agent_harness.tools.edit_win import EditWindows
 from python_agent_harness.tools.filesystem import (
     Edit,
     GlobTool,
@@ -31,36 +30,26 @@ from python_agent_harness.tools.filesystem import (
     atomic_write_text,
 )
 from python_agent_harness.tools.glob_mac import GlobMac
-from python_agent_harness.tools.glob_win import GlobWindows
 from python_agent_harness.tools.grep_mac import GrepMac
-from python_agent_harness.tools.grep_win import GrepWindows
 
 
 def edit_tool() -> Edit:
     """The Edit tool active on this platform: Linux uses the patch
     binary, macOS the built-in Python diff applier (Apple's BSD patch
-    rejects well-formed hunks that GNU patch accepts), Windows the
-    pure-Python applier."""
-    if sys.platform == "win32":
-        return EditWindows()
+    rejects well-formed hunks that GNU patch accepts)."""
     return EditMac() if sys.platform == "darwin" else Edit()
 
 
 def glob_tool() -> GlobTool:
     """The Glob tool active on this platform: Linux shells out to
     ``tree`` for the non-git fallback, macOS to ``find`` (Apple ships
-    no ``tree``), Windows uses pure-Python ``pathlib.rglob``."""
-    if sys.platform == "win32":
-        return GlobWindows()
+    no ``tree``)."""
     return GlobMac() if sys.platform == "darwin" else GlobTool()
 
 
 def grep_tool() -> Grep:
     """The Grep tool active on this platform: Linux uses
-    ``git grep -P``, macOS ``git grep -E`` (Apple's git lacks PCRE),
-    Windows the pure-Python fallback."""
-    if sys.platform == "win32":
-        return GrepWindows()
+    ``git grep -P``, macOS ``git grep -E`` (Apple's git lacks PCRE)."""
     return GrepMac() if sys.platform == "darwin" else Grep()
 
 
@@ -552,10 +541,6 @@ class TestReadTool(unittest.TestCase):
     )
     def test_unreadable_file_returns_error_not_crash(self):
         """Test that unreadable files return an error without crashing."""
-        import sys
-
-        if sys.platform == "win32":
-            self.skipTest("Windows ACLs don't respect chmod 0o000")
         p = os.path.join(self.tmp.name, "secret.txt")
         with open(p, "w") as f:
             f.write("secret\n")
@@ -587,7 +572,6 @@ class TestGlobGrepTools(unittest.TestCase):
         return p
 
     @unittest.skipUnless(shutil.which("tree"), "tree not available")
-    @unittest.skipIf(sys.platform == "win32", "legacy GlobTool tree fallback is Unix-only")
     def test_glob_tree_fallback_lists_files_and_depth(self):
         d = self._mkdir("proj")
         open(os.path.join(d, "a.py"), "w").close()
@@ -636,7 +620,6 @@ class TestGlobGrepTools(unittest.TestCase):
         out = glob_tool().run({"pattern": "*", "path": link}, self.ctx)
         self.assertNotIn("outside repository", out)
         self.assertNotIn("Glob failed", out)
-        # Normalize path separators for Windows compatibility
         expected = os.path.realpath(os.path.join(real, "a.py")).replace("\\", "/")
         self.assertIn(expected, out.replace("\\", "/"))
         out = grep_tool().run({"regex": "hello", "path": link}, self.ctx)
@@ -676,20 +659,13 @@ class TestGlobGrepTools(unittest.TestCase):
         out = grep_tool().run({"regex": "x", "path": os.path.join(self.tmp.name, "nope")}, self.ctx)
         self.assertIn("Error", out)
 
-    @unittest.skipIf(
-        sys.platform in ("darwin", "win32"),
-        "macOS uses GlobMac (find), Windows uses GlobWindows (pathlib), not the tree fallback",
-    )
+    @unittest.skipIf(sys.platform == "darwin", "macOS uses GlobMac (find), not the tree fallback")
     @mock.patch("shutil.which", return_value=None)
     def test_glob_errors_when_tree_missing(self, _which):
         d = self._mkdir("proj")
         out = glob_tool().run({"pattern": "*.py", "path": d}, self.ctx)
         self.assertIn("Executable `tree` not found", out)
 
-    @unittest.skipIf(
-        sys.platform == "win32",
-        "Windows GrepWindows has a pure-Python re fallback, no unavailable error",
-    )
     @mock.patch("shutil.which", return_value=None)
     def test_grep_errors_when_no_backend_available(self, _which):
         out = grep_tool().run({"regex": "x", "path": self.tmp.name}, self.ctx)
@@ -899,9 +875,8 @@ class TestWriteTool(unittest.TestCase):
     def test_overwrite_with_identical_content_no_diff(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "f.txt")
-            # byte-exact fixture: a text-mode "w" writes CRLF on Windows,
-            # which would genuinely differ from the LF content below
-            # (same bytes on every platform = same bytes after the write)
+            # byte-exact fixture: written in binary so the bytes are
+            # identical on every platform
             with open(path, "wb") as f:
                 f.write(b"same\n")
             ctx, sess = make_ctx()
@@ -909,8 +884,8 @@ class TestWriteTool(unittest.TestCase):
             self.assertEqual(sess.recorded_diffs, [])
 
     def test_write_content_bytes_are_exact(self):
-        """Regression: the default text-mode write translated LF to CRLF
-        on Windows, so the same content produced platform-dependent bytes."""
+        """Regression: the default text-mode write translated LF to
+        os.linesep, so the same content produced platform-dependent bytes."""
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "mixed.txt")
             ctx, _ = make_ctx()
@@ -924,12 +899,8 @@ class TestWriteTool(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             home = os.path.join(d, "home")
             os.makedirs(home)
-            saved = {v: os.environ.get(v) for v in ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH")}
+            saved = os.environ.get("HOME")
             os.environ["HOME"] = home
-            if os.name == "nt":
-                os.environ["USERPROFILE"] = home
-                os.environ.pop("HOMEDRIVE", None)
-                os.environ.pop("HOMEPATH", None)
             try:
                 ctx, _ = make_ctx()
                 result = Write().run(
@@ -940,11 +911,10 @@ class TestWriteTool(unittest.TestCase):
                     self.assertEqual(f.read(), "hi\n")
                 self.assertFalse(os.path.exists(os.path.join(d, "~")))
             finally:
-                for var, val in saved.items():
-                    if val is not None:
-                        os.environ[var] = val
-                    else:
-                        os.environ.pop(var, None)
+                if saved is not None:
+                    os.environ["HOME"] = saved
+                else:
+                    os.environ.pop("HOME", None)
 
     def test_overwrite_non_utf8_file_does_not_fail(self):
         """Regression: reading the old content with strict UTF-8 raised
@@ -1038,8 +1008,7 @@ class TestSpoolDirAndTruncate(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"TMPDIR": "/custom/tmp"}, clear=True):
             result = fs._spool_dir()
-            # On Windows, abspath converts /custom/tmp to C:/custom/tmp or similar
-            # We just check it's a valid path and contains "custom" and "tmp"
+            # just check it's a valid path containing "custom" and "tmp"
             self.assertIn("custom", result)
             self.assertIn("tmp", result)
 
@@ -1145,10 +1114,7 @@ class TestGlobErrorPaths(unittest.TestCase):
         self.assertTrue(out.startswith("Error"))
         self.assertIn("No such file", out)
 
-    @unittest.skipIf(
-        sys.platform in ("darwin", "win32"),
-        "macOS uses GlobMac (find), Windows uses GlobWindows (pathlib), not the tree fallback",
-    )
+    @unittest.skipIf(sys.platform == "darwin", "macOS uses GlobMac (find), not the tree fallback")
     def test_tree_nonzero_exit_reported(self):
         d = os.path.join(self.tmp.name, "plain")
         os.makedirs(d)
@@ -1179,10 +1145,6 @@ class TestGrepFallbackBranches(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    @unittest.skipIf(
-        sys.platform == "win32",
-        "Windows GrepWindows has a pure-Python re fallback, no unavailable error",
-    )
     def test_git_grep_error_falls_to_unavailable_error(self):
         repo = os.path.join(self.tmp.name, "repo")
         os.makedirs(repo)
@@ -1217,10 +1179,6 @@ class TestGrepFallbackBranches(unittest.TestCase):
         self.assertIn("f.txt:1:needle", out)
         self.assertNotIn("Error", out)
 
-    @unittest.skipIf(
-        sys.platform == "win32",
-        "Windows GrepWindows has a pure-Python re fallback, no unavailable error",
-    )
     def test_rg_fallback_error_then_grep_unavailable(self):
         d = os.path.join(self.tmp.name, "plain")
         os.makedirs(d)
@@ -1237,10 +1195,6 @@ class TestGrepFallbackBranches(unittest.TestCase):
             out = grep_tool().run({"regex": "x", "path": d}, self.ctx)
         self.assertIn("ripgrep/grep/git-grep not available", out)
 
-    @unittest.skipIf(
-        sys.platform == "win32",
-        "Windows GrepWindows has a pure-Python re fallback, no unavailable error",
-    )
     def test_grep_fallback_error_then_unavailable(self):
         d = os.path.join(self.tmp.name, "plain")
         os.makedirs(d)
@@ -1686,7 +1640,6 @@ if __name__ == "__main__":
     unittest.main()
 
 
-@unittest.skipIf(sys.platform == "win32", "GlobMac uses Unix 'find', not available on Windows")
 class TestGlobMac(unittest.TestCase):
     """GlobMac: pure-Python non-git fallback (pathlib) and git delegation.
 
@@ -1737,12 +1690,7 @@ class TestGlobMac(unittest.TestCase):
 
     def test_pathlib_fallback_unlimited_depth(self):
         """Without depth, files at any level are returned."""
-        import sys
-
-        if sys.platform == "win32":
-            from python_agent_harness.tools.glob_win import GlobWindows as GlobImpl
-        else:
-            from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
+        from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
 
         d = self._mkdir("proj")
         self._file("proj", "top.py")
@@ -1753,12 +1701,7 @@ class TestGlobMac(unittest.TestCase):
 
     def test_pathlib_fallback_skips_hidden_dirs(self):
         """Dotfiles/directories (e.g. .git) are excluded from results."""
-        import sys
-
-        if sys.platform == "win32":
-            from python_agent_harness.tools.glob_win import GlobWindows as GlobImpl
-        else:
-            from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
+        from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
 
         d = self._mkdir("proj")
         self._file("proj", "visible.py")
@@ -1769,12 +1712,7 @@ class TestGlobMac(unittest.TestCase):
 
     def test_pathlib_fallback_case_insensitive(self):
         """Glob matching is case-insensitive (mirrors tree --ignore-case)."""
-        import sys
-
-        if sys.platform == "win32":
-            from python_agent_harness.tools.glob_win import GlobWindows as GlobImpl
-        else:
-            from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
+        from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
 
         d = self._mkdir("proj")
         self._file("proj", "README.PY")
@@ -1783,12 +1721,7 @@ class TestGlobMac(unittest.TestCase):
 
     def test_pathlib_fallback_no_matches_returns_empty(self):
         """No matching files returns empty string."""
-        import sys
-
-        if sys.platform == "win32":
-            from python_agent_harness.tools.glob_win import GlobWindows as GlobImpl
-        else:
-            from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
+        from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
 
         d = self._mkdir("proj")
         self._file("proj", "a.txt")
@@ -1798,12 +1731,7 @@ class TestGlobMac(unittest.TestCase):
     @unittest.skipUnless(shutil.which("git"), "git not available")
     def test_git_delegation(self):
         """Inside a git repo, GlobMac delegates to the parent (git ls-files)."""
-        import sys
-
-        if sys.platform == "win32":
-            from python_agent_harness.tools.glob_win import GlobWindows as GlobImpl
-        else:
-            from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
+        from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
 
         repo = self._mkdir("repo")
         subprocess.run(["git", "init", "-q", repo], check=True)
@@ -1813,23 +1741,13 @@ class TestGlobMac(unittest.TestCase):
         self.assertIn(os.path.realpath(os.path.join(repo, "a.py")), out)
 
     def test_empty_pattern_errors(self):
-        import sys
-
-        if sys.platform == "win32":
-            from python_agent_harness.tools.glob_win import GlobWindows as GlobImpl
-        else:
-            from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
+        from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
 
         out = GlobImpl().run({"pattern": "", "path": self.tmp.name}, self.ctx)
         self.assertIn("Error", out)
 
     def test_nonexistent_path_errors(self):
-        import sys
-
-        if sys.platform == "win32":
-            from python_agent_harness.tools.glob_win import GlobWindows as GlobImpl
-        else:
-            from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
+        from python_agent_harness.tools.glob_mac import GlobMac as GlobImpl
 
         out = GlobImpl().run(
             {"pattern": "*", "path": os.path.join(self.tmp.name, "nope")}, self.ctx
@@ -1977,283 +1895,6 @@ class TestGrepMac(unittest.TestCase):
         self.assertIn("ripgrep/grep/git-grep not available", out)
 
 
-class TestWindowsVariants(unittest.TestCase):
-    """Windows tool backends: pure-Python fallbacks that run on every
-    platform so the Windows paths are covered by Linux CI too (same
-    approach as TestEditMac / TestGrepMac).
-    """
-
-    def setUp(self):
-        self.ctx = ToolContext()
-        self.tmp = tempfile.TemporaryDirectory()
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def _mkdir(self, *parts) -> str:
-        p = os.path.join(self.tmp.name, *parts)
-        os.makedirs(p, exist_ok=True)
-        return p
-
-    def _file(self, *parts, content: str = "") -> str:
-        p = os.path.join(self.tmp.name, *parts)
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as f:
-            f.write(content)
-        return p
-
-    # ------------------------------------------------------------------
-    # EditWindows: pure-Python diff applier
-    # ------------------------------------------------------------------
-    def test_edit_win_simple_replace_applies(self):
-        from python_agent_harness.tools.edit_win import EditWindows
-
-        path = self._file("f.txt", content="line1\nline2\nline3\n")
-        ctx, sess = make_ctx()
-        diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+lineTWO\n line3\n"
-        result = EditWindows().run({"path": path, "new_str": diff, "diff": True}, ctx)
-        self.assertIn("Diff successfully applied", result)
-        with open(path) as f:
-            self.assertEqual(f.read(), "line1\nlineTWO\nline3\n")
-        self.assertEqual(len(sess.recorded_diffs), 1)
-
-    def test_edit_win_mismatch_errors(self):
-        from python_agent_harness.tools.edit_win import EditWindows
-
-        path = self._file("f.txt", content="a\nb\n")
-        ctx, sess = make_ctx()
-        bad_diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n a\n-NOPE\n+B\n"
-        result = EditWindows().run({"path": path, "new_str": bad_diff, "diff": True}, ctx)
-        self.assertTrue(result.startswith("Error:"))
-        with open(path) as f:
-            self.assertEqual(f.read(), "a\nb\n")
-        self.assertEqual(sess.recorded_diffs, [])
-
-    def test_edit_win_fenced_diff_applies(self):
-        from python_agent_harness.tools.edit_win import EditWindows
-
-        path = self._file("f.txt", content="a\nb\n")
-        ctx, _ = make_ctx()
-        diff = "```diff\n--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n a\n-b\n+B\n```\n"
-        result = EditWindows().run({"path": path, "new_str": diff, "diff": True}, ctx)
-        self.assertIn("Diff successfully applied", result)
-        with open(path) as f:
-            self.assertEqual(f.read(), "a\nB\n")
-
-    def test_edit_win_multifile_diff_applies(self):
-        from python_agent_harness.tools.edit_win import EditWindows
-
-        self._file("f1.txt", content="one\n")
-        self._file("f2.txt", content="two\n")
-        ctx, _ = make_ctx()
-        diff = (
-            "--- a/f1.txt\n+++ b/f1.txt\n@@ -1 +1 @@\n-one\n+ONE\n"
-            "--- a/f2.txt\n+++ b/f2.txt\n@@ -1 +1 @@\n-two\n+TWO\n"
-        )
-        d = os.path.join(self.tmp.name, "")
-        result = EditWindows().run({"path": d, "new_str": diff, "diff": True}, ctx)
-        self.assertIn("Diff successfully applied", result)
-        with open(os.path.join(self.tmp.name, "f1.txt")) as f:
-            self.assertEqual(f.read(), "ONE\n")
-        with open(os.path.join(self.tmp.name, "f2.txt")) as f:
-            self.assertEqual(f.read(), "TWO\n")
-
-    # ------------------------------------------------------------------
-    # GlobWindows: pure-Python rglob fallback
-    # ------------------------------------------------------------------
-    def test_glob_win_lists_files(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "a.py")
-        self._file("proj", "b.txt")
-        out = GlobWindows().run({"pattern": "*.py", "path": d}, self.ctx)
-        self.assertIn(os.path.realpath(os.path.join(d, "a.py")), out)
-        self.assertNotIn("b.txt", out)
-
-    def test_glob_win_depth_limiting(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "top.py")
-        self._file("proj", "sub", "deep.py")
-        out = GlobWindows().run({"pattern": "*.py", "path": d, "depth": 1}, self.ctx)
-        self.assertIn(os.path.realpath(os.path.join(d, "top.py")), out)
-        self.assertNotIn("deep.py", out)
-
-    def test_glob_win_unlimited_depth(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "top.py")
-        self._file("proj", "sub", "deep.py")
-        out = GlobWindows().run({"pattern": "*.py", "path": d}, self.ctx)
-        self.assertIn(os.path.realpath(os.path.join(d, "top.py")), out)
-        self.assertIn(os.path.realpath(os.path.join(d, "sub", "deep.py")), out)
-
-    def test_glob_win_skips_hidden_dirs(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "visible.py")
-        self._file("proj", ".hidden", "secret.py")
-        out = GlobWindows().run({"pattern": "*.py", "path": d}, self.ctx)
-        self.assertIn("visible.py", out)
-        self.assertNotIn("secret.py", out)
-
-    def test_glob_win_no_matches_returns_empty(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "a.txt")
-        out = GlobWindows().run({"pattern": "*.rs", "path": d}, self.ctx)
-        self.assertEqual(out, "")
-
-    def test_glob_win_empty_pattern_errors(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        out = GlobWindows().run({"pattern": "", "path": self.tmp.name}, self.ctx)
-        self.assertIn("Error", out)
-
-    def test_glob_win_nonexistent_path_errors(self):
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        out = GlobWindows().run(
-            {"pattern": "*", "path": os.path.join(self.tmp.name, "nope")}, self.ctx
-        )
-        self.assertIn("Error", out)
-
-    def test_glob_win_sorted_by_mtime(self):
-        import time
-
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        d = self._mkdir("proj")
-        older = self._file("proj", "older.py")
-        time.sleep(0.05)
-        newer = self._file("proj", "newer.py")
-        out = GlobWindows().run({"pattern": "*.py", "path": d}, self.ctx)
-        older_pos = out.index(os.path.realpath(older))
-        newer_pos = out.index(os.path.realpath(newer))
-        self.assertLess(newer_pos, older_pos, "newer file should appear first")
-
-    def test_glob_win_git_delegation(self):
-        """Inside a git repo, GlobWindows delegates to the parent's
-        git ls-files path."""
-        from python_agent_harness.tools.glob_win import GlobWindows
-
-        repo = self._mkdir("repo")
-        subprocess.run(["git", "init", "-q", repo], check=True)
-        self._file("repo", "a.py", content="hello\n")
-        subprocess.run(["git", "add", "."], cwd=repo, check=True)
-        out = GlobWindows().run({"pattern": "*", "path": repo}, self.ctx)
-        expected = os.path.realpath(os.path.join(repo, "a.py")).replace("\\", "/")
-        self.assertIn(expected, out.replace("\\", "/"))
-
-    # ------------------------------------------------------------------
-    # GrepWindows: rg → pure-Python re fallback chain
-    # ------------------------------------------------------------------
-    def test_grep_win_python_grep_finds_matches(self):
-        """With rg unavailable, GrepWindows uses the pure-Python search."""
-        from python_agent_harness.tools.grep_win import GrepWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "a.py", content="hello world\n")
-        with mock.patch("shutil.which", return_value=None):
-            out = GrepWindows().run({"regex": "hello", "path": d}, self.ctx)
-        self.assertIn("a.py", out)
-        self.assertIn("hello world", out)
-
-    def test_grep_win_python_grep_line_numbers(self):
-        from python_agent_harness.tools.grep_win import GrepWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "a.py", content="one\ntwo\nthree two\n")
-        with mock.patch("shutil.which", return_value=None):
-            out = GrepWindows().run({"regex": "two", "path": d}, self.ctx)
-        self.assertIn("a.py:2:two", out.replace("\\", "/"))
-        self.assertIn("a.py:3:three two", out.replace("\\", "/"))
-
-    def test_grep_win_python_grep_glob_filter(self):
-        from python_agent_harness.tools.grep_win import GrepWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "a.py", content="needle\n")
-        self._file("proj", "b.md", content="needle\n")
-        with mock.patch("shutil.which", return_value=None):
-            out = GrepWindows().run({"regex": "needle", "path": d, "glob": "*.py"}, self.ctx)
-        self.assertIn("a.py", out.replace("\\", "/"))
-        self.assertNotIn("b.md", out)
-
-    def test_grep_win_python_grep_skips_hidden_dirs(self):
-        from python_agent_harness.tools.grep_win import GrepWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "visible.py", content="needle\n")
-        self._file("proj", ".hidden", "secret.py", content="needle\n")
-        with mock.patch("shutil.which", return_value=None):
-            out = GrepWindows().run({"regex": "needle", "path": d}, self.ctx)
-        self.assertIn("visible.py", out.replace("\\", "/"))
-        self.assertNotIn("secret.py", out)
-
-    def test_grep_win_python_grep_context_lines(self):
-        from python_agent_harness.tools.grep_win import GrepWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "a.py", content="line1\nline2\nline3\nline4\n")
-        with mock.patch("shutil.which", return_value=None):
-            out = GrepWindows().run({"regex": "line3", "path": d, "context_lines": 1}, self.ctx)
-        self.assertIn("line2", out)
-        self.assertIn("line3", out)
-        self.assertIn("line4", out)
-
-    def test_grep_win_python_grep_no_matches_returns_empty(self):
-        from python_agent_harness.tools.grep_win import GrepWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "a.txt", content="hello\n")
-        with mock.patch("shutil.which", return_value=None):
-            out = GrepWindows().run({"regex": "zzz-no-match", "path": d}, self.ctx)
-        self.assertEqual(out, "")
-
-    def test_grep_win_python_grep_single_file_path(self):
-        from python_agent_harness.tools.grep_win import GrepWindows
-
-        p = self._file("a.py", content="needle here\n")
-        with mock.patch("shutil.which", return_value=None):
-            out = GrepWindows().run({"regex": "needle", "path": p}, self.ctx)
-        self.assertIn("needle here", out)
-
-    def test_grep_win_invalid_regex_errors(self):
-        from python_agent_harness.tools.grep_win import GrepWindows
-
-        d = self._mkdir("proj")
-        self._file("proj", "a.txt", content="hello\n")
-        with mock.patch("shutil.which", return_value=None):
-            out = GrepWindows().run({"regex": "[unclosed", "path": d}, self.ctx)
-        self.assertIn("Error", out)
-
-    def test_grep_win_nonexistent_path_errors(self):
-        from python_agent_harness.tools.grep_win import GrepWindows
-
-        out = GrepWindows().run(
-            {"regex": "x", "path": os.path.join(self.tmp.name, "nope")}, self.ctx
-        )
-        self.assertIn("Error", out)
-
-    def test_grep_win_git_path_unaffected(self):
-        """Inside a git repo, GrepWindows still uses git grep -P."""
-        from python_agent_harness.tools.grep_win import GrepWindows
-
-        repo = self._mkdir("repo")
-        subprocess.run(["git", "init", "-q", repo], check=True)
-        self._file("repo", "a.py", content="hello world\n")
-        subprocess.run(["git", "add", "."], cwd=repo, check=True)
-        out = GrepWindows().run({"regex": "hello", "path": repo}, self.ctx)
-        self.assertIn("a.py", out)
-        self.assertIn("hello", out)
-
-
 class TestTildeExpansion(unittest.TestCase):
     """All filesystem tools must expand ~ in user-provided paths."""
 
@@ -2264,22 +1905,15 @@ class TestTildeExpansion(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(dir=tempfile.gettempdir())
         self.home = os.path.join(self.tmp.name, "home")
         os.makedirs(self.home)
-        self._saved = {}
-        for var in ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
-            self._saved[var] = os.environ.get(var)
+        self._saved_home = os.environ.get("HOME")
         os.environ["HOME"] = self.home
-        if os.name == "nt":
-            os.environ["USERPROFILE"] = self.home
-            os.environ.pop("HOMEDRIVE", None)
-            os.environ.pop("HOMEPATH", None)
 
     def tearDown(self):
         self.tmp.cleanup()
-        for var, val in self._saved.items():
-            if val is not None:
-                os.environ[var] = val
-            else:
-                os.environ.pop(var, None)
+        if self._saved_home is not None:
+            os.environ["HOME"] = self._saved_home
+        else:
+            os.environ.pop("HOME", None)
 
     def test_read_expands_tilde(self):
         p = os.path.join(self.home, "file.txt")
@@ -2405,7 +2039,7 @@ class TestWritesAreAtomic(unittest.TestCase):
         self.assertEqual(self._strays(), [])
 
     def test_diff_applier_preserves_file_when_write_fails(self):
-        # the pure-Python applier behind EditMac / EditWindows
+        # the pure-Python applier behind EditMac
         with self._failing_write():
             ok, msg = apply_unified_diff(self.DIFF, cwd=self.tmp.name, fallback_path=self.path)
         self.assertFalse(ok)
@@ -2435,7 +2069,6 @@ class TestWritesAreAtomic(unittest.TestCase):
         self.assertEqual(self._contents(), "line1\nCHANGED\nline3\n")
         self.assertEqual(self._strays(), [])
 
-    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits")
     def test_edit_preserves_permission_bits(self):
         # the replacement is a fresh temp file, so its mode must be copied
         # from the original -- an edited script has to stay executable.
@@ -2447,7 +2080,6 @@ class TestWritesAreAtomic(unittest.TestCase):
         self.assertNotEqual(os.stat(self.path).st_ino, before)
         self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o750)
 
-    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits")
     def test_write_new_file_uses_umask_default(self):
         Write().run({"path": self.tmp.name, "filename": "new.txt", "content": "hi\n"}, self.ctx)
         current = os.umask(0o022)
@@ -2455,7 +2087,6 @@ class TestWritesAreAtomic(unittest.TestCase):
         mode = stat.S_IMODE(os.stat(os.path.join(self.tmp.name, "new.txt")).st_mode)
         self.assertEqual(mode, 0o666 & ~current)
 
-    @unittest.skipIf(sys.platform == "win32", "POSIX symlink semantics")
     def test_edit_through_symlink_rewrites_target(self):
         # the tool resolves the realpath, so the rename must land on the
         # target file and leave the symlink itself in place
@@ -2465,11 +2096,10 @@ class TestWritesAreAtomic(unittest.TestCase):
         self.assertTrue(os.path.islink(link))
         self.assertEqual(self._contents(), "line1\nCHANGED\nline3\n")
 
-    @unittest.skipIf(sys.platform == "win32", "POSIX symlink semantics")
     def test_diff_applier_through_symlink_rewrites_target(self):
         # os.replace onto a symlink would overwrite the LINK with a regular
         # file and leave the real target stale; _apply_section resolves the
-        # realpath first.  This is the EditMac / EditWindows write path.
+        # realpath first.  This is the EditMac write path.
         link = os.path.join(self.tmp.name, "link.txt")
         os.symlink(self.path, link)
         diff = self.DIFF.replace("victim.txt", "link.txt")
@@ -2561,7 +2191,6 @@ class TestAtomicWriteText(unittest.TestCase):
         for name in seen:
             self.assertTrue(name.startswith(self.path) and name.endswith(".tmp"), name)
 
-    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits")
     def test_existing_mode_is_inherited(self):
         # assert the inode really was replaced, otherwise this would also
         # pass for an in-place write (which preserves the mode trivially)
@@ -2571,7 +2200,6 @@ class TestAtomicWriteText(unittest.TestCase):
         self.assertNotEqual(os.stat(self.path).st_ino, before)
         self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o750)
 
-    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits")
     def test_chmod_failure_is_not_swallowed(self):
         # a real mode-copy failure must abort (leaving the file intact)
         # rather than silently shipping a file with the wrong permissions
@@ -2584,12 +2212,9 @@ class TestAtomicWriteText(unittest.TestCase):
             self.assertEqual(f.read(), self.orig)
         self.assertEqual(self._strays(), [])
 
-    @unittest.skipIf(sys.platform == "win32", "Windows chmod cannot make a directory unwritable")
     def test_directory_not_writable_fails_safely(self):
         # the temp file needs a writable DIRECTORY; when it is not, the
-        # helper must fail without touching the original.  POSIX only:
-        # os.chmod on Windows only toggles the read-only flag and does not
-        # stop file creation inside a directory (and os.geteuid is absent).
+        # helper must fail without touching the original.
         if os.geteuid() == 0:
             self.skipTest("root ignores directory permissions")
         os.chmod(self.tmp.name, 0o500)
