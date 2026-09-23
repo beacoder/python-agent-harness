@@ -80,6 +80,39 @@ class ToolCall:
     elapsed: float | None = None  # execution wall-time in seconds (TUI display)
 
 
+def arg_repr(value: Any, limit: int = 100) -> str:
+    """repr() of a tool-call argument, truncated to LIMIT chars total.
+
+    Long values (a long Bash command, a big JSON payload) are cut with
+    an ellipsis instead of being dropped from the label entirely.
+    """
+    r = repr(value)
+    if len(r) <= limit:
+        return r
+    return r[: limit - 1] + "…"
+
+
+def display_args(arguments: dict[str, Any] | str, limit: int = 100) -> dict[str, str]:
+    """Tool-call arguments as short display strings, keyed by name.
+
+    ``arguments`` arrives either already decoded or as the raw JSON
+    string the model emitted (unparseable when the model truncated it).
+    ``content`` is skipped: a Write/Edit payload is far too large for a
+    one-line label, and it is shown as a diff instead.
+
+    Values are truncated, so the result is a display artifact -- never
+    the data a tool is executed with.
+    """
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (json.JSONDecodeError, ValueError):
+            return {}
+    if not isinstance(arguments, dict):
+        return {}
+    return {k: arg_repr(v, limit) for k, v in arguments.items() if k != "content"}
+
+
 @dataclass
 class Message:
     """One conversation message in OpenAI-compatible format.
