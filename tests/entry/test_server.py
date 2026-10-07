@@ -236,7 +236,7 @@ class TestReadyAndControl(ServerTestBase):
         server.serve_forever()
         lines = _lines(server.out)  # type: ignore[arg-type]
         self.assertEqual(lines[1]["type"], "error")
-        self.assertIn("malformed", lines[1]["error"])
+        self.assertIn("malformed", lines[1]["error"]["message"])
 
     def test_non_object_op_yields_error(self):
         server = self._server()
@@ -253,7 +253,7 @@ class TestReadyAndControl(ServerTestBase):
         server.serve_forever()
         lines = _lines(server.out)  # type: ignore[arg-type]
         self.assertEqual(lines[1]["type"], "error")
-        self.assertIn("teleport", lines[1]["error"])
+        self.assertIn("teleport", lines[1]["error"]["message"])
 
 
 class TestSubmit(ServerTestBase):
@@ -287,7 +287,8 @@ class TestSubmit(ServerTestBase):
         server = self._server()
         self.controller.submit_returns_none = True
         lines = self._submit_and_wait(server, prompt="@missing.txt")
-        self.assertEqual(lines[-1]["errors"], ["nothing to send"])
+        self.assertEqual(lines[-1]["errors"], [{"code": "nothing", "message": "nothing to send"}])
+        self.assertEqual(lines[-1]["error_messages"], ["nothing to send"])
         self.assertEqual(lines[-1]["usage"], {"input": 0, "output": 0, "rounds": 0})
 
     def test_submit_requires_run_id(self):
@@ -295,7 +296,8 @@ class TestSubmit(ServerTestBase):
         server.op_submit({"op": "submit", "prompt": "hi"})
         lines = _lines(server.out)  # type: ignore[arg-type]
         self.assertEqual(lines[0]["type"], "error")
-        self.assertIn("run_id", lines[0]["error"])
+        self.assertIn("run_id", lines[0]["error"]["message"])
+        self.assertEqual(lines[0]["error"]["code"], "protocol")
         self.assertEqual(self.controller.submits, [])
 
     def test_submit_requires_prompt(self):
@@ -303,7 +305,7 @@ class TestSubmit(ServerTestBase):
         server.op_submit({"op": "submit", "run_id": "r1"})
         lines = _lines(server.out)  # type: ignore[arg-type]
         self.assertEqual(lines[0]["type"], "error")
-        self.assertIn("prompt", lines[0]["error"])
+        self.assertIn("prompt", lines[0]["error"]["message"])
 
     def test_submit_rejects_blank_prompt(self):
         server = self._server()
@@ -323,7 +325,7 @@ class TestSubmit(ServerTestBase):
             if line["type"] == "error"  # type: ignore[arg-type]
         ]
         self.assertEqual(len(errors), 1)
-        self.assertIn("already active", errors[0]["error"])
+        self.assertIn("already active", errors[0]["error"]["message"])
         self.controller.gate.set()
         self._wait_idle(server)
         self.assertEqual(self.controller.submits, ["one"])
@@ -338,7 +340,8 @@ class TestSubmit(ServerTestBase):
         self._wait_idle(server)
         lines = _lines(server.out)  # type: ignore[arg-type]
         self.assertEqual(lines[-1]["type"], "result")
-        self.assertIn("run produced no answer", lines[-1]["errors"])
+        self.assertIn("run produced no answer", [e["message"] for e in lines[-1]["errors"]])
+        self.assertIn("no_answer", [e["code"] for e in lines[-1]["errors"]])
         self.assertIn(
             "agent error: boom", [line["message"] for line in lines if line["type"] == "log"]
         )
@@ -355,7 +358,7 @@ class TestSubmit(ServerTestBase):
         self._wait_idle(server)
         lines = _lines(server.out)  # type: ignore[arg-type]
         self.assertEqual([line["type"] for line in lines], ["result"])
-        self.assertEqual(lines[0]["errors"], ["nothing to send"])
+        self.assertEqual(lines[0]["errors"], [{"code": "nothing", "message": "nothing to send"}])
         self.assertEqual(lines[0]["run_id"], "r1")
         self.assertEqual(lines[0]["seq"], 1)
 
@@ -364,7 +367,8 @@ class TestSubmit(ServerTestBase):
         self.controller.script = RunScript(mode="error")
         lines = self._submit_and_wait(server, prompt="hi")
         self.assertEqual(lines[-1]["type"], "result")
-        self.assertIn("llm unreachable", lines[-1]["errors"])
+        self.assertIn("llm unreachable", [e["message"] for e in lines[-1]["errors"]])
+        self.assertEqual([e["code"] for e in lines[-1]["errors"]], ["unknown"])
 
     def test_two_runs_carry_history(self):
         server = self._server()
@@ -427,7 +431,7 @@ class TestAnswer(ServerTestBase):
         server.op_submit({"op": "submit", "run_id": "r1", "prompt": 123})
         lines = _lines(server.out)  # type: ignore[arg-type]
         self.assertEqual(lines[0]["type"], "error")
-        self.assertIn("prompt", lines[0]["error"])
+        self.assertIn("prompt", lines[0]["error"]["message"])
 
     def test_op_handlers_routed_through_serve_forever(self):
         """answer/cancel ops dispatched by the main loop reach the run."""
@@ -497,7 +501,7 @@ class TestAnswer(ServerTestBase):
             if line["type"] == "error"  # type: ignore[arg-type]
         ]
         self.assertEqual(len(errors), 1)
-        self.assertIn("no pending question", errors[0]["error"])
+        self.assertIn("no pending question", errors[0]["error"]["message"])
         self.controller.gate.set()
         self._wait_idle(server)
 
@@ -512,7 +516,7 @@ class TestAnswer(ServerTestBase):
             if line["type"] == "error"  # type: ignore[arg-type]
         ]
         self.assertEqual(len(errors), 1)
-        self.assertIn("no pending question", errors[0]["error"])
+        self.assertIn("no pending question", errors[0]["error"]["message"])
 
     def test_answer_multi_values_join(self):
         server = self._server()
@@ -532,7 +536,7 @@ class TestAnswer(ServerTestBase):
         server.op_answer({"op": "answer", "run_id": "r1"})
         lines = _lines(server.out)  # type: ignore[arg-type]
         self.assertEqual(lines[-1]["type"], "error")
-        self.assertIn("answers", lines[-1]["error"])
+        self.assertIn("answers", lines[-1]["error"]["message"])
 
     def test_answer_with_no_pending_question_rejected(self):
         server = self._server()
@@ -544,7 +548,7 @@ class TestAnswer(ServerTestBase):
             if line["type"] == "error"  # type: ignore[arg-type]
         ]
         self.assertEqual(len(errors), 1)
-        self.assertIn("no pending question", errors[0]["error"])
+        self.assertIn("no pending question", errors[0]["error"]["message"])
 
     def test_answer_after_wrong_run_rejected_then_correct_resolves(self):
         server = self._server()
@@ -582,7 +586,7 @@ class TestCancel(ServerTestBase):
         server.op_cancel({"op": "cancel", "run_id": "nope"})
         lines = _lines(server.out)  # type: ignore[arg-type]
         self.assertEqual(lines[-1]["type"], "error")
-        self.assertIn("not active", lines[-1]["error"])
+        self.assertIn("not active", lines[-1]["error"]["message"])
 
     def test_cancel_flags_session_and_unblocks_worker(self):
         server = self._server()
@@ -612,7 +616,8 @@ class TestCancel(ServerTestBase):
         self._wait_idle(server)
         lines = _lines(server.out)  # type: ignore[arg-type]
         self.assertEqual(lines[-1]["type"], "error")
-        self.assertIn("execute exploded", lines[-1]["error"])
+        self.assertIn("execute exploded", lines[-1]["error"]["message"])
+        self.assertEqual(lines[-1]["error"]["code"], "protocol")
         # the server accepts a new run afterwards
         server.op_submit({"op": "submit", "prompt": "next", "run_id": "r2"})
         self._wait_idle(server)

@@ -19,11 +19,15 @@ Protocol (one JSON object per line), host → agent:
   {"op": "answer", "run_id": ..., "answers": [...]}
   {"op": "cancel", "run_id": ...}
   {"op": "ping"} / {"op": "shutdown"}
-agent → host (one JSON object per line, ``seq`` on every line):
-  {"type": "ready", ...}                       first line, no run_id
+agent → host (one JSON object per line; ``protocol`` (the wire schema
+version, see ``headless.PROTOCOL_VERSION``) stamps every line, ``seq``
+on every run line):
+  {"type": "ready", "pid": ..., "protocol_version": ...}   first line, no run_id
   {"type": "start"|"delta"|"notify"|"log", "run_id": ...}
-  {"type": "result", "run_id": ..., "answer": ..., "errors": [...], ...}
-  {"type": "ack"|"pong"|"error", ...}          control lines, no run_id
+  {"type": "result", "run_id": ..., "answer": ...,
+   "errors": [{"code", "message"}], "error_messages": [...], ...}
+  {"type": "ack"|"pong"|"error", ...}          control lines, no run_id;
+      error carries {"error": {"code", "message"}, "message": ...}
   notify with kind "ask" carries {"kind": "ask"|"confirm", ...} data
 
 Concurrency: one run at a time (the web controller already enforces
@@ -49,7 +53,7 @@ from typing import Any, TextIO
 from ..io.text_filter import strip_final_check
 from ..session.session import Session
 from .controller import Controller
-from .headless import JsonlView
+from .headless import PROTOCOL_VERSION, JsonlView
 
 DEFAULT_ANSWER_TIMEOUT = 0.0  # wait forever for a host answer
 
@@ -262,8 +266,14 @@ class AgentServer:
         the write error so unwinding threads (result line after host
         death, error inside an except handler) never die with a
         secondary BrokenPipeError traceback.
+
+        Control lines carry ``protocol`` (the wire schema version);
+        live run lines get ``seq``/``run_id`` via the view's ``_write``.
         """
-        text = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
+        text = (
+            json.dumps({"protocol": PROTOCOL_VERSION, **payload}, ensure_ascii=False, default=str)
+            + "\n"
+        )
         view = self.view
         try:
             if view is not None:
@@ -276,8 +286,10 @@ class AgentServer:
         except (BrokenPipeError, ValueError, OSError):
             pass  # host is gone; the reader loop's EOF handles shutdown
 
-    def _error(self, message: str) -> None:
-        self._write_line({"type": "error", "error": message})
+    def _error(self, code: str, message: str) -> None:
+        self._write_line(
+            {"type": "error", "error": {"code": code, "message": message}, "message": message}
+        )
 
     # -- run execution ------------------------------------------------------------
 
@@ -381,15 +393,15 @@ class AgentServer:
     def op_submit(self, op: dict[str, Any]) -> None:
         run_id = str(op.get("run_id") or "")
         if not run_id:
-            self._error("submit requires run_id")
+            self._error("protocol", "submit requires run_id")
             return
         prompt = op.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
-            self._error("submit requires a non-empty prompt")
+            self._error("protocol", "submit requires a non-empty prompt")
             return
         with self._active_guard:
             if self._active_run_id is not None:
-                self._error("a run is already active")
+                self._error("protocol", "a run is already active")
                 return
             self._active_run_id = run_id
         thread = threading.Thread(
@@ -401,7 +413,7 @@ class AgentServer:
         try:
             self._execute_run(prompt, run_id)
         except Exception as e:  # noqa: BLE001 - a run failure must not kill the server
-            self._error(f"run failed: {e}")
+            self._error("protocol", f"run failed: {e}")
         finally:
             with self._active_guard:
                 self._active_run_id = None
@@ -412,20 +424,20 @@ class AgentServer:
         run_id = str(op.get("run_id") or "")
         answers = op.get("answers")
         if not isinstance(answers, list) or not answers:
-            self._error("answer requires a non-empty answers list")
+            self._error("protocol", "answer requires a non-empty answers list")
             return
         answers = [str(a) for a in answers]
         view = self.view
         if view is None or self._active_run_id != run_id:
-            self._error(f"no pending question for run {run_id or '(missing)'}")
+            self._error("protocol", f"no pending question for run {run_id or '(missing)'}")
             return
         if not view.answer(answers):
-            self._error(f"no pending question for run {run_id}")
+            self._error("protocol", f"no pending question for run {run_id}")
 
     def op_cancel(self, op: dict[str, Any]) -> None:
         run_id = str(op.get("run_id") or "")
         if self._active_run_id != run_id:
-            self._error(f"run {run_id or '(missing)'} is not active")
+            self._error("protocol", f"run {run_id or '(missing)'} is not active")
             return
         # The run thread may not have reached Controller.submit yet (it
         # clears the cancel event at run start); remember the intent so
@@ -440,12 +452,13 @@ class AgentServer:
     def serve_forever(self) -> None:
         """Read ops until stdin EOF or a ``shutdown`` op.
 
-        Writes the ``ready`` line first, then processes ops strictly in
+        Writes the ``ready`` line first (``protocol`` on every control
+        line, ``pid`` on ready), then processes ops strictly in
         arrival order on this (reader) thread.  A ``submit`` spawns its
         own run thread and returns immediately, so the loop stays live
         for answer/cancel/ping/shutdown ops while the run executes.
         """
-        self._write_line({"type": "ready", "pid": _pid()})
+        self._write_line({"type": "ready", "pid": _pid(), "protocol_version": PROTOCOL_VERSION})
         while not self._stopped.is_set():
             line = self.inp.readline()
             if not line:  # EOF: the host closed the pipe
@@ -456,10 +469,10 @@ class AgentServer:
             try:
                 op = json.loads(line)
             except ValueError:
-                self._error("malformed op line")
+                self._error("protocol", "malformed op line")
                 continue
             if not isinstance(op, dict) or not isinstance(op.get("op"), str):
-                self._error("op must be an object with a string 'op' field")
+                self._error("protocol", "op must be an object with a string 'op' field")
                 continue
             name = op["op"]
             if name == "submit":
@@ -473,7 +486,7 @@ class AgentServer:
             elif name == "shutdown":
                 self._stopped.set()
             else:
-                self._error(f"unknown op: {name}")
+                self._error("protocol", f"unknown op: {name}")
         self._join_run_thread()
 
     def _join_run_thread(self, timeout: float = 10.0) -> None:

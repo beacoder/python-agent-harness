@@ -27,6 +27,71 @@ from ..session.session import Session
 from .controller import Controller
 from .view import FilteredDeltaStream
 
+# Exec-stream protocol version: rides on every ``start`` and ``result``
+# line so a driving process can reject a schema it does not understand
+# before consuming events.  Bump when a line shape changes.
+PROTOCOL_VERSION = 1
+
+# Wire error codes for the structured ``errors`` field (the flat
+# strings stay in ``messages`` for humans/logs).  ``unknown`` covers
+# everything not classified, so drivers can branch on the rest.
+ERROR_CODES = {
+    "budget",
+    "timeout",
+    "restore",
+    "nothing",
+    "no_answer",
+    "protocol",
+    "cancelled",
+    "unknown",
+}
+
+
+def _as_error(value: Any) -> dict[str, Any]:
+    """The structured wire form of one recorded error.
+
+    ``HeadlessView.errors`` accumulates whatever the notifier passed
+    (the agent loop notifies strings, tests sometimes a dict) — each
+    entry ships as ``{"code", "message"}``.  The code is derived from
+    the message text, giving named outcomes (``budget``, ``timeout``)
+    without touching the notifying code.
+    """
+    if isinstance(value, dict):
+        inner = value.get("error")
+        if isinstance(inner, dict):
+            value = inner
+        code = str(value.get("code") or "unknown")
+        # a flat {"error": "msg"} dict (no "message" key) must not lose
+        # its text — fall back to the string form of the "error" value
+        message = str(value.get("message") or (inner if isinstance(inner, str) else ""))
+    else:
+        message = str(value)
+        lower = message.lower()
+        if "round budget" in lower:
+            code = "budget"
+        elif "wall-clock" in lower:
+            code = "timeout"
+        elif message.strip() == "nothing to send":
+            code = "nothing"
+        elif message.strip() == "restore failed":
+            code = "restore"
+        elif "no answer" in lower:
+            code = "no_answer"
+        elif "cancelled" in lower:
+            code = "cancelled"
+        else:
+            code = "unknown"
+    if code not in ERROR_CODES:
+        code = "unknown"
+    return {"code": code, "message": message}
+
+
+def _structured_errors(errors: Any) -> list[dict[str, Any]]:
+    """Map recorded errors to the wire shape ``[{"code", "message"}]``."""
+    if not errors:
+        return []
+    return [_as_error(e) for e in errors]
+
 
 def _cancelled_now(session: Any) -> bool:
     """Whether the session's cancel event is actually set.
@@ -317,19 +382,22 @@ class JsonlView(HeadlessView):
     first line whenever a run actually starts), ``delta``, ``notify``
     (with ``kind``/``data`` as emitted by the session — ``data`` may be
     any JSON-serializable value or None), ``log``, and a final
-    ``result`` (with the filtered answer and ``errors``).  The stream
-    ends after ``result`` — which is also the only line when the run
-    fails before start (restore failure, nothing to send).
+    ``result`` (with the filtered answer and structured ``errors``).
+    The stream ends after ``result`` — which is also the only line when
+    the run fails before start (restore failure, nothing to send).
 
-    Every line carries ``seq`` (a per-stream monotonic counter starting
+    Every line carries ``protocol`` (the wire schema version —
+    ``PROTOCOL_VERSION``; a driver rejects an unknown version before
+    consuming events), ``seq`` (a per-stream monotonic counter starting
     at 1, so a driver can detect drops/reorder across reconnects) and
     ``run_id`` (a caller-supplied correlation id echoed on every line,
     e.g. one id per sandbox exec).  The ``result`` line adds
     ``usage`` (cumulative input/output tokens and LLM rounds of the
     run, main + sub-agents, when the session provides accounting),
-    ``model`` (the model that served the run) and ``cancelled``
+    ``model`` (the model that served the run), ``cancelled``
     (True when the run was stopped by a signal — SIGINT/SIGTERM —
-    rather than finishing on its own).
+    rather than finishing on its own) and the structured ``errors``
+    plus its flat ``error_messages`` mirror (see ``emit_result``).
 
     Events that arrive before ``emit_start`` (the worker thread starts
     as soon as the prompt is submitted) are buffered and flushed right
@@ -361,8 +429,14 @@ class JsonlView(HeadlessView):
         self._deltas = FilteredDeltaStream()
 
     def _write(self, payload: dict[str, Any]) -> None:
+        """Stamp seq/run_id/protocol and write one JSON line.
+
+        The ``protocol`` version is stamped inside ``_write`` so every
+        line carries it, not just ``start``/``result``: a mid-stream
+        driver can detect a version mismatch on any event.
+        """
         self._seq += 1
-        line = {"seq": self._seq, **payload}
+        line = {"seq": self._seq, "protocol": PROTOCOL_VERSION, **payload}
         if self.run_id is not None:
             line["run_id"] = self.run_id
         self.out.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
@@ -402,9 +476,12 @@ class JsonlView(HeadlessView):
         # Mirror "error" onto stderr as plain text and record it (the
         # parent's contract) so a failed run is diagnosable without
         # parsing JSON and the exit code still signals the failure.
+        # The raw value (not str(data)) is kept: emit_result classifies
+        # and structures it — a dict error keeps its shape, a string
+        # gains its code — and the flat-text mirror is derived there.
         if kind == "error":
             with self._lock:
-                self.errors.append(str(data))
+                self.errors.append(data)
             self.err.write(f"\n[error: {data}]\n")
             self.err.flush()
 
@@ -422,7 +499,7 @@ class JsonlView(HeadlessView):
     def emit_result(
         self,
         answer: str,
-        errors: list[str] | None = None,
+        errors: list[Any] | None = None,
         usage: dict[str, Any] | None = None,
         model: str | None = None,
         cancelled: bool = False,
@@ -433,7 +510,13 @@ class JsonlView(HeadlessView):
         ``usage`` (when given) rides on the result line so a driving
         process can bill for the run without parsing notify events;
         ``model`` names the model that served the run; ``cancelled``
-        marks a signal-triggered stop.
+        marks a signal-triggered stop.  ``errors`` accepts any of the
+        stylistic forms of prior usage — flat strings, ``{"code",
+        "message"}`` dicts, or dicts with a leading ``"error"`` key —
+        and ships it as the structured list: ``[{"code", "message"}]``
+        with well-known codes (``budget``, ``timeout``, ``nothing``,
+        ``restore``, ``unknown``, ...) and a flat-string fallback for
+        drivers that don't parse the object shape.
         """
         # Release any tail the delta filter is still holding, so the
         # concatenated deltas are complete before the result line lands.
@@ -442,10 +525,12 @@ class JsonlView(HeadlessView):
         self._flush_deltas()
         with self._lock:
             self._buffer = None
+            structured = _structured_errors(self.errors if errors is None else errors)
             payload: dict[str, Any] = {
                 "type": "result",
                 "answer": answer,
-                "errors": list(self.errors if errors is None else errors),
+                "errors": list(structured),
+                "error_messages": [e["message"] for e in structured],
                 "cancelled": cancelled,
             }
             if model is not None:
@@ -490,7 +575,7 @@ def run_headless_jsonl(
 
     def emit_final(
         answer: str,
-        errors: list[str] | None = None,
+        errors: list[Any] | None = None,
         cancelled: bool = False,
     ) -> None:
         """The terminal result line: snapshots usage and model so every

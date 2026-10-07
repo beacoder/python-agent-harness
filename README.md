@@ -237,9 +237,16 @@ Interactive prompts are auto-answered (`confirm` → yes, `ask` →
   one `{"type": ...}` object per line: `start` (echoes the prompt and
   submit warnings), `delta` (streamed text chunks), `notify` (tool and
   status events, with `kind`/`data`), `log`, and a final `result` (the
-  filtered answer plus any `errors`). Diagnostics (restore/model notes,
-  a plain-text echo of error events) still go to stderr, so one pipe
-  carries the structured stream. Exit codes are unchanged.
+  filtered answer plus any `errors`).  Every line carries `protocol`
+  (the wire schema version — reject an unknown version before
+  consuming events) and `seq` (a per-stream monotonic counter for
+  drop/reorder detection).  The `result` line reports `errors` as a
+  structured list of `{"code", "message"}` objects (codes: `budget`,
+  `timeout`, `nothing`, `restore`, `no_answer`, `unknown`, ...) with an
+  `error_messages` flat-string mirror for simple drivers.  Diagnostics
+  (restore/model notes, a plain-text echo of error events) still go to
+  stderr, so one pipe carries the structured stream.  Exit codes are
+  unchanged.
 
   ```sh
   python-agent-harness headless "fix it" --json | jq -c 'select(.type=="result")'
@@ -275,11 +282,16 @@ host → agent: {"op": "submit", "prompt": ..., "run_id": ...}
               {"op": "answer", "run_id": ..., "answers": [...]}
               {"op": "cancel", "run_id": ...}
               {"op": "ping"} | {"op": "shutdown"}
-agent → host: {"type": "ready"}                       first line
-              {"seq": N, "type": "start"|"delta"|"notify"|"log", "run_id": ...}
-              {"seq": N, "type": "result", "run_id": ..., "answer": ...,
-               "errors": [...], "usage": {...}, "cancelled": bool}
-              {"type": "error", "error": ...}         protocol failures
+agent → host: {"protocol": V, "type": "ready", "pid": ...,
+               "protocol_version": V}               first line
+              {"protocol": V, "seq": N, "type": "start"|"delta"|"notify"|"log",
+               "run_id": ...}
+              {"protocol": V, "seq": N, "type": "result", "run_id": ...,
+               "answer": ..., "errors": [{"code", "message"}],
+               "error_messages": [...], "usage": {...}, "cancelled": bool}
+              {"protocol": V, "type": "error",
+               "error": {"code": "protocol", "message": ...},
+               "message": ...}                      protocol failures
 ```
 
 A mid-run question arrives as a `notify` with `kind: "ask"` (data has

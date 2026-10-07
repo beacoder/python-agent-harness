@@ -478,29 +478,37 @@ class TestJsonlView(unittest.TestCase):
         view.emit_result("Done.")
         lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
         self.assertEqual(
-            lines[0], {"seq": 1, "type": "start", "prompt": "do it", "warnings": ["w1"]}
+            lines[0],
+            {"seq": 1, "protocol": 1, "type": "start", "prompt": "do it", "warnings": ["w1"]},
         )
         # "hello " streams as "hello": the delta filter holds trailing
         # whitespace (strip_final_check would rstrip it away if a
         # [FINAL CHECK] block followed) and releases it at the message
         # boundary below.
-        self.assertEqual(lines[1], {"seq": 2, "type": "delta", "text": "hello"})
-        self.assertEqual(lines[2], {"seq": 3, "type": "delta", "text": " "})
+        self.assertEqual(lines[1], {"seq": 2, "protocol": 1, "type": "delta", "text": "hello"})
+        self.assertEqual(lines[2], {"seq": 3, "protocol": 1, "type": "delta", "text": " "})
         self.assertEqual(
-            lines[3], {"seq": 4, "type": "notify", "kind": "tool_start", "data": ["Read"]}
+            lines[3],
+            {"seq": 4, "protocol": 1, "type": "notify", "kind": "tool_start", "data": ["Read"]},
         )
         self.assertEqual(
-            lines[4], {"seq": 5, "type": "notify", "kind": "error", "data": "no quota"}
+            lines[4],
+            {"seq": 5, "protocol": 1, "type": "notify", "kind": "error", "data": "no quota"},
         )
-        self.assertEqual(lines[5], {"seq": 6, "type": "log", "message": "warming up"})
-        # the error seen during the run is reported on the result line
+        self.assertEqual(
+            lines[5], {"seq": 6, "protocol": 1, "type": "log", "message": "warming up"}
+        )
+        # the error seen during the run is reported on the result line,
+        # structured as {"code", "message"} with a flat mirror list
         self.assertEqual(
             lines[6],
             {
                 "seq": 7,
+                "protocol": 1,
                 "type": "result",
                 "answer": "Done.",
-                "errors": ["no quota"],
+                "errors": [{"code": "unknown", "message": "no quota"}],
+                "error_messages": ["no quota"],
                 "cancelled": False,
             },
         )
@@ -632,12 +640,13 @@ class TestJsonlView(unittest.TestCase):
         # trailing whitespace is held by the delta filter and released at
         # the tool_start boundary, so "early " arrives as two deltas --
         # buffering preserves their order behind the start line
-        self.assertEqual(lines[1], {"seq": 2, "type": "delta", "text": "early"})
-        self.assertEqual(lines[2], {"seq": 3, "type": "delta", "text": " "})
+        self.assertEqual(lines[1], {"seq": 2, "protocol": 1, "type": "delta", "text": "early"})
+        self.assertEqual(lines[2], {"seq": 3, "protocol": 1, "type": "delta", "text": " "})
         self.assertEqual(
-            lines[3], {"seq": 4, "type": "notify", "kind": "tool_start", "data": ["Bash"]}
+            lines[3],
+            {"seq": 4, "protocol": 1, "type": "notify", "kind": "tool_start", "data": ["Bash"]},
         )
-        self.assertEqual(lines[4], {"seq": 5, "type": "delta", "text": "live"})
+        self.assertEqual(lines[4], {"seq": 5, "protocol": 1, "type": "delta", "text": "live"})
         self.assertEqual(lines[-1]["type"], "result")
 
     def test_concurrent_emit_and_start_never_corrupts_stream(self):
@@ -733,14 +742,25 @@ class TestRunHeadlessJsonl(unittest.TestCase):
             rc = run_headless_jsonl(session, "hello", out=out)
         self.assertEqual(rc, 0)
         lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
-        self.assertEqual(lines[0], {"seq": 1, "type": "start", "prompt": "hello", "warnings": []})
+        self.assertEqual(
+            lines[0],
+            {
+                "seq": 1,
+                "protocol": 1,
+                "type": "start",
+                "prompt": "hello",
+                "warnings": [],
+            },
+        )
         self.assertEqual(
             lines[-1],
             {
                 "seq": 2,
+                "protocol": 1,
                 "type": "result",
                 "answer": "Done.",
                 "errors": [],
+                "error_messages": [],
                 "cancelled": False,
                 "usage": {"input": 0, "output": 0, "rounds": 0},
                 "model": "m-test",
@@ -786,9 +806,11 @@ class TestRunHeadlessJsonl(unittest.TestCase):
             lines[0],
             {
                 "seq": 1,
+                "protocol": 1,
                 "type": "result",
                 "answer": "",
-                "errors": ["nothing to send"],
+                "errors": [{"code": "nothing", "message": "nothing to send"}],
+                "error_messages": ["nothing to send"],
                 "cancelled": False,
                 "usage": {"input": 0, "output": 0, "rounds": 0},
                 "model": "m-test",
@@ -824,7 +846,8 @@ class TestRunHeadlessJsonl(unittest.TestCase):
         self.assertEqual(lines[notify_idx]["kind"], "error")
         result = lines[-1]
         self.assertEqual(result["type"], "result")
-        self.assertEqual(result["errors"], ["no quota"])
+        self.assertEqual(result["error_messages"], ["no quota"])
+        self.assertEqual(result["errors"], [{"code": "unknown", "message": "no quota"}])
 
     def test_restore_failure_emits_result_line(self):
         import json
@@ -855,9 +878,11 @@ class TestRunHeadlessJsonl(unittest.TestCase):
             lines[0],
             {
                 "seq": 1,
+                "protocol": 1,
                 "type": "result",
                 "answer": "",
-                "errors": ["restore failed"],
+                "errors": [{"code": "restore", "message": "restore failed"}],
+                "error_messages": ["restore failed"],
                 "cancelled": False,
                 "usage": {"input": 0, "output": 0, "rounds": 0},
                 "model": "m-test",
@@ -1288,6 +1313,74 @@ class TestCliBudgetFlags(unittest.TestCase):
             cli.main(["headless", "hi", "--max-rounds", "0", "--timeout", "0"])
         self.assertIsNone(rh.call_args.kwargs["max_rounds"])
         self.assertIsNone(rh.call_args.kwargs["timeout"])
+
+
+class TestStructuredErrors(unittest.TestCase):
+    """The wire error taxonomy: message-text classification and the
+    structured ``errors`` / ``error_messages`` result pairing."""
+
+    def test_message_text_classification(self):
+        from python_agent_harness.entry.headless import _as_error
+
+        cases = {
+            "Error: round budget exhausted before the run finished": "budget",
+            "Error: run exceeded the 90s wall-clock limit": "timeout",
+            "nothing to send": "nothing",
+            "restore failed": "restore",
+            "run produced no answer": "no_answer",
+            "Error: API error 429: no quota": "unknown",
+        }
+        for message, code in cases.items():
+            with self.subTest(message=message):
+                self.assertEqual(_as_error(message), {"code": code, "message": message})
+
+    def test_dict_forms(self):
+        from python_agent_harness.entry.headless import _as_error
+
+        # canonical form
+        self.assertEqual(
+            _as_error({"code": "budget", "message": "x"}),
+            {"code": "budget", "message": "x"},
+        )
+        # flat {"error": "msg"} keeps its text (no silent empty message)
+        self.assertEqual(_as_error({"error": "boom"}), {"code": "unknown", "message": "boom"})
+        # nested {"error": {...}} unwraps
+        self.assertEqual(
+            _as_error({"error": {"code": "timeout", "message": "late"}}),
+            {"code": "timeout", "message": "late"},
+        )
+        # an out-of-table code degrades to "unknown", message intact
+        self.assertEqual(
+            _as_error({"code": "weird", "message": "m"}), {"code": "unknown", "message": "m"}
+        )
+
+    def test_structured_errors_mirror(self):
+        from python_agent_harness.entry.headless import _structured_errors
+
+        self.assertEqual(_structured_errors(None), [])
+        self.assertEqual(_structured_errors([]), [])
+        structured = _structured_errors(["nothing to send", "no quota"])
+        self.assertEqual(
+            structured,
+            [
+                {"code": "nothing", "message": "nothing to send"},
+                {"code": "unknown", "message": "no quota"},
+            ],
+        )
+        self.assertEqual([e["message"] for e in structured], ["nothing to send", "no quota"])
+
+    def test_result_line_carries_protocol_and_mirrors(self):
+        out = io.StringIO()
+        view = JsonlView(out=out)
+        view.emit_start("p", [])
+        view.on_notify("error", "Error: run exceeded the 10s wall-clock limit")
+        view.emit_result("partial")
+        lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
+        self.assertTrue(all(line["protocol"] == 1 for line in lines))
+        result = lines[-1]
+        message = "Error: run exceeded the 10s wall-clock limit"
+        self.assertEqual(result["errors"], [{"code": "timeout", "message": message}])
+        self.assertEqual(result["error_messages"], [message])
 
 
 if __name__ == "__main__":
