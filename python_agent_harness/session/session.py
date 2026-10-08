@@ -247,28 +247,87 @@ class Session:
         self.notify_fn: Callable[[str, Any], None] | None = None
         self.confirm_fn: Callable[[str], bool] | None = None
         self.ask_fn: Callable[[list[dict]], str] | None = None
+        # Per-thread run identity for event emission, tagged by
+        # ``AgentLoop`` (see ``mark_emit_generation``).  Lets the
+        # dispatch below drop events from a superseded run instead of
+        # misattributing them to the current one.
+        self._emit_local = threading.local()
+
+    # ------------------------------------------------------------------
+    # emission fencing
+    # ------------------------------------------------------------------
+    def mark_emit_generation(self, generation: int) -> None:
+        """Tag the CALLING thread as emitting for run *generation*.
+
+        Called by ``AgentLoop`` as it is constructed — on the thread
+        that will run it, so the main worker and each sub-agent thread
+        each record the generation of the run they belong to.
+        """
+        self._emit_local.run_gen = generation
+
+    def _emit_superseded(self) -> bool:
+        """Whether the calling thread's run has been superseded.
+
+        A thread tagged by ``mark_emit_generation`` belongs to exactly
+        one top-level run; once a newer run bumps ``run_generation``
+        that thread is stale.  This is the same condition
+        ``AgentLoop._is_stale`` uses to stop a superseded worker from
+        touching shared state — and the live view IS shared state: a
+        detached sub-agent thread that outlives its run would
+        otherwise have its events attributed to the NEXT run (stamped
+        with that run's correlation id).
+
+        Untagged threads (the TUI, slash commands, tests calling the
+        session directly) are never fenced.
+        """
+        local = getattr(self, "_emit_local", None)
+        generation = getattr(local, "run_gen", None)
+        return generation is not None and generation != self.run_generation
 
     # ------------------------------------------------------------------
     # notifications
     # ------------------------------------------------------------------
+    # Each dispatcher below SNAPSHOTS its callback before calling it.
+    # A host that swaps views per run (``serve``) unwires these at run
+    # teardown (``Controller.detach_view``), so testing the attribute
+    # and then re-reading it could find None in between and raise
+    # ``NoneType is not callable`` inside a straggler thread.
+
     def notify(self, kind: str, data: Any = None) -> None:
-        if self.notify_fn:
-            self.notify_fn(kind, data)
+        if self._emit_superseded():
+            return
+        notify_fn = self.notify_fn
+        if notify_fn:
+            notify_fn(kind, data)
 
     def log(self, msg: str) -> None:
-        if self.log_fn:
-            self.log_fn(msg)
+        if self._emit_superseded():
+            return
+        log_fn = self.log_fn
+        if log_fn:
+            log_fn(msg)
 
     def confirm(self, prompt: str) -> bool:
+        if self._emit_superseded():
+            # A superseded run must not block on a human: it is
+            # unwinding, and its prompt would surface inside the NEXT
+            # run's stream.  Same answer as "no handler attached".
+            return True
         with self._interactive_lock:
-            if self.confirm_fn:
-                return self.confirm_fn(prompt)
+            confirm_fn = self.confirm_fn
+            if confirm_fn:
+                return confirm_fn(prompt)
             return True
 
     def ask_questions(self, questions: list[dict]) -> str:
+        if self._emit_superseded():
+            # See confirm(): never block a superseded run on an answer
+            # the host would be delivering for a different run.
+            return "Unanswered"
         with self._interactive_lock:
-            if self.ask_fn:
-                return self.ask_fn(questions)
+            ask_fn = self.ask_fn
+            if ask_fn:
+                return ask_fn(questions)
             return "Unanswered"
 
     # ------------------------------------------------------------------

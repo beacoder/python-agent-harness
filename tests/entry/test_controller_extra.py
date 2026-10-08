@@ -159,5 +159,64 @@ class TestRunWorkerGuards(unittest.TestCase):
         self.assertEqual(ctrl.conversation_history[0].role, "user")  # no adoption
 
 
+class ViewWiringTests(unittest.TestCase):
+    """attach_view / detach_view must cover the SAME callback set.
+
+    Exercises the real Controller: the serve tests drive a controller
+    double, so a typo'd attribute name here (``notify_func`` for
+    ``notify_fn``) would silently leave a run's view wired and let a
+    straggler emit into the next run's stream.
+    """
+
+    CALLBACKS = ("on_delta", "notify_fn", "log_fn", "confirm_fn", "ask_fn")
+
+    def _view(self):
+        view = mock.Mock()
+        view.on_delta = mock.Mock(name="on_delta")
+        view.on_notify = mock.Mock(name="on_notify")
+        view.on_log = mock.Mock(name="on_log")
+        view.confirm = mock.Mock(name="confirm")
+        view.ask = mock.Mock(name="ask")
+        return view
+
+    def test_attach_wires_every_callback(self):
+        session = FakeSession()
+        for name in self.CALLBACKS:
+            setattr(session, name, None)
+        controller = Controller(session)  # type: ignore[arg-type]
+        view = self._view()
+        controller.attach_view(view)
+        self.assertIs(session.on_delta, view.on_delta)
+        self.assertIs(session.notify_fn, view.on_notify)
+        self.assertIs(session.log_fn, view.on_log)
+        self.assertIs(session.confirm_fn, view.confirm)
+        self.assertIs(session.ask_fn, view.ask)
+
+    def test_detach_unwires_every_callback_attach_sets(self):
+        """The two must stay in lockstep: anything attach wires,
+        detach must clear, or a straggler keeps a live channel."""
+        session = FakeSession()
+        for name in self.CALLBACKS:
+            setattr(session, name, None)
+        controller = Controller(session)  # type: ignore[arg-type]
+        controller.attach_view(self._view())
+        wired = [n for n in self.CALLBACKS if getattr(session, n) is not None]
+        self.assertEqual(sorted(wired), sorted(self.CALLBACKS), "attach_view changed shape")
+
+        controller.detach_view()
+        still_wired = [n for n in self.CALLBACKS if getattr(session, n) is not None]
+        self.assertEqual(still_wired, [], f"detach_view left {still_wired} wired")
+
+    def test_detach_is_idempotent(self):
+        session = FakeSession()
+        for name in self.CALLBACKS:
+            setattr(session, name, None)
+        controller = Controller(session)  # type: ignore[arg-type]
+        controller.detach_view()
+        controller.detach_view()
+        for name in self.CALLBACKS:
+            self.assertIsNone(getattr(session, name))
+
+
 if __name__ == "__main__":
     unittest.main()

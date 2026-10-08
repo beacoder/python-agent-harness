@@ -4,6 +4,7 @@ auto-save/title/cancel edge cases, compact/summarize failure paths."""
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1186,6 +1187,184 @@ class TestModelSwitching(unittest.TestCase):
         success, _ = session.switch_model("slow")
         self.assertTrue(success)
         self.assertEqual(session.client.timeout, 120.0)
+
+
+class TestEmissionFencing(unittest.TestCase):
+    """Events from a superseded run must never reach the live view.
+
+    A top-level run's work can outlive it — most sharply a detached
+    sub-agent thread (``AgentTool`` spawns one per call).  A host that
+    swaps views per run (``serve``) repoints ``notify_fn`` at each
+    run's view, and ``notify`` resolves it at call time, so a straggler
+    from run N would otherwise be emitted into run N+1's stream
+    wearing run N+1's correlation id.  Threads tag themselves via
+    ``mark_emit_generation`` (done by ``AgentLoop``); a tag that no
+    longer matches ``run_generation`` means superseded.
+    """
+
+    def _recording_session(self):
+        session = RecordingSession()
+        seen: list = []
+        session.notify_fn = lambda kind, data=None: seen.append(("notify", kind, data))
+        session.log_fn = lambda msg: seen.append(("log", msg))
+        session.confirm_fn = lambda prompt: seen.append(("confirm", prompt)) or False
+        session.ask_fn = lambda questions: seen.append(("ask", questions)) or "real answer"
+        return session, seen
+
+    def _emit_on_thread(self, session, tag_generation, fn):
+        """Run *fn* on a fresh thread tagged for *tag_generation*."""
+        result = {}
+
+        def body() -> None:
+            session.mark_emit_generation(tag_generation)
+            result["value"] = fn()
+
+        thread = threading.Thread(target=body)
+        thread.start()
+        thread.join(5)
+        return result.get("value")
+
+    def test_current_generation_emits(self):
+        session, seen = self._recording_session()
+        session.run_generation = 1
+        self._emit_on_thread(session, 1, lambda: session.notify("tool", "live"))
+        self.assertEqual(seen, [("notify", "tool", "live")])
+
+    def test_superseded_generation_is_dropped(self):
+        """The mid-run window: run 1's straggler while run 2 streams."""
+        session, seen = self._recording_session()
+        session.run_generation = 1
+        # A newer top-level run takes over the session.
+        session.run_generation = 2
+        self._emit_on_thread(session, 1, lambda: session.notify("tool", "STRAGGLER"))
+        self._emit_on_thread(session, 1, lambda: session.log("STRAGGLER-LOG"))
+        self.assertEqual(seen, [], "a superseded run must not emit into the live view")
+
+    def test_untagged_thread_always_emits(self):
+        """The TUI, slash commands and tests are never fenced."""
+        session, seen = self._recording_session()
+        session.run_generation = 7  # no tag on this thread
+        session.notify("tool", "from-untagged")
+        session.log("log-from-untagged")
+        self.assertEqual(
+            seen,
+            [("notify", "tool", "from-untagged"), ("log", "log-from-untagged")],
+        )
+
+    def test_superseded_interactive_prompts_do_not_block(self):
+        """A superseded run must not wait on a human.
+
+        Its prompt would surface inside the next run's stream, and the
+        answer the host delivers belongs to that other run — so the
+        dead run gets the same auto-answer as "no handler attached".
+        """
+        session, seen = self._recording_session()
+        session.run_generation = 2
+        confirmed = self._emit_on_thread(session, 1, lambda: session.confirm("proceed?"))
+        answer = self._emit_on_thread(session, 1, lambda: session.ask_questions([{"q": "?"}]))
+        self.assertTrue(confirmed)  # auto-approve, handler never consulted
+        self.assertEqual(answer, "Unanswered")
+        self.assertEqual(seen, [], "superseded run must not reach the host's ask/confirm")
+
+    def test_current_interactive_prompts_reach_the_handler(self):
+        session, seen = self._recording_session()
+        session.run_generation = 3
+        answer = self._emit_on_thread(session, 3, lambda: session.ask_questions([{"q": "?"}]))
+        self.assertEqual(answer, "real answer")
+        self.assertEqual([entry[0] for entry in seen], ["ask"])
+
+    def test_agent_loop_tags_its_own_thread(self):
+        """AgentLoop is what supplies the identity the fence needs.
+
+        It is constructed on the thread that will drive it (the run
+        worker, or a sub-agent's own thread), so each thread records
+        the generation of the run it belongs to.
+        """
+        from python_agent_harness.core.agent import AgentLoop
+
+        session = RecordingSession()
+        session.run_generation = 4
+        tagged = {}
+
+        def body() -> None:
+            AgentLoop(session, messages=[Message(role="user", content="hi")])
+            tagged["gen"] = session._emit_local.run_gen
+
+        thread = threading.Thread(target=body)
+        thread.start()
+        thread.join(5)
+        self.assertEqual(tagged["gen"], 4)
+
+    def test_agent_loop_tolerates_session_without_the_hook(self):
+        """Session doubles predating ``mark_emit_generation`` still work.
+
+        The tag is best-effort: a session that lacks the hook (older
+        double, a stub) must not break loop construction.
+        """
+        from python_agent_harness.core.agent import AgentLoop
+
+        session = RecordingSession()
+        # Shadow the hook with a non-callable so the guard takes its
+        # False branch.
+        session.mark_emit_generation = "not callable"  # type: ignore[assignment]
+        loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
+        self.assertEqual(loop._run_gen, session.run_generation)
+
+    def test_dispatch_survives_callback_unwired_mid_call(self):
+        """Detach must not turn a straggler's emit into a TypeError.
+
+        ``Controller.detach_view`` sets the callbacks to None at run
+        teardown, so a dispatcher that tests the attribute and then
+        re-reads it could find None in between.  Modelled here with a
+        property that is unwired right after the truth test.
+        """
+
+        class VanishingSession(RecordingSession):
+            """notify_fn/log_fn go None immediately after being read."""
+
+            reads: list = []
+
+            @property
+            def notify_fn(self):
+                self.reads.append("notify")
+                return None if len(self.reads) > 1 else (lambda kind, data=None: None)
+
+            @notify_fn.setter
+            def notify_fn(self, value):
+                pass
+
+        session = VanishingSession()
+        # Must not raise: the snapshot is called, not the re-read None.
+        session.notify("tool", "payload")
+        self.assertEqual(len(session.reads), 1, "callback must be read exactly once")
+
+    def test_dispatch_tolerates_unwired_callbacks(self):
+        """Detached callbacks simply produce no emission."""
+        session = RecordingSession()
+        session.notify_fn = None
+        session.log_fn = None
+        session.on_delta = None
+        session.ask_fn = None
+        session.confirm_fn = None
+        session.notify("tool", "x")  # no raise
+        session.log("x")
+        self.assertTrue(session.confirm("?"))
+        self.assertEqual(session.ask_questions([{"q": "?"}]), "Unanswered")
+
+    def test_fence_tolerates_missing_emit_local(self):
+        """Dispatch must not depend on __init__ having completed.
+
+        ``_emit_local`` is assigned in ``Session.__init__``; a
+        dispatcher reached before that (a subclass emitting during its
+        own construction) must degrade to "not fenced" rather than
+        raising AttributeError.
+        """
+        session = RecordingSession()
+        seen = []
+        session.notify_fn = lambda kind, data=None: seen.append((kind, data))
+        del session._emit_local
+        session.notify("tool", "no-local")
+        self.assertEqual(seen, [("tool", "no-local")])
 
 
 if __name__ == "__main__":

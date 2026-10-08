@@ -83,6 +83,21 @@ class Controller:
         self.session.confirm_fn = view.confirm
         self.session.ask_fn = view.ask
 
+    def detach_view(self) -> None:
+        """Unwire the session's callbacks (no view attached).
+
+        The counterpart of ``attach_view``, for a host that swaps views
+        per run (``serve``): once a run's view is detached, a worker
+        still unwinding from that run emits into nothing instead of
+        into whichever view happens to be attached next — its events
+        would otherwise be attributed to a different run.
+        """
+        self.session.on_delta = None
+        self.session.notify_fn = None
+        self.session.log_fn = None
+        self.session.confirm_fn = None
+        self.session.ask_fn = None
+
     # ------------------------------------------------------------------
     # read-only state accessors
     # ------------------------------------------------------------------

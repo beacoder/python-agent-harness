@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import io
 import json
 import os
+import signal
 import threading
 import time
 import unittest
 from unittest import mock
 
-from python_agent_harness.entry.server import AgentServer, ServerView, _AskState, run_serve
+from python_agent_harness.entry import server as server_module
+from python_agent_harness.entry.server import (
+    AgentServer,
+    ServerView,
+    _AskState,
+    _restorable_handler,
+    _ShutdownSignal,
+    graceful_signal_shutdown,
+    run_serve,
+)
 
 
 def _lines(out: io.StringIO) -> list[dict]:
@@ -114,6 +126,15 @@ class FakeController:
         session.log_fn = view.on_log
         session.confirm_fn = view.confirm
         session.ask_fn = view.ask
+
+    def detach_view(self) -> None:
+        self.view = None
+        session = self.session
+        session.on_delta = None
+        session.notify_fn = None
+        session.log_fn = None
+        session.confirm_fn = None
+        session.ask_fn = None
 
     def submit(self, prompt: str, **kwargs):
         self.submits.append(prompt)
@@ -997,6 +1018,297 @@ class TestRunServe(unittest.TestCase):
             rc = run_serve(session, inp=io.StringIO(""), out=out, err=io.StringIO())
         self.assertEqual(rc, 0)
         self.assertEqual(_lines(out)[0]["type"], "ready")
+
+
+class StragglerFencingTests(ServerTestBase):
+    """A run's worker can outlive its ``result`` line.
+
+    Such a straggler (a detached sub-agent thread, a tool unwinding
+    after a cancel) must not append to its own finished stream, and
+    must never be attributed to a LATER run.
+    """
+
+    def test_run_thread_is_daemon(self):
+        """The run thread must not keep the interpreter alive at exit.
+
+        ``_join_run_thread`` bounds how long shutdown waits for a run
+        that ignores cancel; a non-daemon thread would additionally
+        block interpreter exit past that budget, so ``shutdown`` could
+        never terminate the process.
+        """
+        server = self._server()
+        gate = threading.Event()
+        self.controller.gate = gate
+        server.op_submit({"op": "submit", "prompt": "p", "run_id": "r1"})
+        run_threads = [t for t in threading.enumerate() if t.name.startswith("serve-run-")]
+        self.assertEqual(len(run_threads), 1)
+        self.assertTrue(
+            run_threads[0].daemon,
+            "serve run thread must be a daemon or `shutdown` cannot exit the process",
+        )
+        gate.set()
+        self._wait_idle(server)
+
+    def test_no_line_after_result(self):
+        """A straggler must not append behind the terminal result line."""
+        server = self._server()
+        server.op_submit({"op": "submit", "prompt": "p", "run_id": "r1"})
+        self._wait_idle(server)
+        view = server.controller.view or self._last_view
+        # The run is over; the straggler still holds its bound callback.
+        view.on_notify("tool", "straggler")
+        view.on_log("late log")
+        lines = _lines(server.out)
+        self.assertEqual(lines[-1]["type"], "result", "result must stay the terminal line")
+        self.assertNotIn("straggler", server.out.getvalue())
+        self.assertNotIn("late log", server.out.getvalue())
+
+    def test_straggler_not_attributed_to_next_run(self):
+        """Run 1's straggler must not land in run 2's stream.
+
+        ``attach_view`` repoints ``session.notify_fn`` per run and
+        ``Session.notify`` resolves it at call time, so without the
+        detach a late emission from run 1 would be stamped with run
+        2's run_id/seq — the user would see the previous turn's tool
+        output inside the current turn.
+        """
+        server = self._server()
+        server.op_submit({"op": "submit", "prompt": "one", "run_id": "RUN-1"})
+        self._wait_idle(server)
+        run1_view = self._capture_view(server)
+
+        server.op_submit({"op": "submit", "prompt": "two", "run_id": "RUN-2"})
+        self._wait_idle(server)
+
+        # Run 1's straggler emits through the view it captured, and
+        # through the session (whose callbacks run 2 had repointed).
+        run1_view.on_notify("tool", "STRAGGLER")
+        self.session.notify("tool", "STRAGGLER-VIA-SESSION")
+
+        lines = _lines(server.out)
+        self.assertNotIn("STRAGGLER", server.out.getvalue())
+        for line in lines:
+            if line.get("run_id") == "RUN-2":
+                self.assertNotIn("STRAGGLER", json.dumps(line))
+        # Both runs still produced exactly one clean terminal line.
+        results = _of_type(lines, "result")
+        self.assertEqual([r["run_id"] for r in results], ["RUN-1", "RUN-2"])
+
+    def test_detach_unwires_session_callbacks(self):
+        """After a run, nothing is attached to emit into."""
+        server = self._server()
+        server.op_submit({"op": "submit", "prompt": "p", "run_id": "r1"})
+        self._wait_idle(server)
+        self.assertIsNone(self.session.notify_fn)
+        self.assertIsNone(self.session.log_fn)
+        self.assertIsNone(self.session.on_delta)
+        self.assertIsNone(self.session.ask_fn)
+        self.assertIsNone(self.session.confirm_fn)
+
+    def test_detach_failure_does_not_wedge_the_server(self):
+        """A raise in teardown must not strand the active-run id.
+
+        ``_active_run_id`` gates every submit; if a detach failure
+        escaped the finally the server would reject all later runs
+        with "a run is already active" forever.
+        """
+        server = self._server()
+
+        def _boom() -> None:
+            raise RuntimeError("detach exploded")
+
+        self.controller.detach_view = _boom  # type: ignore[assignment]
+        server.op_submit({"op": "submit", "prompt": "one", "run_id": "r1"})
+        self._wait_idle(server)
+        # The next run must still be accepted.
+        server.op_submit({"op": "submit", "prompt": "two", "run_id": "r2"})
+        self._wait_idle(server)
+        results = _of_type(_lines(server.out), "result")
+        self.assertEqual([r["run_id"] for r in results], ["r1", "r2"])
+
+    # -- helpers ---------------------------------------------------------
+
+    def _capture_view(self, server: AgentServer):
+        """The view of the run that just finished (detach clears it)."""
+        return self._last_view
+
+    def setUp(self) -> None:
+        self._last_view = None
+
+    def _server(self, *args, **kwargs):  # type: ignore[override]
+        server = super()._server(*args, **kwargs)
+        attach = self.controller.attach_view
+
+        def _tracking_attach(view):
+            self._last_view = view
+            attach(view)
+
+        self.controller.attach_view = _tracking_attach  # type: ignore[assignment]
+        return server
+
+
+class SignalShutdownTests(ServerTestBase):
+    """SIGINT/SIGTERM must drain the server, not kill it mid-run.
+
+    ``serve`` is resident, so the default handler used to kill the
+    process before the active run could emit its terminal ``result``
+    line — losing the partial answer, the salvaged history, and the
+    token usage a driving host bills on.
+    """
+
+    def test_handler_flags_stop_and_breaks_the_blocking_read(self):
+        """A flag alone is not enough: readline is retried (PEP 475)."""
+        server = self._server()
+        guard = graceful_signal_shutdown(server)
+        with self.assertRaises(_ShutdownSignal):
+            guard._handle(signal.SIGTERM, None)
+        self.assertTrue(server._stopped.is_set())
+
+    def test_handlers_installed_and_restored(self):
+        server = self._server()
+        before = signal.getsignal(signal.SIGTERM)
+        with graceful_signal_shutdown(server):
+            self.assertIsNot(signal.getsignal(signal.SIGTERM), before)
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+
+    def test_handler_is_one_shot(self):
+        """A second signal takes its default action, not another drain."""
+        server = self._server()
+        original = signal.getsignal(signal.SIGTERM)
+        try:
+            with graceful_signal_shutdown(server) as guard:
+                installed = signal.getsignal(signal.SIGTERM)
+                with self.assertRaises(_ShutdownSignal):
+                    guard._handle(signal.SIGTERM, None)
+                self.assertIsNot(
+                    signal.getsignal(signal.SIGTERM),
+                    installed,
+                    "handler must uninstall itself before raising",
+                )
+        finally:
+            signal.signal(signal.SIGTERM, original)
+
+    def test_off_main_thread_degrades_to_noop(self):
+        """Only the main thread may install handlers (ValueError)."""
+        server = self._server()
+        failures: list = []
+
+        def body() -> None:
+            try:
+                with graceful_signal_shutdown(server):
+                    pass
+            except Exception as e:  # noqa: BLE001 - recorded for the assert
+                failures.append(e)
+
+        thread = threading.Thread(target=body)
+        thread.start()
+        thread.join(5)
+        self.assertEqual(failures, [])
+
+    def test_signal_drains_active_run_to_a_result_line(self):
+        """The payload of the fix: a signal still yields ``result``.
+
+        Without the drain the process died here and the run's result
+        line — with ``cancelled`` and its usage — was never written.
+        """
+        server = self._server()
+        self.controller.script = RunScript("ask")
+        server.op_submit({"op": "submit", "prompt": "q", "run_id": "r1"})
+        self._wait_pending(server)
+
+        def _interrupted() -> None:
+            raise _ShutdownSignal  # as the signal handler would
+
+        server._read_ops = _interrupted  # type: ignore[method-assign]
+        server.serve_forever()
+
+        results = _of_type(_lines(server.out), "result")
+        self.assertEqual(len(results), 1, "a drained run must still emit result")
+        self.assertEqual(results[0]["run_id"], "r1")
+        self.assertTrue(results[0]["cancelled"])
+        self.assertIn("usage", results[0], "usage must survive for billing")
+        self.assertEqual(_lines(server.out)[-1]["type"], "result")
+
+    def test_tolerates_none_previous_handler(self):
+        """``signal.signal`` returns None when the prior disposition
+        was not installed from Python (C code, PID-1/supervisor
+        setups — the containerised case).  Restoring that None raises
+        TypeError, which would escape __exit__.
+        """
+        server = self._server()
+        real = signal.signal
+
+        def reports_none(sig, handler):
+            real(sig, handler)
+            return None
+
+        try:
+            with (
+                mock.patch("signal.signal", reports_none),
+                graceful_signal_shutdown(server),
+            ):
+                pass
+        finally:
+            real(signal.SIGINT, signal.default_int_handler)
+            real(signal.SIGTERM, signal.SIG_DFL)
+
+    def test_handler_raises_shutdown_even_if_restore_fails(self):
+        """The raise is what the drain depends on.
+
+        A failure while uninstalling must not replace _ShutdownSignal
+        with an exception the loop does not expect — that would crash
+        serve_forever and skip the drain entirely.
+        """
+        server = self._server()
+        guard = graceful_signal_shutdown(server)
+        guard._previous[signal.SIGTERM] = None  # restoring this raises TypeError
+        with self.assertRaises(_ShutdownSignal):
+            guard._handle(signal.SIGTERM, None)
+        self.assertTrue(server._stopped.is_set())
+
+    def test_restorable_handler_normalizes_none(self):
+        self.assertIs(_restorable_handler(None), signal.SIG_DFL)
+        self.assertIs(_restorable_handler(signal.SIG_IGN), signal.SIG_IGN)
+        self.assertIs(_restorable_handler(signal.SIG_DFL), signal.SIG_DFL)
+        handler = signal.getsignal(signal.SIGINT)
+        self.assertIs(_restorable_handler(handler), handler)
+
+
+class ProtocolDocTests(unittest.TestCase):
+    """The module docstring is the protocol spec other hosts read."""
+
+    @staticmethod
+    def _code_string_literals() -> set[str]:
+        """String literals in executable code (docstrings excluded)."""
+        tree = ast.parse(inspect.getsource(server_module))
+        docstrings = {
+            ast.get_docstring(n, clean=False)
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and ast.get_docstring(n, clean=False)
+        }
+        return {
+            n.value
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Constant)
+            and isinstance(n.value, str)
+            and n.value not in docstrings
+        }
+
+    def test_no_phantom_ack_line(self):
+        """``ack`` was documented but never emitted.
+
+        A host written against the docstring would wait forever for a
+        receipt that never arrives.
+        """
+        self.assertNotIn('"ack"', server_module.__doc__ or "")
+        self.assertNotIn("ack", self._code_string_literals())
+
+    def test_documented_control_lines_are_really_emitted(self):
+        emitted = self._code_string_literals()
+        for line_type in ("ready", "pong", "error"):
+            self.assertIn(line_type, emitted)
+            self.assertIn(line_type, server_module.__doc__ or "")
 
 
 if __name__ == "__main__":

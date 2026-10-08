@@ -125,6 +125,18 @@ def final_answer_text(session: Session) -> str:
     return ""
 
 
+def _restorable_handler(previous: Any) -> Any:
+    """A handler value ``signal.signal`` will accept back.
+
+    ``signal.signal`` returns None when the previous disposition was
+    not installed from Python — C code, or some PID-1/supervisor
+    setups, which is exactly the containerised case that matters most.
+    Passing that None back raises TypeError, so SIG_DFL is the correct
+    stand-in.
+    """
+    return signal.SIG_DFL if previous is None else previous
+
+
 class signal_canceller:
     """Context manager wiring SIGINT/SIGTERM to ``session.cancel()``.
 
@@ -155,12 +167,12 @@ class signal_canceller:
             with contextlib.suppress(ValueError, OSError):
                 # not the main thread (ValueError), or the platform
                 # lacks the signal (OSError) — degrade to a no-op
-                self._installed.append((sig, signal.signal(sig, self._handle)))
+                self._installed.append((sig, _restorable_handler(signal.signal(sig, self._handle))))
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         for sig, handler in reversed(self._installed):
-            with contextlib.suppress(ValueError, OSError):
+            with contextlib.suppress(ValueError, OSError, TypeError):
                 signal.signal(sig, handler)
         self._installed.clear()
 
@@ -424,6 +436,14 @@ class JsonlView(HeadlessView):
         # Caller-supplied correlation id echoed on every line (the
         # controller's exec id, typically); None omits the field.
         self.run_id = run_id
+        # Set once the terminal ``result`` line has been written: the
+        # stream is closed and later emissions are dropped.  A run's
+        # worker can outlive its result line (a detached sub-agent
+        # thread, a tool still unwinding after a cancel), and such a
+        # straggler would otherwise append events behind ``result`` --
+        # breaking the documented "the stream ends after result"
+        # contract that a driver relies on to tear down its subscriber.
+        self._sealed = False
         # [FINAL CHECK] filtering of the delta stream (see
         # FilteredDeltaStream); reset at every message boundary.
         self._deltas = FilteredDeltaStream()
@@ -434,7 +454,14 @@ class JsonlView(HeadlessView):
         The ``protocol`` version is stamped inside ``_write`` so every
         line carries it, not just ``start``/``result``: a mid-stream
         driver can detect a version mismatch on any event.
+
+        A sealed stream (``result`` already written) drops the line:
+        the terminal line must stay terminal, and the seq counter must
+        not advance past it.  Callers always hold ``_lock`` here, so
+        the flag is read under the same lock that sets it.
         """
+        if self._sealed:
+            return
         self._seq += 1
         line = {"seq": self._seq, "protocol": PROTOCOL_VERSION, **payload}
         if self.run_id is not None:
@@ -538,6 +565,9 @@ class JsonlView(HeadlessView):
             if usage is not None:
                 payload["usage"] = usage
             self._write(payload)
+            # The stream is now closed: a straggler from this run must
+            # not append anything behind the terminal line.
+            self._sealed = True
 
     def run(self) -> None:
         pass

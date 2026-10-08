@@ -26,9 +26,18 @@ on every run line):
   {"type": "start"|"delta"|"notify"|"log", "run_id": ...}
   {"type": "result", "run_id": ..., "answer": ...,
    "errors": [{"code", "message"}], "error_messages": [...], ...}
-  {"type": "ack"|"pong"|"error", ...}          control lines, no run_id;
+  {"type": "pong"|"error", ...}                control lines, no run_id;
       error carries {"error": {"code", "message"}, "message": ...}
   notify with kind "ask" carries {"kind": "ask"|"confirm", ...} data
+
+There is no generic ``ack`` line: each op is acknowledged by its own
+effect on the stream, so a host correlates by that rather than waiting
+for a receipt.  ``submit`` is acknowledged by the run's ``start``
+line (or an ``error`` if rejected); ``ping`` by ``pong``; ``answer``
+and ``cancel`` only answer back on failure (an ``error`` line) — on
+success they are observable through the run resuming or ending with
+``cancelled: true``; ``shutdown`` by the stream ending (the final
+``result`` of a drained run, then EOF).
 
 Concurrency: one run at a time (the web controller already enforces
 "one running run per conversation"); a submit while a run is active is
@@ -45,6 +54,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import signal
 import sys
 import threading
 import time
@@ -53,9 +63,78 @@ from typing import Any, TextIO
 from ..io.text_filter import strip_final_check
 from ..session.session import Session
 from .controller import Controller
-from .headless import PROTOCOL_VERSION, JsonlView
+from .headless import PROTOCOL_VERSION, JsonlView, _restorable_handler
 
 DEFAULT_ANSWER_TIMEOUT = 0.0  # wait forever for a host answer
+
+
+class _ShutdownSignal(BaseException):
+    """Raised in the reader thread by a SIGINT/SIGTERM handler.
+
+    Derives from ``BaseException`` on purpose: it unwinds the reader
+    loop and must not be swallowed by an ``except Exception`` guard on
+    the way out.
+    """
+
+
+class graceful_signal_shutdown:
+    """Context manager draining the server on SIGINT/SIGTERM.
+
+    ``serve`` is resident, so a signal means "stop the server", not
+    merely "cancel this run" — which is why headless's one-shot
+    ``signal_canceller`` does not fit.  Two things have to happen, and
+    a flag alone achieves neither: the reader loop is parked in a
+    blocking ``readline`` (which Python retries after a handler
+    returns, per PEP 475), so the handler *raises* to break out of it.
+    ``serve_forever`` then reaches ``_join_run_thread``, which cancels
+    the active run and waits for it to emit its terminal ``result``
+    line — carrying ``cancelled: true`` and the run's real token
+    usage.
+
+    Without this, SIGTERM (``docker stop`` sends it to the sandbox's
+    PID 1) killed the process mid-run through the default handler: no
+    ``result`` line, so a driving host lost the partial answer, the
+    salvaged history, and — because it bills off that line — every
+    token the run had already consumed.
+
+    One-shot: each handler uninstalls itself before raising, so a
+    second signal takes its default action (immediate death) rather
+    than interrupting the drain.  Only the main thread may install
+    handlers; from any other thread (ValueError) or on a platform
+    lacking the signal (OSError) this degrades to a no-op, matching
+    ``signal_canceller``.
+    """
+
+    def __init__(self, server: AgentServer) -> None:
+        self._server = server
+        self._previous: dict[int, Any] = {}
+        self._installed: list[int] = []
+
+    def _handle(self, signum: int, frame: Any) -> None:
+        # Uninstall first: a second signal must not land inside the
+        # drain we are about to start.  Suppress broadly (TypeError
+        # included) because the raise below is what the whole drain
+        # depends on — a restore failure must never replace
+        # _ShutdownSignal with an exception the loop does not expect,
+        # which would crash serve_forever and skip the drain entirely.
+        with contextlib.suppress(ValueError, OSError, TypeError):
+            signal.signal(signum, self._previous.get(signum, signal.SIG_DFL))
+        self._server._stopped.set()
+        raise _ShutdownSignal
+
+    def __enter__(self) -> graceful_signal_shutdown:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(ValueError, OSError):
+                self._previous[sig] = _restorable_handler(signal.signal(sig, self._handle))
+                self._installed.append(sig)
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        for sig in reversed(self._installed):
+            with contextlib.suppress(ValueError, OSError, TypeError):
+                signal.signal(sig, self._previous.get(sig, signal.SIG_DFL))
+        self._installed.clear()
+        self._previous.clear()
 
 
 class _AskState:
@@ -169,6 +248,7 @@ class ServerView(JsonlView):
         with self._lock:
             self._buffer = []
             self._seq = 0
+            self._sealed = False
         self._cancelled.clear()
         self.run_id = run_id
         self._deltas.reset()
@@ -404,8 +484,18 @@ class AgentServer:
                 self._error("protocol", "a run is already active")
                 return
             self._active_run_id = run_id
+        # daemon: the run waits on the agent worker, which can block in
+        # an uninterruptible tool (a stuck syscall ignores the cancel
+        # event).  _join_run_thread already bounds how long shutdown
+        # waits for it; without daemon the thread would ALSO keep the
+        # interpreter alive past that budget at exit, so `shutdown`
+        # could never terminate the process and the host would have to
+        # escalate to SIGKILL.
         thread = threading.Thread(
-            target=self._run_thread, args=(prompt, run_id), name=f"serve-run-{run_id}"
+            target=self._run_thread,
+            args=(prompt, run_id),
+            name=f"serve-run-{run_id}",
+            daemon=True,
         )
         thread.start()
 
@@ -415,6 +505,25 @@ class AgentServer:
         except Exception as e:  # noqa: BLE001 - a run failure must not kill the server
             self._error("protocol", f"run failed: {e}")
         finally:
+            # Unwire the session callbacks before dropping the view: a
+            # worker still unwinding from this run (a detached
+            # sub-agent thread, a tool finishing after a cancel) would
+            # otherwise emit through session.notify_fn — which the NEXT
+            # run's attach_view repoints at ITS view, so run N's
+            # straggler would land in run N+1's stream wearing run
+            # N+1's run_id/seq.
+            #
+            # ORDER MATTERS: the detach must happen BEFORE
+            # _active_run_id is cleared.  op_submit refuses a new run
+            # while that id is set, so detaching first guarantees we
+            # unwire THIS run's callbacks and never the next run's.
+            # Swapping these two would reintroduce the contamination
+            # it is here to prevent.  Suppressed broadly because this
+            # is a finally: a raise here would leave _active_run_id
+            # set and wedge the server ("a run is already active"
+            # forever).
+            with contextlib.suppress(Exception):
+                self.controller.detach_view()
             with self._active_guard:
                 self._active_run_id = None
                 self.view = None
@@ -450,15 +559,30 @@ class AgentServer:
     # -- main loop --------------------------------------------------------------------
 
     def serve_forever(self) -> None:
-        """Read ops until stdin EOF or a ``shutdown`` op.
+        """Read ops until stdin EOF, a ``shutdown`` op, or a signal.
 
         Writes the ``ready`` line first (``protocol`` on every control
         line, ``pid`` on ready), then processes ops strictly in
         arrival order on this (reader) thread.  A ``submit`` spawns its
         own run thread and returns immediately, so the loop stays live
         for answer/cancel/ping/shutdown ops while the run executes.
+
+        SIGINT/SIGTERM drain rather than kill: the handler breaks the
+        blocking ``readline`` so ``_join_run_thread`` can cancel the
+        active run and let it emit its terminal ``result`` line (with
+        ``cancelled: true`` and the run's token usage) before the
+        process exits.  See ``graceful_signal_shutdown``.
         """
         self._write_line({"type": "ready", "pid": _pid(), "protocol_version": PROTOCOL_VERSION})
+        with graceful_signal_shutdown(self), contextlib.suppress(_ShutdownSignal):
+            # _ShutdownSignal: a signal asked us to stop mid-readline;
+            # fall through to the drain below so the active run still
+            # emits its result line.
+            self._read_ops()
+        self._join_run_thread()
+
+    def _read_ops(self) -> None:
+        """The reader loop proper: dispatch ops until EOF/shutdown."""
         while not self._stopped.is_set():
             line = self.inp.readline()
             if not line:  # EOF: the host closed the pipe
@@ -487,7 +611,6 @@ class AgentServer:
                 self._stopped.set()
             else:
                 self._error("protocol", f"unknown op: {name}")
-        self._join_run_thread()
 
     def _join_run_thread(self, timeout: float = 10.0) -> None:
         """Wait briefly for the active run thread to unwind (shutdown)."""

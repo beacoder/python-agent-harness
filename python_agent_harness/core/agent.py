@@ -150,6 +150,16 @@ class AgentLoop:
         # from cancellation: a cancelled run with no successor still
         # owns the session and may salvage its partial history.
         self._run_gen = session.run_generation
+        # Tag THIS thread (the one that will drive the loop — the run
+        # worker, or a sub-agent's own thread) with the run it belongs
+        # to, so the session can drop events from a superseded run
+        # instead of attributing them to the current one.  A detached
+        # sub-agent thread can outlive its run; see
+        # `Session._emit_superseded`.  Suppressed for session doubles
+        # that predate the hook.
+        mark = getattr(session, "mark_emit_generation", None)
+        if callable(mark):
+            mark(self._run_gen)
 
     def _is_cancelled(self) -> bool:
         """Whether THIS run must stop (cancelled or superseded).
@@ -503,8 +513,12 @@ class AgentLoop:
                     return
 
         def safe_delta(text: str) -> None:
-            if not self._is_cancelled() and session.on_delta is not None:
-                session.on_delta(text)
+            # Snapshot: a host that swaps views per run unwires
+            # on_delta at run teardown, so re-reading it after the
+            # None-test could call None (see Session.notify).
+            on_delta = session.on_delta
+            if not self._is_cancelled() and on_delta is not None:
+                on_delta(text)
 
         try:
             # sub-agents are one-shot tasks: they must not see (or
