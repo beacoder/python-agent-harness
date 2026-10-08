@@ -215,14 +215,19 @@ class AgentLoop:
             if self.top_level:
                 self.error = "Error: round budget exhausted before the run finished"
                 self.info["error"] = self.error
-                self.session.notify("error", self.error)
+                # The code is assigned HERE, where the outcome is known.
+                # A driver reading the result line gets "budget" because
+                # the budget check said so — not because a downstream
+                # classifier matched words in this sentence, which would
+                # silently degrade to "unknown" if it were reworded.
+                self.session.notify("error", {"code": "budget", "message": self.error})
             else:
                 self.info["budget"] = True
             return True
         if self._deadline_exceeded():
             self.error = f"Error: {_deadline_message(self.timeout)}"
             self.info["error"] = self.error
-            self.session.notify("error", self.error)
+            self.session.notify("error", {"code": "timeout", "message": self.error})
             return True
         return False
 
@@ -595,6 +600,20 @@ class AgentLoop:
                 totals["input"] = totals.get("input", 0) + usage.input_tokens
                 totals["output"] = totals.get("output", 0) + usage.output_tokens
                 totals["rounds"] = totals.get("rounds", 0) + 1
+                snapshot = {
+                    "input": totals["input"],
+                    "output": totals["output"],
+                    "rounds": totals["rounds"],
+                }
+            # Publish the running total so a host can meter DURING the
+            # run instead of only billing the terminal result line.
+            # Without this a run that outlives its user's allowance
+            # cannot be stopped until it finishes on its own — the host
+            # can now cancel mid-run.  Emitted from the top-level loop
+            # only (the snapshot already includes sub-agent tokens, so
+            # per-sub-agent lines would add noise, not information).
+            if self.top_level:
+                session.notify("usage", snapshot)
 
         # persist the assistant response in the conversation history
         # (text and/or tool calls) so later turns and the UI see it;

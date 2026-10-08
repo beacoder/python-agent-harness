@@ -195,6 +195,31 @@ def cmd_run(args: argparse.Namespace) -> int:
         session.close()
 
 
+def _resolve_budgets(
+    args: argparse.Namespace, cfg_limits: tuple[int | None, float | None]
+) -> tuple[int | None, float | None]:
+    """Resolve ``(max_rounds, timeout)`` for an unattended run.
+
+    Precedence: an explicit CLI flag wins over the config file's
+    section default, which wins over unlimited.  A flag of 0/negative
+    is an explicit "disable", so it overrides a configured budget
+    rather than falling back to it.  Shared by ``headless`` and
+    ``serve``, whose budget flags are identical.
+    """
+    cfg_max_rounds, cfg_timeout = cfg_limits
+    max_rounds = getattr(args, "max_rounds", None)
+    if max_rounds is None:
+        max_rounds = cfg_max_rounds
+    elif max_rounds <= 0:
+        max_rounds = None
+    timeout = getattr(args, "timeout", None)
+    if timeout is None:
+        timeout = cfg_timeout
+    elif timeout <= 0:
+        timeout = None
+    return max_rounds, timeout
+
+
 def cmd_headless(args: argparse.Namespace) -> int:
     project_dir = getattr(args, "project", None) or os.getcwd()
     session = make_session_with_mcp(
@@ -211,17 +236,7 @@ def cmd_headless(args: argparse.Namespace) -> int:
         runner = run_headless_jsonl if getattr(args, "json", False) else run_headless
         # Unattended budgets: explicit flags win over the config file's
         # headless section (0/negative disables the budget entirely).
-        cfg_max_rounds, cfg_timeout = config.load_headless_limits(args.config)
-        max_rounds = getattr(args, "max_rounds", None)
-        if max_rounds is None:
-            max_rounds = cfg_max_rounds
-        elif max_rounds <= 0:
-            max_rounds = None
-        timeout = getattr(args, "timeout", None)
-        if timeout is None:
-            timeout = cfg_timeout
-        elif timeout <= 0:
-            timeout = None
+        max_rounds, timeout = _resolve_budgets(args, config.load_headless_limits(args.config))
         return runner(
             session,
             prompt,
@@ -245,9 +260,15 @@ def cmd_serve(args: argparse.Namespace) -> int:
     try:
         from .server import run_serve
 
+        # Per-run budgets: explicit flags win over the config file's
+        # serve section (0/negative disables).  Applied to EACH submit
+        # — the process is resident, so every run gets a fresh budget.
+        max_rounds, timeout = _resolve_budgets(args, config.load_serve_limits(args.config))
         return run_serve(
             session,
             answer_timeout=float(getattr(args, "answer_timeout", 0.0) or 0.0),
+            max_rounds=max_rounds,
+            timeout=timeout,
         )
     finally:
         session.close()
@@ -343,6 +364,14 @@ def cmd_config(args: argparse.Namespace) -> int:
     else:
         print(
             f"headless: max_rounds={max_rounds or '(unlimited)'}, timeout={timeout or '(unlimited)'}s"
+        )
+    serve_rounds, serve_timeout = config.load_serve_limits(args.path)
+    if serve_rounds is None and serve_timeout is None:
+        print("serve: (unlimited — set serve.max_rounds/timeout or use --max-rounds/--timeout)")
+    else:
+        print(
+            f"serve: max_rounds={serve_rounds or '(unlimited)'}, "
+            f"timeout={serve_timeout or '(unlimited)'}s (per run)"
         )
     return 0
 
@@ -467,6 +496,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="give up waiting for a host answer after N seconds (0 = wait "
         'forever, the default; the host can answer via {"op": "answer"})',
+    )
+    p_serve.add_argument(
+        "--max-rounds",
+        metavar="N",
+        type=int,
+        default=None,
+        help="cap EACH run at N LLM rounds (per-submit budget, not a "
+        "process cap; default: config serve.max_rounds, else unlimited)",
+    )
+    p_serve.add_argument(
+        "--timeout",
+        metavar="SECONDS",
+        type=float,
+        default=None,
+        help="wall-clock limit for EACH run in seconds (per-submit budget; "
+        "default: config serve.timeout, else unlimited)",
     )
     return parser
 

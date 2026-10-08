@@ -27,6 +27,7 @@ from rich.text import Text
 
 from ..core.models import Message
 from ..entry.controller import Controller
+from ..entry.headless import error_display_text
 from ..session import config
 from ..session.session import Session
 from .commands import CommandMixin
@@ -195,8 +196,13 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             with self.lock:
                 # the detail (e.g. "Error: 429 no quota") replaces the
                 # old bare "error" so the user sees WHAT failed; the
-                # red styling comes from "error" appearing in the text
-                self.status = f" {data}" if isinstance(data, str) and data else " error"
+                # red styling comes from "error" appearing in the text.
+                # A structured {"code", "message"} payload (budget /
+                # timeout outcomes, LSP failures) is unwrapped by the
+                # shared helper — rendering the dict would both look
+                # wrong and lose the detail.
+                detail = error_display_text(data) if data else ""
+                self.status = f" {detail}" if detail else " error"
         elif kind == "save-error":
             with self.lock:
                 self.status = " auto-save failed"

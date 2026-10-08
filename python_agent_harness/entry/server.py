@@ -16,19 +16,48 @@ preserved), but the host can:
 
 Protocol (one JSON object per line), host → agent:
   {"op": "submit", "prompt": ..., "run_id": ...}
-  {"op": "answer", "run_id": ..., "answers": [...]}
+  {"op": "answer", "run_id": ..., "answers": [...], "ask_id": ...}
   {"op": "cancel", "run_id": ...}
   {"op": "ping"} / {"op": "shutdown"}
 agent → host (one JSON object per line; ``protocol`` (the wire schema
 version, see ``headless.PROTOCOL_VERSION``) stamps every line, ``seq``
 on every run line):
-  {"type": "ready", "pid": ..., "protocol_version": ...}   first line, no run_id
+  {"type": "ready", "pid": ..., "protocol_version": ...,
+   "capabilities": [...]}                     first line, no run_id
   {"type": "start"|"delta"|"notify"|"log", "run_id": ...}
   {"type": "result", "run_id": ..., "answer": ...,
    "errors": [{"code", "message"}], "error_messages": [...], ...}
   {"type": "pong"|"error", ...}                control lines, no run_id;
       error carries {"error": {"code", "message"}, "message": ...}
-  notify with kind "ask" carries {"kind": "ask"|"confirm", ...} data
+  notify with kind "ask" carries {"kind": "ask"|"confirm", "ask_id", ...}
+  notify with kind "usage" carries {"input", "output", "rounds"}
+
+Capabilities: ``ready`` lists the named features this build supports
+(see ``CAPABILITIES``).  ``protocol_version`` alone is a single integer
+a host can only accept or reject wholesale; the list lets it discover
+what is available and adapt, instead of inferring a feature's absence
+from events that never arrive.
+
+Asks are correlated: every ask/confirm line carries an ``ask_id``, and
+``answer`` may echo it.  A mismatch is refused rather than applied to
+whatever is pending now — without correlation a reply the host sent
+for a question that has since timed out would resolve the NEXT one,
+answering a question the user never saw.  Omitting ``ask_id`` keeps
+the original behaviour, except once some ask in the run has timed out:
+from then on an uncorrelated answer is genuinely ambiguous and is
+refused with an ``error`` naming ``ask_id``.
+
+Usage is incremental: a ``notify`` of kind ``usage`` carries the run's
+running ``{input, output, rounds}`` after each round (sub-agent tokens
+included).  The ``result`` line remains canonical for billing, but a
+host can meter mid-run and ``cancel`` a run that outruns its budget
+instead of only discovering the cost once it has finished.
+
+Error codes are assigned where the outcome is known: the agent loop
+notifies ``{"code", "message"}`` for classified failures (``budget``,
+``timeout``), so a driver's branch does not depend on matching words
+in a human-readable sentence.  Plain-string errors still fall back to
+the text heuristic in ``headless._as_error``.
 
 There is no generic ``ack`` line: each op is acknowledged by its own
 effect on the stream, so a host correlates by that rather than waiting
@@ -38,6 +67,17 @@ and ``cancel`` only answer back on failure (an ``error`` line) — on
 success they are observable through the run resuming or ending with
 ``cancelled: true``; ``shutdown`` by the stream ending (the final
 ``result`` of a drained run, then EOF).
+
+Budgets: a run can be bounded by a round cap and a wall-clock limit
+(``--max-rounds``/``--timeout``, or the config file's ``serve``
+section; both off by default).  They apply per ``submit``, not per
+process — the resident server grants each run a fresh budget.  They
+are deliberately NOT fields on the submit op: ``serve`` sandboxes
+untrusted agent code on behalf of a host, so the ceiling belongs to
+whoever starts the sandbox, not to the caller.  A tripped budget
+unwinds the agent loop through its normal path, so the run still ends
+with a ``result`` line carrying ``errors[].code`` of ``budget`` or
+``timeout`` plus the usage consumed.
 
 Concurrency: one run at a time (the web controller already enforces
 "one running run per conversation"); a submit while a run is active is
@@ -58,6 +98,7 @@ import signal
 import sys
 import threading
 import time
+import uuid
 from typing import Any, TextIO
 
 from ..io.text_filter import strip_final_check
@@ -66,6 +107,25 @@ from .controller import Controller
 from .headless import PROTOCOL_VERSION, JsonlView, _restorable_handler
 
 DEFAULT_ANSWER_TIMEOUT = 0.0  # wait forever for a host answer
+
+# Named features advertised on the ``ready`` line.  ``protocol_version``
+# alone is a single integer a host can only accept or reject wholesale;
+# these let it discover what this build actually supports and adapt,
+# instead of inferring a feature's absence from events that never
+# arrive.  Add a capability when behaviour a host can branch on is
+# introduced; never repurpose an existing name.
+CAPABILITIES = (
+    "submit",  # run a prompt
+    "answer",  # deliver a mid-run answer to an ask
+    "cancel",  # protocol-level cancel (no signals)
+    "ping",  # liveness probe, replies pong
+    "shutdown",  # graceful drain, final result then EOF
+    "ask_id",  # ask lines carry an id that `answer` may echo
+    "usage_notify",  # per-round notify kind "usage" during a run
+    "error_codes",  # result errors carry a structured {"code", "message"}
+    "per_run_budget",  # sandbox-side max_rounds / timeout per submit
+    "signal_drain",  # SIGINT/SIGTERM drain, emitting a final result
+)
 
 
 class _ShutdownSignal(BaseException):
@@ -142,12 +202,18 @@ class _AskState:
 
     ``ServerView.confirm``/``ask`` (agent worker thread) create the
     state, emit the ask line, and block on ``wait``; the server's
-    reader resolves it via ``ServerView.deliver``/``resolve_confirm``.
+    reader resolves it via ``ServerView.answer``.
+
+    ``ask_id`` correlates the answer with the question.  Without it an
+    ``answer`` could only target "whatever is pending", so a reply the
+    host sent for an abandoned question would silently resolve the
+    NEXT one — answering a question the user never saw.
     """
 
     def __init__(self, run_id: str | None, kind: str) -> None:
         self.run_id = run_id
         self.kind = kind  # "ask" | "confirm"
+        self.ask_id = uuid.uuid4().hex[:12]
         self.event = threading.Event()
         self.answer: str = "Unanswered"
         self.created = time.monotonic()
@@ -178,6 +244,9 @@ class ServerView(JsonlView):
         # resolved by the reader thread; guarded by its own lock.
         self._pending: _AskState | None = None
         self._pending_lock = threading.Lock()
+        # Latched when an ask times out: an answer with no ``ask_id``
+        # becomes ambiguous from then on (see ``_abandon``).
+        self._abandoned = False
         # Seconds to wait for a host answer before falling back to
         # "Unanswered" (headless semantics).  0 = wait forever.
         self.answer_timeout = answer_timeout
@@ -188,18 +257,70 @@ class ServerView(JsonlView):
     # -- interactive prompts ---------------------------------------------------
 
     def _wait_answer(self, state: _AskState) -> str:
-        """Block until answered, cancelled, or the deadline passes."""
+        """Block until answered, cancelled, or the deadline passes.
+
+        Always retires *state* on the way out: once this returns, the
+        question is no longer waiting for anything.  Leaving a resolved
+        state in the pending slot would let a second answer land on a
+        dead question, and would make ``pending_ask_id`` report an ask
+        nobody is waiting on.
+        """
         deadline = time.monotonic() + self.answer_timeout if self.answer_timeout > 0 else None
-        while True:
-            if state.event.wait(0.1):
-                # cancellation outranks a concurrent resolve (the run is
-                # unwinding; the agent must see an empty answer, TUI
-                # parity) — cancel may land while we are inside wait()
-                return "" if self._cancelled.is_set() else state.answer
-            if self._cancelled.is_set():
-                return ""
-            if deadline is not None and time.monotonic() >= deadline:
-                return "Unanswered"
+        try:
+            while True:
+                if state.event.wait(0.1):
+                    # cancellation outranks a concurrent resolve (the run is
+                    # unwinding; the agent must see an empty answer, TUI
+                    # parity) — cancel may land while we are inside wait()
+                    return "" if self._cancelled.is_set() else state.answer
+                if self._cancelled.is_set():
+                    return ""
+                if deadline is not None and time.monotonic() >= deadline:
+                    self._abandon(state)
+                    return "Unanswered"
+        finally:
+            self._retire(state)
+
+    def _retire(self, state: _AskState) -> None:
+        """Drop *state* from the pending slot if it still owns it.
+
+        Guarded on identity so a newer ask — published while this one
+        was being resolved — is never discarded.
+        """
+        with self._pending_lock:
+            if self._pending is state:
+                self._pending = None
+
+    def _abandon(self, state: _AskState) -> None:
+        """Retire a timed-out ask so it can never be resolved later.
+
+        Without this the timed-out state stays in the pending slot: a
+        host answer arriving afterwards would be accepted, and once the
+        agent published its NEXT question that stale reply would resolve
+        it instead — delivering an answer to a question it was not
+        written for.
+
+        Also latches ``_abandoned``: from here on an answer that
+        carries no ``ask_id`` is genuinely ambiguous (it could be meant
+        for the question we just gave up on), so ``op_answer`` refuses
+        it rather than guessing.  Correlation is the only real fix;
+        this makes the uncorrelated case fail loudly instead of quietly
+        answering the wrong question.
+        """
+        self._retire(state)
+        with self._pending_lock:
+            self._abandoned = True
+
+    def requires_ask_id(self) -> bool:
+        """Whether an answer must name its question to be accepted.
+
+        True once any ask in this run has timed out — see ``_abandon``.
+        Only reachable with a non-zero ``answer_timeout``; with the
+        default (wait forever) no ask is ever abandoned, so an
+        id-less answer stays acceptable.
+        """
+        with self._pending_lock:
+            return self._abandoned
 
     def _safe_emit(self, payload: dict[str, Any]) -> None:
         """Emit a run line, tolerating a dead host pipe.
@@ -212,17 +333,25 @@ class ServerView(JsonlView):
         with contextlib.suppress(BrokenPipeError, ValueError, OSError):
             self._emit(payload)
 
-    def answer(self, answers: list[str]) -> bool:
+    def answer(self, answers: list[str], ask_id: str | None = None) -> bool:
         """Resolve the pending ask/confirm with *answers* (host-side).
 
         Routes by the pending state's kind: confirm takes the first
         answer verbatim (the caller decides yes/no), ask joins multiple
         values with ", " (mirroring the TUI's multi-select resolution).
-        Returns False when nothing is pending.
+
+        ``ask_id`` (when given) must name the question actually
+        pending; a mismatch is refused rather than applied to whatever
+        is waiting now.  Omitting it keeps the original "resolve
+        whatever is pending" behaviour, so a host that predates the id
+        still works.  Returns False when nothing is pending or the id
+        does not match.
         """
         with self._pending_lock:
             state = self._pending
             if state is None:
+                return False
+            if ask_id is not None and ask_id != state.ask_id:
                 return False
             self._pending = None
         if state.kind == "confirm":
@@ -233,6 +362,11 @@ class ServerView(JsonlView):
             state.answer = answers[0]
         state.event.set()
         return True
+
+    def pending_ask_id(self) -> str | None:
+        """The id of the question currently awaiting an answer, if any."""
+        with self._pending_lock:
+            return self._pending.ask_id if self._pending is not None else None
 
     def cancel_pending(self) -> None:
         """Unblock a pending interactive prompt (run cancelled)."""
@@ -252,6 +386,8 @@ class ServerView(JsonlView):
         self._cancelled.clear()
         self.run_id = run_id
         self._deltas.reset()
+        with self._pending_lock:
+            self._abandoned = False
 
     # -- HeadlessView overrides -------------------------------------------------
 
@@ -263,7 +399,7 @@ class ServerView(JsonlView):
             {
                 "type": "notify",
                 "kind": "ask",
-                "data": {"kind": "confirm", "prompt": prompt},
+                "data": {"kind": "confirm", "prompt": prompt, "ask_id": state.ask_id},
             }
         )
         answer = self._wait_answer(state)
@@ -274,7 +410,11 @@ class ServerView(JsonlView):
         with self._pending_lock:
             self._pending = state
         self._safe_emit(
-            {"type": "notify", "kind": "ask", "data": {"kind": "ask", "questions": questions}}
+            {
+                "type": "notify",
+                "kind": "ask",
+                "data": {"kind": "ask", "questions": questions, "ask_id": state.ask_id},
+            }
         )
         return self._wait_answer(state)
 
@@ -312,6 +452,8 @@ class AgentServer:
         out: TextIO,
         err: TextIO | None = None,
         answer_timeout: float = DEFAULT_ANSWER_TIMEOUT,
+        max_rounds: int | None = None,
+        timeout: float | None = None,
     ) -> None:
         self.session = session
         self.controller = Controller(session)
@@ -319,6 +461,12 @@ class AgentServer:
         self.out = out
         self.err = err if err is not None else sys.stderr
         self.answer_timeout = answer_timeout
+        # Per-run budgets (None = unlimited), applied to EVERY submit.
+        # The process is resident, so these bound each run rather than
+        # the process lifetime.  Held here — not taken off the wire —
+        # so a driving host cannot raise its own ceiling.
+        self.max_rounds = max_rounds
+        self.timeout = timeout
         self.view: ServerView | None = None
         self._active_run_id: str | None = None
         self._active_guard = threading.Lock()  # active-run transitions
@@ -422,7 +570,17 @@ class AgentServer:
         )
         self.view = view
         self.controller.attach_view(view)
-        handle = self.controller.submit(prompt)
+        # Per-run budget: Controller.submit derives budget_top_level
+        # from max_rounds being set, so passing it is what opts this
+        # run into a finite round cap (default None = unlimited, the
+        # interactive behavior).  A tripped budget unwinds the agent
+        # loop normally, so the run still ends with a result line
+        # carrying errors[].code = "budget"/"timeout" and real usage.
+        handle = self.controller.submit(
+            prompt,
+            max_rounds=self.max_rounds,
+            timeout=self.timeout,
+        )
         if self._cancel_pending.is_set():
             # A cancel op landed before submit() — submit cleared the
             # session cancel event at run start, so re-apply it now
@@ -536,12 +694,37 @@ class AgentServer:
             self._error("protocol", "answer requires a non-empty answers list")
             return
         answers = [str(a) for a in answers]
+        ask_id = op.get("ask_id")
+        ask_id = str(ask_id) if ask_id is not None else None
         view = self.view
         if view is None or self._active_run_id != run_id:
             self._error("protocol", f"no pending question for run {run_id or '(missing)'}")
             return
-        if not view.answer(answers):
-            self._error("protocol", f"no pending question for run {run_id}")
+        if ask_id is None and view.requires_ask_id():
+            # An earlier ask in this run timed out, so we cannot tell
+            # which question this reply is for.  Refuse instead of
+            # applying it to whatever happens to be waiting now.
+            self._error(
+                "protocol",
+                "answer is ambiguous: a previous question timed out in this "
+                "run, so answers must carry the ask_id from the ask line",
+            )
+            return
+        if not view.answer(answers, ask_id=ask_id):
+            # Distinguish a stale answer from no question at all: the
+            # host sent a reply for a question that is no longer the one
+            # waiting (it timed out, or was already answered), and
+            # applying it to the current question would answer the
+            # wrong thing.
+            pending = view.pending_ask_id()
+            if ask_id is not None and pending is not None and pending != ask_id:
+                self._error(
+                    "protocol",
+                    f"stale answer: ask_id {ask_id} is not the pending "
+                    f"question ({pending}) for run {run_id}",
+                )
+            else:
+                self._error("protocol", f"no pending question for run {run_id}")
 
     def op_cancel(self, op: dict[str, Any]) -> None:
         run_id = str(op.get("run_id") or "")
@@ -573,7 +756,14 @@ class AgentServer:
         ``cancelled: true`` and the run's token usage) before the
         process exits.  See ``graceful_signal_shutdown``.
         """
-        self._write_line({"type": "ready", "pid": _pid(), "protocol_version": PROTOCOL_VERSION})
+        self._write_line(
+            {
+                "type": "ready",
+                "pid": _pid(),
+                "protocol_version": PROTOCOL_VERSION,
+                "capabilities": list(CAPABILITIES),
+            }
+        )
         with graceful_signal_shutdown(self), contextlib.suppress(_ShutdownSignal):
             # _ShutdownSignal: a signal asked us to stop mid-readline;
             # fall through to the drain below so the active run still
@@ -647,6 +837,8 @@ def run_serve(
     out: TextIO | None = None,
     err: TextIO | None = None,
     answer_timeout: float = DEFAULT_ANSWER_TIMEOUT,
+    max_rounds: int | None = None,
+    timeout: float | None = None,
 ) -> int:
     """Serve the resident protocol over *inp*/*out* until EOF/shutdown.
 
@@ -654,8 +846,14 @@ def run_serve(
     thread.  ``answer_timeout`` bounds how long a pending ask/confirm
     waits for a host answer before falling back to "Unanswered"
     (0 = wait forever — the resident default, since a web user needs
-    time to type; headless answers immediately instead).  Returns 0 on
-    clean EOF/shutdown.
+    time to type; headless answers immediately instead).
+
+    ``max_rounds``/``timeout`` opt EACH run into a round budget and a
+    wall-clock limit (both default off, matching headless and the
+    interactive TUI).  They are per-submit, not per-process: the
+    resident process serves many runs and each gets a fresh budget.
+    Enforced here rather than read off the wire so a driving host
+    cannot raise its own ceiling.  Returns 0 on clean EOF/shutdown.
     """
     server = AgentServer(
         session,
@@ -663,6 +861,8 @@ def run_serve(
         out if out is not None else sys.stdout,
         err=err,
         answer_timeout=answer_timeout,
+        max_rounds=max_rounds,
+        timeout=timeout,
     )
     try:
         server.serve_forever()

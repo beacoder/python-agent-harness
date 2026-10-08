@@ -1556,7 +1556,10 @@ class TestRunBudgetsAndUsage(unittest.TestCase):
         result = loop.run()
         self.assertEqual(loop.state, AgentLoop.ERRS)
         self.assertEqual(result, "Error: round budget exhausted before the run finished")
-        self.assertIn(("error", result), notified)
+        # The code is assigned at the raise site, not inferred from the
+        # message text downstream: rewording the sentence must not
+        # reclassify the outcome.
+        self.assertIn(("error", {"code": "budget", "message": result}), notified)
 
     def test_subagent_budget_keeps_soft_done_path(self):
         """Sub-agent exhaustion keeps the historical behavior: DONE with

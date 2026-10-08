@@ -48,22 +48,36 @@ ERROR_CODES = {
 
 
 def _as_error(value: Any) -> dict[str, Any]:
-    """The structured wire form of one recorded error.
+    """The structured form of one recorded error: ``{"code", "message"}``.
 
-    ``HeadlessView.errors`` accumulates whatever the notifier passed
-    (the agent loop notifies strings, tests sometimes a dict) — each
-    entry ships as ``{"code", "message"}``.  The code is derived from
-    the message text, giving named outcomes (``budget``, ``timeout``)
-    without touching the notifying code.
+    The single source of truth for both halves of an error's wire
+    representation — the ``code`` a driver branches on and the
+    ``message`` a human reads (``error_display_text`` returns exactly
+    this ``message``).
+
+    ``HeadlessView.errors`` accumulates whatever the notifier passed:
+    the agent loop sends a structured ``{"code", "message"}`` for
+    classified failures (``budget``/``timeout``), other sites send a
+    plain string whose code is then derived from the text, and the LSP
+    client sends a ``{"message": ...}`` dict.  A nested
+    ``{"error": {...}}`` shape is unwrapped; a dict carrying only a
+    ``code`` falls back to that code for its message so the two never
+    disagree on emptiness.
     """
     if isinstance(value, dict):
         inner = value.get("error")
         if isinstance(inner, dict):
             value = inner
         code = str(value.get("code") or "unknown")
-        # a flat {"error": "msg"} dict (no "message" key) must not lose
-        # its text — fall back to the string form of the "error" value
-        message = str(value.get("message") or (inner if isinstance(inner, str) else ""))
+        # Message precedence: explicit "message"; else a flat
+        # {"error": "msg"} string; else the code (so a code-only dict
+        # still renders something, matching the result line).
+        message = str(
+            value.get("message")
+            or (inner if isinstance(inner, str) else "")
+            or value.get("code")
+            or ""
+        )
     else:
         message = str(value)
         lower = message.lower()
@@ -84,6 +98,25 @@ def _as_error(value: Any) -> dict[str, Any]:
     if code not in ERROR_CODES:
         code = "unknown"
     return {"code": code, "message": message}
+
+
+def error_display_text(value: Any) -> str:
+    """The human-readable text of an error notification.
+
+    ``notify("error", ...)`` carries either a plain message string or a
+    structured ``{"code", "message"}`` payload (the agent loop sends
+    the latter where the outcome is known; the LSP client sends a
+    ``{"message": ...}`` dict too).  Views render this rather than the
+    raw value, so a structured error does not reach a human as a dict
+    repr.
+
+    Single-sourced through ``_as_error`` so the live message a user
+    sees and the ``message`` recorded on the result line are the SAME
+    projection of the error value — they cannot drift (a code-only
+    dict, a nested ``{"error": {...}}`` shape, etc. resolve one way,
+    everywhere).
+    """
+    return _as_error(value)["message"]
 
 
 def _structured_errors(errors: Any) -> list[dict[str, Any]]:
@@ -204,8 +237,9 @@ class HeadlessView:
             label = ", ".join(names) if names else "tools"
             self.err.write(f"\n[tools: {label}]\n")
         elif kind == "error":
-            self.errors.append(str(data))
-            self.err.write(f"\n[error: {data}]\n")
+            text = error_display_text(data)
+            self.errors.append(text)
+            self.err.write(f"\n[error: {text}]\n")
         elif kind == "run_done":
             self.err.write("\n[done]\n")
         self.err.flush()
@@ -499,18 +533,24 @@ class JsonlView(HeadlessView):
             # turn into a [FINAL CHECK] block, so release it and start
             # the next message with a fresh stream.
             self._flush_deltas()
-        self._emit({"type": "notify", "kind": kind, "data": data})
-        # Mirror "error" onto stderr as plain text and record it (the
-        # parent's contract) so a failed run is diagnosable without
-        # parsing JSON and the exit code still signals the failure.
-        # The raw value (not str(data)) is kept: emit_result classifies
-        # and structures it — a dict error keeps its shape, a string
-        # gains its code — and the flat-text mirror is derived there.
+        # "error" carries a human string on the WIRE notify line, even
+        # when the agent loop raised it as a structured {"code",
+        # "message"} payload.  notify is a live-progress event a driver
+        # (and the browser) renders directly, so a dict here would
+        # surface as a raw repr — and an already-deployed host must not
+        # break because the harness started classifying errors.  The
+        # structured code still reaches the driver on the canonical
+        # result line (errors[].code / error_messages), which has
+        # always been the place to read the final verdict.
         if kind == "error":
             with self._lock:
-                self.errors.append(data)
-            self.err.write(f"\n[error: {data}]\n")
+                self.errors.append(data)  # raw: emit_result classifies it
+            text = error_display_text(data)
+            self._emit({"type": "notify", "kind": kind, "data": text})
+            self.err.write(f"\n[error: {text}]\n")
             self.err.flush()
+        else:
+            self._emit({"type": "notify", "kind": kind, "data": data})
 
     def on_log(self, msg: str) -> None:
         self._emit({"type": "log", "message": msg})

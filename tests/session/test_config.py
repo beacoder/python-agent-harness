@@ -1,5 +1,6 @@
 """Configuration-file tests (LLM settings via TOML, no env vars required)."""
 
+import json
 import os
 import tempfile
 import unittest
@@ -178,6 +179,27 @@ class TestConfigFile(unittest.TestCase):
         self.assertIn('"subagent_llm"', config.CONFIG_TEMPLATE)
         self.assertIn('"context_windows"', config.CONFIG_TEMPLATE)
         self.assertIn('"lsp"', config.CONFIG_TEMPLATE)
+
+    def test_template_renders_to_valid_json(self):
+        """`config --init` must emit a parseable file.
+
+        The template is a ``str.format`` string, so every literal brace
+        is doubled.  Adding a section with a single brace would still
+        pass the substring assertions above while producing a config
+        file nobody can load — so parse it, and check the sections are
+        objects with the shape the loaders expect.
+        """
+        rendered = config.CONFIG_TEMPLATE.format(path="/tmp/x.json")
+        data = json.loads(rendered)
+        self.assertIsInstance(data, dict)
+        for section in ("llm", "headless", "serve", "lsp", "mcp", "paths"):
+            self.assertIn(section, data, f"template lost the {section!r} section")
+            self.assertIsInstance(data[section], dict)
+        # Budget sections ship disabled, so a fresh template changes
+        # nothing about how runs behave.
+        for section in ("headless", "serve"):
+            self.assertIsNone(data[section]["max_rounds"])
+            self.assertIsNone(data[section]["timeout"])
 
 
 class TestLspConfig(unittest.TestCase):
@@ -791,6 +813,82 @@ class TestHeadlessLimitsConfig(unittest.TestCase):
 
     def test_template_documents_section(self):
         self.assertIn('"headless"', config.CONFIG_TEMPLATE)
+
+
+class TestServeLimitsConfig(unittest.TestCase):
+    """The ``serve`` section: per-run budgets for the resident server.
+
+    Same keys and semantics as ``headless`` (both delegate to
+    ``_load_limits``), but scoped to each ``submit`` rather than to a
+    one-shot process.
+    """
+
+    def _write(self, content: str) -> str:
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_missing_section_yields_none(self):
+        self.assertEqual(config.load_serve_limits(self._write("{}")), (None, None))
+
+    def test_rounds_and_timeout_loaded(self):
+        path = self._write('{"serve": {"max_rounds": 40, "timeout": 900.0}}')
+        self.assertEqual(config.load_serve_limits(path), (40, 900.0))
+
+    def test_zero_and_negative_disable(self):
+        path = self._write('{"serve": {"max_rounds": 0, "timeout": -5}}')
+        self.assertEqual(config.load_serve_limits(path), (None, None))
+
+    def test_null_values_disable(self):
+        path = self._write('{"serve": {"max_rounds": null, "timeout": null}}')
+        self.assertEqual(config.load_serve_limits(path), (None, None))
+
+    def test_missing_file_yields_none(self):
+        self.assertEqual(config.load_serve_limits("/no/such/config.json"), (None, None))
+
+    def test_bool_rejected(self):
+        path = self._write('{"serve": {"max_rounds": true}}')
+        with self.assertRaises(ValueError):
+            config.load_serve_limits(path)
+
+    def test_string_rejected(self):
+        path = self._write('{"serve": {"timeout": "soon"}}')
+        with self.assertRaises(ValueError):
+            config.load_serve_limits(path)
+
+    def test_non_object_section_rejected(self):
+        path = self._write('{"serve": [1]}')
+        with self.assertRaises(ValueError):
+            config.load_serve_limits(path)
+
+    def test_error_message_names_the_right_section(self):
+        """The shared loader must not blame the wrong section."""
+        path = self._write('{"serve": {"max_rounds": "x"}}')
+        with self.assertRaises(ValueError) as ctx:
+            config.load_serve_limits(path)
+        self.assertIn("serve.max_rounds", str(ctx.exception))
+        self.assertNotIn("headless", str(ctx.exception))
+
+    def test_sections_are_independent(self):
+        path = self._write('{"headless": {"max_rounds": 3}, "serve": {"max_rounds": 40}}')
+        self.assertEqual(config.load_headless_limits(path), (3, None))
+        self.assertEqual(config.load_serve_limits(path), (40, None))
+
+    def test_unreadable_json_yields_none(self):
+        """A broken config file must not block startup for limits.
+
+        ``_read_config`` raises ValueError on malformed JSON; the
+        shared loader swallows it and reports "no budget" so the real
+        config error surfaces from the LLM-settings loader instead.
+        """
+        path = self._write("{not json")
+        self.assertEqual(config.load_serve_limits(path), (None, None))
+        self.assertEqual(config.load_headless_limits(path), (None, None))
+
+    def test_template_documents_section(self):
+        self.assertIn('"serve"', config.CONFIG_TEMPLATE)
 
 
 if __name__ == "__main__":

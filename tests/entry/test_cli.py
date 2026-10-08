@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
@@ -512,6 +513,100 @@ def _load(path, project_dir=None, with_context=False, tool_instructions=None, ex
         if context_block:
             return context_block
     return prompt
+
+
+class TestServeBudgetResolution(unittest.TestCase):
+    """``serve`` budget precedence: CLI flag > config serve section >
+    unlimited, with a flag of 0/negative meaning "explicitly disable"
+    rather than "fall back to config"."""
+
+    def _config(self, body: str) -> str:
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(body)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def _run_serve_kwargs(self, argv: list[str]) -> dict:
+        """Parse ARGV, invoke cmd_serve, return run_serve's kwargs."""
+        args = cli.build_parser().parse_args(argv)
+        captured: dict = {}
+
+        def fake_run_serve(session, **kwargs):
+            captured.update(kwargs)
+            return 0
+
+        fake_session = mock.Mock()
+        with (
+            mock.patch.object(cli, "make_session_with_mcp", return_value=fake_session),
+            mock.patch("python_agent_harness.entry.server.run_serve", fake_run_serve),
+        ):
+            rc = cli.cmd_serve(args)
+        self.assertEqual(rc, 0)
+        return captured
+
+    def test_unlimited_with_no_flags_and_no_config(self):
+        kwargs = self._run_serve_kwargs(["serve", "--config", "/no/such/config.json"])
+        self.assertIsNone(kwargs["max_rounds"])
+        self.assertIsNone(kwargs["timeout"])
+
+    def test_config_section_applies(self):
+        path = self._config('{"serve": {"max_rounds": 40, "timeout": 900}}')
+        kwargs = self._run_serve_kwargs(["serve", "--config", path])
+        self.assertEqual(kwargs["max_rounds"], 40)
+        self.assertEqual(kwargs["timeout"], 900.0)
+
+    def test_flags_override_config(self):
+        path = self._config('{"serve": {"max_rounds": 40, "timeout": 900}}')
+        kwargs = self._run_serve_kwargs(
+            ["serve", "--config", path, "--max-rounds", "7", "--timeout", "12.5"]
+        )
+        self.assertEqual(kwargs["max_rounds"], 7)
+        self.assertEqual(kwargs["timeout"], 12.5)
+
+    def test_zero_flag_disables_a_configured_budget(self):
+        """0 is an explicit opt-out, not "unset"."""
+        path = self._config('{"serve": {"max_rounds": 40, "timeout": 900}}')
+        kwargs = self._run_serve_kwargs(
+            ["serve", "--config", path, "--max-rounds", "0", "--timeout", "0"]
+        )
+        self.assertIsNone(kwargs["max_rounds"])
+        self.assertIsNone(kwargs["timeout"])
+
+    def test_serve_reads_its_own_section_not_headless(self):
+        path = self._config('{"headless": {"max_rounds": 3, "timeout": 30}}')
+        kwargs = self._run_serve_kwargs(["serve", "--config", path])
+        self.assertIsNone(kwargs["max_rounds"])
+        self.assertIsNone(kwargs["timeout"])
+
+    def test_config_command_reports_both_sections(self):
+        """`config` must surface the knob, or nobody discovers it."""
+        import io
+        from contextlib import redirect_stdout
+
+        path = self._config(
+            '{"headless": {"max_rounds": 3, "timeout": 30},'
+            ' "serve": {"max_rounds": 40, "timeout": 900}}'
+        )
+        args = cli.build_parser().parse_args(["config", "--path", path])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.cmd_config(args)
+        out = buf.getvalue()
+        self.assertIn("headless: max_rounds=3, timeout=30.0s", out)
+        self.assertIn("serve: max_rounds=40, timeout=900.0s (per run)", out)
+
+    def test_config_command_reports_unlimited(self):
+        args = cli.build_parser().parse_args(["config", "--path", "/no/such/config.json"])
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.cmd_config(args)
+        out = buf.getvalue()
+        self.assertIn("headless: (unlimited", out)
+        self.assertIn("serve: (unlimited", out)
 
 
 if __name__ == "__main__":

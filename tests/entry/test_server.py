@@ -15,6 +15,7 @@ from unittest import mock
 
 from python_agent_harness.entry import server as server_module
 from python_agent_harness.entry.server import (
+    CAPABILITIES,
     AgentServer,
     ServerView,
     _AskState,
@@ -84,18 +85,26 @@ class RunScript:
     - "raise": raise before finishing (the run thread must error-line).
     """
 
-    def __init__(self, mode: str = "plain") -> None:
+    def __init__(self, mode: str = "plain", error_message: str = "llm unreachable") -> None:
         self.mode = mode
+        self.error_message = error_message
         self.ask_answer: str | None = None
+        self.ask_answer_2: str | None = None
         self.confirm_answer: bool | None = None
 
     def drive(self, session: FakeSession, prompt: str) -> None:
         if self.mode == "raise":
             raise RuntimeError("boom")
         if self.mode == "error":
-            session.notify("error", "llm unreachable")
+            session.notify("error", self.error_message)
         if self.mode == "ask":
             self.ask_answer = session.ask_questions([{"question": f"{prompt}?"}])
+        if self.mode == "ask_twice":
+            # The dangerous interleaving: the first question is
+            # abandoned (timeout) and a second takes its place, so a
+            # late reply for the first could land on the second.
+            self.ask_answer = session.ask_questions([{"question": "Deploy to PRODUCTION?"}])
+            self.ask_answer_2 = session.ask_questions([{"question": "Pick a colour"}])
         if self.mode == "confirm":
             self.confirm_answer = session.confirm(f"{prompt}?")
         session.last_messages = [mock.Mock(role="assistant")]
@@ -110,6 +119,7 @@ class FakeController:
         self.session = session
         self.view = None
         self.submits: list[str] = []
+        self.submit_kwargs: list[dict] = []
         self.script = RunScript()
         self.gate: threading.Event | None = None
         # real Controller.submit() swaps in a fresh zeroed usage_totals
@@ -138,6 +148,9 @@ class FakeController:
 
     def submit(self, prompt: str, **kwargs):
         self.submits.append(prompt)
+        # Record the budget kwargs: a double that swallows **kwargs
+        # would hide an unplumbed argument entirely.
+        self.submit_kwargs.append(dict(kwargs))
         if self.submit_returns_none:
             return None
         if self.reset_usage_on_submit:
@@ -1309,6 +1322,579 @@ class ProtocolDocTests(unittest.TestCase):
         for line_type in ("ready", "pong", "error"):
             self.assertIn(line_type, emitted)
             self.assertIn(line_type, server_module.__doc__ or "")
+
+
+class ServeBudgetTests(ServerTestBase):
+    """Per-run round/wall-clock budgets for the resident server.
+
+    ``serve`` runs were unbounded: ``_execute_run`` called
+    ``controller.submit(prompt)`` with no budget, and
+    ``AgentLoop.__init__`` leaves ``max_rounds`` at None for a
+    top-level run unless ``budget_top_level`` is set.  That is the mode
+    that sandboxes untrusted code, so it needs a ceiling.
+    """
+
+    def test_budget_is_forwarded_to_every_submit(self):
+        server = self._server(max_rounds=12, timeout=45.5)
+        server.op_submit({"op": "submit", "prompt": "one", "run_id": "r1"})
+        self._wait_idle(server)
+        server.op_submit({"op": "submit", "prompt": "two", "run_id": "r2"})
+        self._wait_idle(server)
+        # Per-submit, not per-process: EVERY run carries the budget.
+        self.assertEqual(
+            self.controller.submit_kwargs,
+            [
+                {"max_rounds": 12, "timeout": 45.5},
+                {"max_rounds": 12, "timeout": 45.5},
+            ],
+        )
+
+    def test_unlimited_by_default(self):
+        """Disabled by default — same as headless and the TUI."""
+        server = self._server()
+        server.op_submit({"op": "submit", "prompt": "p", "run_id": "r1"})
+        self._wait_idle(server)
+        self.assertEqual(self.controller.submit_kwargs, [{"max_rounds": None, "timeout": None}])
+
+    def test_run_serve_passes_budget_through(self):
+        session = FakeSession()
+        controller = FakeController(session)
+        inp = io.StringIO(json.dumps({"op": "submit", "prompt": "p", "run_id": "r1"}) + "\n")
+        with mock.patch("python_agent_harness.entry.server.Controller", lambda s: controller):
+            rc = run_serve(
+                session,
+                inp=inp,
+                out=io.StringIO(),
+                err=io.StringIO(),
+                max_rounds=5,
+                timeout=9.0,
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(controller.submit_kwargs, [{"max_rounds": 5, "timeout": 9.0}])
+
+    def test_tripped_budget_surfaces_as_a_typed_error(self):
+        """A tripped budget must end the run normally, not kill it.
+
+        The agent loop notifies an error and unwinds, so the result
+        line still carries the structured code the host branches on
+        plus the usage it bills.
+        """
+        server = self._server(max_rounds=1)
+        self.controller.script = RunScript(
+            "error", error_message="round budget exhausted (1 round)"
+        )
+        server.op_submit({"op": "submit", "prompt": "p", "run_id": "r1"})
+        self._wait_idle(server)
+        result = _of_type(_lines(server.out), "result")[-1]
+        self.assertEqual([e["code"] for e in result["errors"]], ["budget"])
+        self.assertIn("usage", result)
+        self.assertFalse(result["cancelled"])
+
+
+class ServeBudgetEndToEndTests(unittest.TestCase):
+    """The budget must actually TRIP, not just be forwarded.
+
+    Drives a REAL Session/Controller/AgentLoop through ``run_serve``
+    with a model scripted to loop on tool calls forever.  The unit
+    tests above assert plumbing against a controller double; this one
+    asserts enforcement.
+    """
+
+    def _serve_once(self, max_rounds=None, timeout=None) -> list[dict]:
+        from python_agent_harness.core.models import ToolCall
+        from tests.support.agent_test_utils import RecordingSession
+
+        session = RecordingSession()
+        # A model that never stops calling tools: only a budget ends it.
+        session.client.script = [
+            ("", [ToolCall(id=str(i), name="Read", arguments='{"file_path": "/tmp/x.py"}')])
+            for i in range(50)
+        ]
+        out = io.StringIO()
+        # Drive op_submit directly rather than through run_serve: stdin
+        # EOF makes serve_forever drain, and the drain cancels the
+        # active run — which would end the run before any budget could
+        # trip (and mask enforcement behind `cancelled`).
+        server = AgentServer(session, io.StringIO(), out, err=io.StringIO())
+        server.max_rounds = max_rounds
+        server.timeout = timeout
+        server.op_submit({"op": "submit", "prompt": "loop", "run_id": "r1"})
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            with server._active_guard:
+                if server._active_run_id is None:
+                    break
+            time.sleep(0.01)
+        else:
+            self.fail("run never finished")
+        self.assertFalse(session.cancel_event.is_set(), "run was cancelled, not budget-limited")
+        return _lines(out)
+
+    def test_round_budget_trips_and_reports_code_budget(self):
+        lines = self._serve_once(max_rounds=2)
+        result = _of_type(lines, "result")[-1]
+        self.assertIn(
+            "budget",
+            [e["code"] for e in result["errors"]],
+            f"expected a budget error, got {result['errors']}",
+        )
+        # The run ended normally: a terminal result line, not a crash,
+        # and the usage the host bills on is present.
+        self.assertEqual(lines[-1]["type"], "result")
+        self.assertFalse(result["cancelled"])
+        self.assertIn("usage", result)
+
+    def test_wall_clock_budget_trips_and_reports_code_timeout(self):
+        # 1 microsecond: the deadline is set at loop start, so it has
+        # certainly passed by the first budget check (one LLM call plus
+        # a tool execution later).  Deliberately NOT a "small" timeout
+        # raced against the run finishing — the whole 50-round script
+        # completes in ~40ms here, so a 10ms budget would be only a 4x
+        # margin and could invert on a faster CI runner.
+        lines = self._serve_once(timeout=1e-6)
+        result = _of_type(lines, "result")[-1]
+        self.assertIn(
+            "timeout",
+            [e["code"] for e in result["errors"]],
+            f"expected a timeout error, got {result['errors']}",
+        )
+        self.assertEqual(lines[-1]["type"], "result")
+
+    def test_no_budget_means_no_budget_error(self):
+        """Default stays unlimited: the run ends on the model, not a cap."""
+        lines = self._serve_once()
+        result = _of_type(lines, "result")[-1]
+        codes = [e["code"] for e in result["errors"]]
+        self.assertNotIn("budget", codes)
+        self.assertNotIn("timeout", codes)
+
+
+class AskCorrelationTests(ServerTestBase):
+    """``answer`` must name the question it answers.
+
+    Without an id, ``answer`` could only target "whatever is pending".
+    An ask that timed out stayed in the pending slot, so a reply the
+    host sent for it was accepted — and once the agent published its
+    NEXT question, that stale reply resolved THAT one instead.  A user
+    could approve a production deploy and have the approval applied to
+    an unrelated question.
+    """
+
+    def _view(self, answer_timeout: float = 0.0) -> ServerView:
+        return ServerView(
+            out=io.StringIO(), err=io.StringIO(), run_id="r1", answer_timeout=answer_timeout
+        )
+
+    def test_ask_line_carries_an_ask_id(self):
+        view = self._view()
+        out = view.out
+        threading.Thread(target=lambda: view.ask([{"question": "q?"}]), daemon=True).start()
+        deadline = time.time() + 5
+        while time.time() < deadline and view.pending_ask_id() is None:
+            time.sleep(0.01)
+        ask_id = view.pending_ask_id()
+        self.assertIsNotNone(ask_id)
+        view.emit_start("p", [])
+        payload = [
+            line
+            for line in _lines(out)
+            if line.get("kind") == "ask"  # type: ignore[arg-type]
+        ]
+        self.assertEqual(payload[0]["data"]["ask_id"], ask_id)
+        view.cancel_pending()
+
+    def test_confirm_line_carries_an_ask_id(self):
+        view = self._view()
+        threading.Thread(target=lambda: view.confirm("ok?"), daemon=True).start()
+        deadline = time.time() + 5
+        while time.time() < deadline and view.pending_ask_id() is None:
+            time.sleep(0.01)
+        self.assertIsNotNone(view.pending_ask_id())
+        view.cancel_pending()
+
+    def test_matching_ask_id_resolves(self):
+        view = self._view()
+        got: dict = {}
+        threading.Thread(
+            target=lambda: got.setdefault("a", view.ask([{"question": "q?"}])), daemon=True
+        ).start()
+        deadline = time.time() + 5
+        while time.time() < deadline and view.pending_ask_id() is None:
+            time.sleep(0.01)
+        self.assertTrue(view.answer(["yes"], ask_id=view.pending_ask_id()))
+        deadline = time.time() + 5
+        while time.time() < deadline and "a" not in got:
+            time.sleep(0.01)
+        self.assertEqual(got["a"], "yes")
+
+    def test_mismatched_ask_id_is_refused(self):
+        view = self._view()
+        threading.Thread(target=lambda: view.ask([{"question": "q?"}]), daemon=True).start()
+        deadline = time.time() + 5
+        while time.time() < deadline and view.pending_ask_id() is None:
+            time.sleep(0.01)
+        self.assertFalse(view.answer(["yes"], ask_id="not-the-pending-one"))
+        # Still waiting: the wrong answer was not applied.
+        self.assertIsNotNone(view.pending_ask_id())
+        view.cancel_pending()
+
+    def test_answered_ask_leaves_the_slot_empty(self):
+        """A resolved question must stop being 'pending'.
+
+        Otherwise a second answer lands on a dead question and
+        ``pending_ask_id`` reports an ask nobody waits on.
+        """
+        view = self._view()
+        got: dict = {}
+        threading.Thread(
+            target=lambda: got.setdefault("a", view.ask([{"question": "q?"}])), daemon=True
+        ).start()
+        deadline = time.time() + 5
+        while time.time() < deadline and view.pending_ask_id() is None:
+            time.sleep(0.01)
+        view.answer(["yes"], ask_id=view.pending_ask_id())
+        deadline = time.time() + 5
+        while time.time() < deadline and "a" not in got:
+            time.sleep(0.01)
+        self.assertIsNone(view.pending_ask_id())
+        self.assertFalse(view.answer(["again"]))
+
+    def test_timed_out_ask_cannot_be_resolved_later(self):
+        """The wrong-question bug, end to end.
+
+        Q1 times out; the agent asks Q2; the host's late reply for Q1
+        arrives.  It must not become Q2's answer.
+        """
+        view = self._view(answer_timeout=0.3)
+        got: dict = {}
+
+        def agent() -> None:
+            got["q1"] = view.ask([{"question": "Deploy to PRODUCTION?"}])
+            got["q2"] = view.ask([{"question": "Pick a colour"}])
+
+        thread = threading.Thread(target=agent, daemon=True)
+        thread.start()
+        deadline = time.time() + 5
+        while time.time() < deadline and view.pending_ask_id() is None:
+            time.sleep(0.01)
+        q1_id = view.pending_ask_id()
+        # Let Q1 time out and Q2 take its place.
+        deadline = time.time() + 5
+        while time.time() < deadline and "q1" not in got:
+            time.sleep(0.01)
+        self.assertEqual(got["q1"], "Unanswered")
+        # The late reply for Q1 must be refused, not applied to Q2.
+        self.assertFalse(view.answer(["yes"], ask_id=q1_id))
+        view.cancel_pending()
+        thread.join(5)
+        self.assertNotEqual(got.get("q2"), "yes")
+
+    def test_id_less_answer_refused_once_an_ask_was_abandoned(self):
+        """An uncorrelated answer cannot be disambiguated, so refuse it.
+
+        Q1 times out and Q2 takes its place while the run is still
+        live.  An id-less reply could be meant for either, so it must
+        be rejected rather than silently applied to Q2.
+
+        Only reachable with a non-zero answer_timeout; with the default
+        (wait forever) nothing is ever abandoned and an id-less answer
+        stays acceptable, so an older host keeps working.
+        """
+        server = self._server(answer_timeout=0.3)
+        self.controller.script = RunScript("ask_twice")
+        server.op_submit({"op": "submit", "prompt": "q", "run_id": "r1"})
+        self._wait_pending(server)
+        view = server.view
+        assert view is not None
+        self.assertFalse(view.requires_ask_id())
+        # Q1 times out; Q2 becomes the pending question.
+        deadline = time.time() + 5
+        while time.time() < deadline and not view.requires_ask_id():
+            time.sleep(0.01)
+        self.assertTrue(view.requires_ask_id())
+
+        server.op_answer({"op": "answer", "run_id": "r1", "answers": ["yes"]})
+        errors = _of_type(_lines(server.out), "error")  # type: ignore[arg-type]
+        self.assertIn("ambiguous", errors[-1]["error"]["message"])
+        self.assertIn("ask_id", errors[-1]["error"]["message"])
+        # The refused answer reached neither question.
+        server.op_cancel({"op": "cancel", "run_id": "r1"})
+        self._wait_idle(server)
+        self.assertNotEqual(self.controller.script.ask_answer, "yes")
+        self.assertNotEqual(self.controller.script.ask_answer_2, "yes")
+
+    def test_op_answer_reports_a_stale_ask_id_distinctly(self):
+        """A stale answer and "nothing pending" are different faults.
+
+        The host needs to tell "my reply was for a question that has
+        moved on" from "there is no question at all" — the first means
+        re-read the current ask, the second means stop replying.
+        """
+        server = self._server()
+        self.controller.script = RunScript("ask")
+        server.op_submit({"op": "submit", "prompt": "q", "run_id": "r1"})
+        self._wait_pending(server)
+        view = server.view
+        assert view is not None
+        pending = view.pending_ask_id()
+
+        server.op_answer(
+            {"op": "answer", "run_id": "r1", "answers": ["yes"], "ask_id": "some-other-id"}
+        )
+        message = _of_type(_lines(server.out), "error")[-1]["error"]["message"]  # type: ignore[arg-type]
+        self.assertIn("stale answer", message)
+        self.assertIn("some-other-id", message)
+        self.assertIn(str(pending), message)
+        # The real question is untouched and still answerable.
+        self.assertEqual(view.pending_ask_id(), pending)
+        server.op_answer({"op": "answer", "run_id": "r1", "answers": ["yes"], "ask_id": pending})
+        self._wait_idle(server)
+        self.assertEqual(self.controller.script.ask_answer, "yes")
+
+    def test_id_less_answer_still_works_by_default(self):
+        """Back-compat: a host that predates ask_id keeps working."""
+        server = self._server()
+        self.controller.script = RunScript("ask")
+        server.op_submit({"op": "submit", "prompt": "q", "run_id": "r1"})
+        self._wait_pending(server)
+        server.op_answer({"op": "answer", "run_id": "r1", "answers": ["yes"]})
+        self._wait_idle(server)
+        self.assertEqual(self.controller.script.ask_answer, "yes")
+        self.assertEqual(_of_type(_lines(server.out), "error"), [])  # type: ignore[arg-type]
+
+
+class CapabilityTests(ServerTestBase):
+    """``ready`` advertises what this build supports.
+
+    ``protocol_version`` is a single integer a host can only accept or
+    reject wholesale; it cannot say "does this build support mid-run
+    answers?".  Without a capability list a host has to infer a
+    feature's absence from events that never arrive.
+    """
+
+    def test_ready_lists_capabilities(self):
+        server = self._server()
+        server.serve_forever()
+        ready = _lines(server.out)[0]  # type: ignore[arg-type]
+        self.assertEqual(ready["type"], "ready")
+        self.assertEqual(ready["capabilities"], list(CAPABILITIES))
+        self.assertIn("protocol_version", ready)
+
+    def test_capabilities_cover_the_implemented_ops(self):
+        """Every op the loop dispatches must be advertised."""
+        for op in ("submit", "answer", "cancel", "ping", "shutdown"):
+            self.assertIn(op, CAPABILITIES)
+
+    def test_capabilities_are_unique(self):
+        self.assertEqual(len(set(CAPABILITIES)), len(CAPABILITIES))
+
+
+class IncrementalUsageTests(unittest.TestCase):
+    """Usage must be observable DURING a run, not only at the end.
+
+    ``result.usage`` arrives when the run is already over, so a host
+    could bill but never stop a run that outlives its user's
+    allowance.  A per-round ``notify`` of kind ``usage`` lets it meter
+    live and cancel.
+    """
+
+    def _run(self, rounds: int = 3):
+        from python_agent_harness.core.agent import run_agent_loop
+        from python_agent_harness.core.models import Message, ToolCall
+        from tests.support.agent_test_utils import RecordingSession
+
+        session = RecordingSession()
+        session.client.script = [
+            ("", [ToolCall(id=str(i), name="Read", arguments='{"file_path": "/tmp/x.py"}')])
+            for i in range(rounds)
+        ] + [("done", None)]
+        seen: list = []
+        session.notify_fn = lambda kind, data=None: seen.append((kind, data))
+        run_agent_loop(session, messages=[Message(role="user", content="hi")])
+        return seen
+
+    def test_usage_is_emitted_per_round(self):
+        seen = self._run(rounds=3)
+        usage = [data for kind, data in seen if kind == "usage"]
+        self.assertGreaterEqual(len(usage), 3, f"expected a usage line per round, got {usage}")
+
+    def test_usage_totals_are_cumulative_and_monotonic(self):
+        seen = self._run(rounds=3)
+        usage = [data for kind, data in seen if kind == "usage"]
+        rounds = [u["rounds"] for u in usage]
+        self.assertEqual(rounds, sorted(rounds))
+        self.assertEqual(rounds, list(range(1, len(rounds) + 1)))
+        inputs = [u["input"] for u in usage]
+        self.assertEqual(inputs, sorted(inputs), "input tokens must never decrease")
+        for u in usage:
+            self.assertEqual(set(u), {"input", "output", "rounds"})
+
+    def test_usage_snapshot_is_not_the_live_dict(self):
+        """A snapshot, not a reference: a host must not see it mutate."""
+        seen = self._run(rounds=2)
+        usage = [data for kind, data in seen if kind == "usage"]
+        self.assertNotEqual(usage[0]["rounds"], usage[-1]["rounds"])
+
+    def test_subagent_rounds_do_not_emit_their_own_lines(self):
+        """Sub-agent tokens are already inside the snapshot.
+
+        Per-sub-agent lines would add noise, not information.
+        """
+        from python_agent_harness.core.agent import run_agent_loop
+        from python_agent_harness.core.models import Message
+        from tests.support.agent_test_utils import RecordingSession
+
+        session = RecordingSession()
+        session.client.script = [("sub done", None)]
+        seen: list = []
+        session.notify_fn = lambda kind, data=None: seen.append((kind, data))
+        run_agent_loop(session, messages=[Message(role="user", content="hi")], top_level=False)
+        self.assertEqual([d for k, d in seen if k == "usage"], [])
+
+    def test_usage_line_does_not_corrupt_the_delta_stream(self):
+        """A usage line between deltas must not break reconstruction.
+
+        A host concatenates ``delta`` lines by type; the per-round
+        ``usage`` line sits among them, so this checks the answer still
+        reassembles and ``seq`` stays monotonic.
+        """
+        from python_agent_harness.entry.headless import JsonlView
+
+        out = io.StringIO()
+        view = JsonlView(out=out, err=io.StringIO(), run_id="r1")
+        view.emit_start("p", [])
+        view.on_delta("Hello ")
+        view.on_notify("usage", {"input": 1, "output": 1, "rounds": 1})
+        view.on_delta("world")
+        view.on_notify("tool_start", ["Bash"])  # flushes the held delta tail
+        view.emit_result("Hello world")
+        lines = _lines(out)  # type: ignore[arg-type]
+        answer = "".join(line["text"] for line in lines if line["type"] == "delta")
+        self.assertEqual(answer, "Hello world")
+        seqs = [line["seq"] for line in lines]
+        self.assertEqual(seqs, sorted(seqs))
+        self.assertEqual(seqs, list(range(1, len(seqs) + 1)))
+
+
+class RaiseSiteErrorCodeTests(unittest.TestCase):
+    """Error codes belong to the code that knows the outcome.
+
+    Deriving them downstream by matching words in the message means
+    rewording a sentence silently reclassifies the failure to
+    ``unknown`` — the message text is not an API, but was being used
+    as one.
+    """
+
+    def test_raise_site_code_survives_rewording(self):
+        from python_agent_harness.entry.headless import _as_error
+
+        structured = _as_error({"code": "budget", "message": "Error: ran out of steps"})
+        self.assertEqual(structured["code"], "budget")
+
+    def test_heuristic_remains_for_plain_strings(self):
+        """Back-compat: an un-migrated call site still classifies."""
+        from python_agent_harness.entry.headless import _as_error
+
+        self.assertEqual(_as_error("Error: round budget exhausted")["code"], "budget")
+        self.assertEqual(_as_error("Error: wall-clock limit")["code"], "timeout")
+
+    def test_reworded_string_without_a_code_degrades(self):
+        """Exactly the fragility the raise-site code removes."""
+        from python_agent_harness.entry.headless import _as_error
+
+        self.assertEqual(_as_error("Error: ran out of steps")["code"], "unknown")
+
+    def test_budget_trip_carries_its_code_to_the_result_line(self):
+        from python_agent_harness.core.agent import AgentLoop
+        from python_agent_harness.core.models import Message, ToolCall
+        from tests.support.agent_test_utils import RecordingSession
+
+        session = RecordingSession()
+        session.client.script = [
+            ("", [ToolCall(id=str(i), name="Read", arguments='{"file_path": "/tmp/x.py"}')])
+            for i in range(5)
+        ]
+        seen: list = []
+        session.notify_fn = lambda kind, data=None: seen.append((kind, data))
+        AgentLoop(
+            session,
+            messages=[Message(role="user", content="hi")],
+            max_rounds=2,
+            budget_top_level=True,
+        ).run()
+        errors = [data for kind, data in seen if kind == "error"]
+        self.assertEqual(errors[-1]["code"], "budget")
+        self.assertIn("round budget", errors[-1]["message"])
+
+    def test_structured_error_stays_human_readable(self):
+        """Views must render the message, not a dict repr.
+
+        The LSP client already notified ``{"message": ...}`` dicts, so
+        this also fixes a pre-existing display regression.
+        """
+        from python_agent_harness.entry.headless import error_display_text
+
+        self.assertEqual(
+            error_display_text({"code": "budget", "message": "Error: out of rounds"}),
+            "Error: out of rounds",
+        )
+        self.assertEqual(error_display_text({"message": "LSP server exited"}), "LSP server exited")
+        self.assertEqual(error_display_text("plain string"), "plain string")
+        # No message key: fall back to the code rather than a dict repr.
+        self.assertEqual(error_display_text({"code": "budget"}), "budget")
+
+    def test_headless_view_renders_structured_errors(self):
+        from python_agent_harness.entry.headless import HeadlessView
+
+        err = io.StringIO()
+        view = HeadlessView(out=io.StringIO(), err=err)
+        view.on_notify("error", {"code": "timeout", "message": "Error: too slow"})
+        self.assertIn("[error: Error: too slow]", err.getvalue())
+        self.assertNotIn("'code'", err.getvalue())
+        self.assertEqual(view.errors, ["Error: too slow"])
+
+    def test_jsonl_notify_error_wire_stays_a_string(self):
+        """Backward compat: an already-deployed host renders notify
+        data directly, so a structured error must NOT widen that field
+        to a dict on the wire — the code travels on the result line."""
+        from python_agent_harness.entry.headless import JsonlView
+
+        out = io.StringIO()
+        view = JsonlView(out=out, err=io.StringIO(), run_id="r1")
+        view.emit_start("p", [])
+        view.on_notify("error", {"code": "budget", "message": "Error: out of rounds"})
+        notify = _of_type(_lines(out), "notify")[-1]  # type: ignore[arg-type]
+        self.assertEqual(notify["data"], "Error: out of rounds")
+        self.assertIsInstance(notify["data"], str)
+        # ...but the canonical result line still carries the raise-site code.
+        view.emit_result("", errors=None)
+        result = _of_type(_lines(out), "result")[-1]  # type: ignore[arg-type]
+        self.assertEqual([e["code"] for e in result["errors"]], ["budget"])
+        self.assertEqual(result["error_messages"], ["Error: out of rounds"])
+
+    def test_display_text_and_result_message_cannot_diverge(self):
+        """The live message and the recorded message are one projection.
+
+        ``error_display_text`` (wire/TUI) and ``_as_error`` (result
+        line) must return the SAME message for any error value, or a
+        user could see one thing live and another in the final record.
+        Single-sourced, so this holds across every shape.
+        """
+        from python_agent_harness.entry.headless import _as_error, error_display_text
+
+        for value in (
+            {"code": "budget", "message": "Error: out of rounds"},
+            {"code": "budget"},  # code-only
+            {"error": {"code": "timeout", "message": "slow"}},  # nested
+            {"message": "LSP server exited"},  # LSP shape
+            "Error: a plain string",
+            {"error": "flat error string"},
+        ):
+            self.assertEqual(
+                error_display_text(value),
+                _as_error(value)["message"],
+                f"projections diverged for {value!r}",
+            )
 
 
 if __name__ == "__main__":

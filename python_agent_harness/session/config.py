@@ -250,6 +250,11 @@ CONFIG_TEMPLATE = """\
     "max_rounds": null,
     "timeout": null
   }},
+  "serve": {{
+    "_comment": "Optional per-run limits for the resident `serve` protocol, applied to EACH submit (the process is resident, so every run gets a fresh budget). Same keys as 'headless': 'max_rounds' caps LLM rounds, 'timeout' caps wall-clock seconds. Enforced in-process so a driving host cannot raise its own ceiling; a tripped budget ends the run with a normal result line carrying errors[].code = 'budget' or 'timeout' plus token usage. CLI --max-rounds/--timeout override these; values <= 0 or null disable. Unset = unlimited.",
+    "max_rounds": null,
+    "timeout": null
+  }},
   "default_agent": null,
   "paths": {{
     "_comment": "Optional overrides for context and skill directories. Absolute paths or ~ expansion supported.",
@@ -420,35 +425,67 @@ def load_subagent_llm_config(
     return main
 
 
-def load_headless_limits(path: str | os.PathLike | None = None) -> tuple[int | None, float | None]:
-    """Load unattended-run limits from the config file's ``headless`` object.
+def _load_limits(
+    section_name: str, path: str | os.PathLike | None = None
+) -> tuple[int | None, float | None]:
+    """Load ``(max_rounds, timeout)`` from a config file section.
 
-    Returns ``(max_rounds, timeout)``: server-side defaults for the
-    round budget and wall-clock limit of headless runs.  A missing
-    file/section or unreadable JSON yields ``(None, None)``; a
-    malformed section or non-numeric value raises ValueError so config
-    errors surface at session start.  Values <= 0 disable the
-    respective budget (same as null/absent).
+    Shared by the ``headless`` and ``serve`` sections, which carry the
+    same two keys with the same semantics.  A missing file/section or
+    unreadable JSON yields ``(None, None)``; a malformed section or
+    non-numeric value raises ValueError so config errors surface at
+    session start.  Values <= 0 disable the respective budget (same as
+    null/absent).
     """
     try:
         data = _read_config(path)
     except ValueError:
         return (None, None)
-    section = data.get("headless") or {}
+    section = data.get(section_name) or {}
     if not isinstance(section, dict):
-        raise ValueError(f"config file {_config_path(path)}: headless must be an object")
+        raise ValueError(f"config file {_config_path(path)}: {section_name} must be an object")
 
     def _numeric(key: str) -> float | None:
         val = section.get(key)
         if val is None:
             return None
         if isinstance(val, bool) or not isinstance(val, (int, float)):
-            raise ValueError(f"config file {_config_path(path)}: headless.{key} must be a number")
+            raise ValueError(
+                f"config file {_config_path(path)}: {section_name}.{key} must be a number"
+            )
         return float(val) if val > 0 else None
 
     rounds = _numeric("max_rounds")
     timeout = _numeric("timeout")
     return (int(rounds) if rounds is not None else None, timeout)
+
+
+def load_headless_limits(path: str | os.PathLike | None = None) -> tuple[int | None, float | None]:
+    """Load unattended-run limits from the config file's ``headless`` object.
+
+    Returns ``(max_rounds, timeout)``: server-side defaults for the
+    round budget and wall-clock limit of headless runs.  See
+    ``_load_limits`` for the shared parsing contract.
+    """
+    return _load_limits("headless", path)
+
+
+def load_serve_limits(path: str | os.PathLike | None = None) -> tuple[int | None, float | None]:
+    """Load per-run limits from the config file's ``serve`` object.
+
+    Returns ``(max_rounds, timeout)``: server-side defaults for the
+    round budget and wall-clock limit of EACH run served by the
+    resident ``serve`` protocol (the process is resident, so every
+    ``submit`` gets a fresh budget — this is not a process-lifetime
+    cap).
+
+    The point of enforcing it here rather than taking it off the wire
+    is trust: ``serve`` sandboxes untrusted agent code on behalf of a
+    host, and the host must not be able to raise its own ceiling.
+    Unset = unlimited, matching ``headless`` and the interactive TUI.
+    See ``_load_limits`` for the shared parsing contract.
+    """
+    return _load_limits("serve", path)
 
 
 def load_paths_config(path: str | os.PathLike | None = None) -> dict:

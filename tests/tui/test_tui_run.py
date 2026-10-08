@@ -138,10 +138,41 @@ class TestTuiRun(unittest.TestCase):
         tui._on_notify("error")
         self.assertEqual(tui.status, " error")
 
+    def test_on_notify_error_structured_payload(self):
+        """A {"code", "message"} payload (budget/timeout outcomes, LSP
+        failures) is unwrapped to its message — never rendered as a
+        dict repr in the status bar."""
+        tui, _ = make_tui()
+        tui._on_notify("error", {"code": "budget", "message": "Error: out of rounds"})
+        self.assertEqual(tui.status, " Error: out of rounds")
+        self.assertNotIn("code", tui.status)
+
+    def test_on_notify_error_dict_without_message(self):
+        """A dict lacking 'message' (an LSP {"message": ...} variant or
+        a code-only payload) still avoids a raw dict repr."""
+        tui, _ = make_tui()
+        tui._on_notify("error", {"code": "timeout"})
+        self.assertEqual(tui.status, " timeout")
+
     def test_on_notify_default_status(self):
         tui, _ = make_tui()
         tui._on_notify("some-other-kind")
         self.assertEqual(tui.status, " running")
+
+    def test_on_notify_usage_is_informational(self):
+        """The per-round "usage" notify (for serve/headless hosts to
+        meter) is informational in the TUI: it must not clobber a
+        meaningful status beyond what the pre-existing "context" notify
+        already does at the same point each round."""
+        tui, _ = make_tui()
+        # Real per-round order: context then usage, both before tools.
+        tui._on_notify("context")
+        after_context = tui.status
+        tui._on_notify("usage", {"input": 100, "output": 20, "rounds": 1})
+        self.assertEqual(tui.status, after_context, "usage changed status beyond context")
+        # ...and the next tool_start still takes over normally.
+        tui._on_notify("tool_start", ["Bash"])
+        self.assertIn("Bash", tui.status)
         self.assertTrue(tui._data_event.is_set())
 
     def test_on_notify_run_done(self):
