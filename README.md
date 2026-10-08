@@ -333,6 +333,15 @@ with a `result` line carrying `errors[].code` of `budget` or `timeout`
 plus the token usage consumed — a host bills and reports it like any
 other outcome.
 
+`timeout` is **cooperative** — checked between rounds, not by a
+watchdog — so it bounds work at those checkpoints but does not
+forcibly interrupt a blocking operation mid-round (a hung tool, a slow
+network read, or a run parked on a mid-run question awaiting a human
+answer). Use `--answer-timeout` to cap how long an ask waits, and rely
+on the hosting process's own exec watchdog (which sends `cancel` then
+kills) as the hard wall-clock stop for anything the cooperative budget
+cannot reach.
+
 ### Slash commands
 
 | Command | Description |

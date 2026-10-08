@@ -510,8 +510,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         type=float,
         default=None,
-        help="wall-clock limit for EACH run in seconds (per-submit budget; "
-        "default: config serve.timeout, else unlimited)",
+        help="wall-clock limit for EACH run in seconds (per-submit budget, "
+        "cooperative — checked between rounds, does not interrupt a run "
+        "blocked on a mid-run question; default: config serve.timeout, else "
+        "unlimited)",
     )
     return parser
 

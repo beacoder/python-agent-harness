@@ -79,6 +79,15 @@ unwinds the agent loop through its normal path, so the run still ends
 with a ``result`` line carrying ``errors[].code`` of ``budget`` or
 ``timeout`` plus the usage consumed.
 
+The ``timeout`` is COOPERATIVE: it is checked between rounds, not by a
+watchdog, so it bounds work at those checkpoints but does not forcibly
+interrupt a blocking operation mid-round — a hung tool, a slow HTTP
+read, or a run parked on a mid-run ``ask`` awaiting a human answer.
+Bound those separately: ``--answer-timeout`` caps how long an ask
+waits, and the hosting process's own exec watchdog (it already sends
+``cancel`` then kills) is the hard wall-clock stop for anything the
+cooperative budget cannot reach.
+
 Concurrency: one run at a time (the web controller already enforces
 "one running run per conversation"); a submit while a run is active is
 rejected with an ``error`` line.  The reader loop stays live while a
