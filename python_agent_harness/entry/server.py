@@ -18,7 +18,10 @@ Protocol (one JSON object per line), host → agent:
   {"op": "submit", "prompt": ..., "run_id": ...}
   {"op": "answer", "run_id": ..., "answers": [...], "ask_id": ...}
   {"op": "cancel", "run_id": ...}
+  {"op": "hello", "protocol_versions": [...]}
   {"op": "ping"} / {"op": "shutdown"}
+Any op may carry an ``op_id``, echoed on the ``error`` (or ``pong``)
+it causes so a refusal names which op it refused.
 agent → host (one JSON object per line; ``protocol`` (the wire schema
 version, see ``headless.PROTOCOL_VERSION``) stamps every line, ``seq``
 on every run line):
@@ -59,9 +62,23 @@ notifies ``{"code", "message"}`` for classified failures (``budget``,
 in a human-readable sentence.  Plain-string errors still fall back to
 the text heuristic in ``headless._as_error``.
 
+Version negotiation runs both ways.  ``ready`` announces what this
+build speaks -- a single integer a host can only accept or reject
+wholesale.  ``hello`` is the other direction: the host states the
+versions IT can parse and the server confirms a shared one or refuses
+with ``protocol``, so a mismatch is settled once, before any run,
+rather than surfacing as misparsed events.  With one line shape today
+the only outcomes are "agreed" or "no overlap", but it is the hook a
+future version needs in order to downgrade instead of breaking an
+older host.
+
 There is no generic ``ack`` line: each op is acknowledged by its own
 effect on the stream, so a host correlates by that rather than waiting
-for a receipt.  ``submit`` is acknowledged by the run's ``start``
+for a receipt.  Failures are the exception, because an effect that
+never happened cannot be correlated: an op may carry an ``op_id``,
+which is echoed on the ``error`` it causes.  A host that pipelined an
+``answer`` and a ``cancel`` can then tell which one was refused
+instead of seeing an unattributed error line.  ``submit`` is acknowledged by the run's ``start``
 line (or an ``error`` if rejected); ``ping`` by ``pong``; ``answer``
 and ``cancel`` only answer back on failure (an ``error`` line) — on
 success they are observable through the run resuming or ending with
@@ -134,6 +151,8 @@ CAPABILITIES = (
     "error_codes",  # result errors carry a structured {"code", "message"}
     "per_run_budget",  # sandbox-side max_rounds / timeout per submit
     "signal_drain",  # SIGINT/SIGTERM drain, emitting a final result
+    "hello",  # host-side version negotiation (op:hello -> type:hello)
+    "op_id",  # ops may carry an id, echoed on the error/pong they cause
 )
 
 
@@ -485,6 +504,10 @@ class AgentServer:
         # race).  The run thread re-applies it right after submit.
         self._cancel_pending = threading.Event()
         self._stopped = threading.Event()
+        # Versions the HOST said it can parse (op:hello).  None until it
+        # greets us; informational today, since there is one line shape,
+        # but it is what a future version would downgrade against.
+        self.host_protocol_versions: list[int] | None = None
 
     # -- outbound lines ---------------------------------------------------------
 
@@ -523,10 +546,33 @@ class AgentServer:
         except (BrokenPipeError, ValueError, OSError):
             pass  # host is gone; the reader loop's EOF handles shutdown
 
-    def _error(self, code: str, message: str) -> None:
-        self._write_line(
-            {"type": "error", "error": {"code": code, "message": message}, "message": message}
-        )
+    def _error(self, code: str, message: str, op_id: str | None = None) -> None:
+        """Emit a protocol ``error`` line, echoing *op_id* when given.
+
+        There is deliberately no generic ``ack`` on this protocol: each
+        op is acknowledged by its own effect on the stream.  That leaves
+        failures unattributable, though -- a host that pipelined an
+        ``answer`` and a ``cancel`` sees a bare ``error`` and cannot
+        tell which one was refused, and the web driver folds it into the
+        run's error trail beside genuine agent errors.  Echoing the
+        caller's own ``op_id`` fixes attribution without reintroducing
+        receipts for the success path: still no ack, but a refusal now
+        names what it refused.
+        """
+        payload: dict[str, Any] = {
+            "type": "error",
+            "error": {"code": code, "message": message},
+            "message": message,
+        }
+        if op_id is not None:
+            payload["op_id"] = op_id
+        self._write_line(payload)
+
+    @staticmethod
+    def _op_id(op: dict[str, Any]) -> str | None:
+        """The caller's correlation id for this op, if it supplied one."""
+        value = op.get("op_id")
+        return str(value) if value is not None else None
 
     # -- run execution ------------------------------------------------------------
 
@@ -638,17 +684,18 @@ class AgentServer:
     # -- op handlers ----------------------------------------------------------------
 
     def op_submit(self, op: dict[str, Any]) -> None:
+        op_id = self._op_id(op)
         run_id = str(op.get("run_id") or "")
         if not run_id:
-            self._error("protocol", "submit requires run_id")
+            self._error("protocol", "submit requires run_id", op_id)
             return
         prompt = op.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
-            self._error("protocol", "submit requires a non-empty prompt")
+            self._error("protocol", "submit requires a non-empty prompt", op_id)
             return
         with self._active_guard:
             if self._active_run_id is not None:
-                self._error("protocol", "a run is already active")
+                self._error("protocol", "a run is already active", op_id)
                 return
             self._active_run_id = run_id
         # daemon: the run waits on the agent worker, which can block in
@@ -697,17 +744,18 @@ class AgentServer:
             self._cancel_pending.clear()
 
     def op_answer(self, op: dict[str, Any]) -> None:
+        op_id = self._op_id(op)
         run_id = str(op.get("run_id") or "")
         answers = op.get("answers")
         if not isinstance(answers, list) or not answers:
-            self._error("protocol", "answer requires a non-empty answers list")
+            self._error("protocol", "answer requires a non-empty answers list", op_id)
             return
         answers = [str(a) for a in answers]
         ask_id = op.get("ask_id")
         ask_id = str(ask_id) if ask_id is not None else None
         view = self.view
         if view is None or self._active_run_id != run_id:
-            self._error("protocol", f"no pending question for run {run_id or '(missing)'}")
+            self._error("protocol", f"no pending question for run {run_id or '(missing)'}", op_id)
             return
         if ask_id is None and view.requires_ask_id():
             # An earlier ask in this run timed out, so we cannot tell
@@ -717,6 +765,7 @@ class AgentServer:
                 "protocol",
                 "answer is ambiguous: a previous question timed out in this "
                 "run, so answers must carry the ask_id from the ask line",
+                op_id,
             )
             return
         if not view.answer(answers, ask_id=ask_id):
@@ -731,14 +780,16 @@ class AgentServer:
                     "protocol",
                     f"stale answer: ask_id {ask_id} is not the pending "
                     f"question ({pending}) for run {run_id}",
+                    op_id,
                 )
             else:
-                self._error("protocol", f"no pending question for run {run_id}")
+                self._error("protocol", f"no pending question for run {run_id}", op_id)
 
     def op_cancel(self, op: dict[str, Any]) -> None:
+        op_id = self._op_id(op)
         run_id = str(op.get("run_id") or "")
         if self._active_run_id != run_id:
-            self._error("protocol", f"run {run_id or '(missing)'} is not active")
+            self._error("protocol", f"run {run_id or '(missing)'} is not active", op_id)
             return
         # The run thread may not have reached Controller.submit yet (it
         # clears the cancel event at run start); remember the intent so
@@ -749,6 +800,55 @@ class AgentServer:
             self.view.cancel_pending()
 
     # -- main loop --------------------------------------------------------------------
+
+    def op_hello(self, op: dict[str, Any]) -> None:
+        """Negotiate the wire version with the host.
+
+        ``ready`` announces what this build speaks, which a host can
+        only accept or reject wholesale.  ``hello`` is the other
+        direction: the host states the versions IT can parse, and this
+        server either confirms one it shares or refuses -- so a
+        mismatch is settled once, before any run, instead of surfacing
+        as misparsed events.
+
+        It is a no-op for a single-version world (there is one shape
+        today, so the only outcomes are "agreed on 1" or "no overlap"),
+        but it is the hook a future version needs to downgrade its line
+        shapes instead of breaking an older host.
+        """
+        op_id = self._op_id(op)
+        raw = op.get("protocol_versions")
+        if raw is None:
+            raw = op.get("protocol_version")
+        versions: list[int] = []
+        for value in raw if isinstance(raw, list) else [raw]:
+            try:
+                versions.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        if not versions:
+            # A hello with no parseable version is a greeting, not a
+            # negotiation: confirm what we speak and carry on.
+            versions = [PROTOCOL_VERSION]
+        if PROTOCOL_VERSION not in versions:
+            self.host_protocol_versions = versions
+            self._error(
+                "protocol",
+                f"no shared protocol version: host accepts {sorted(versions)}, "
+                f"this build speaks {PROTOCOL_VERSION}",
+                op_id,
+            )
+            return
+        self.host_protocol_versions = versions
+        payload: dict[str, Any] = {
+            "type": "hello",
+            "protocol_version": PROTOCOL_VERSION,
+            "capabilities": list(CAPABILITIES),
+            "pid": _pid(),
+        }
+        if op_id is not None:
+            payload["op_id"] = op_id
+        self._write_line(payload)
 
     def serve_forever(self) -> None:
         """Read ops until stdin EOF, a ``shutdown`` op, or a signal.
@@ -795,7 +895,8 @@ class AgentServer:
                 self._error("protocol", "malformed op line")
                 continue
             if not isinstance(op, dict) or not isinstance(op.get("op"), str):
-                self._error("protocol", "op must be an object with a string 'op' field")
+                op_id = self._op_id(op) if isinstance(op, dict) else None
+                self._error("protocol", "op must be an object with a string 'op' field", op_id)
                 continue
             name = op["op"]
             if name == "submit":
@@ -804,12 +905,18 @@ class AgentServer:
                 self.op_answer(op)
             elif name == "cancel":
                 self.op_cancel(op)
+            elif name == "hello":
+                self.op_hello(op)
             elif name == "ping":
-                self._write_line({"type": "pong"})
+                pong: dict[str, Any] = {"type": "pong"}
+                op_id = self._op_id(op)
+                if op_id is not None:
+                    pong["op_id"] = op_id
+                self._write_line(pong)
             elif name == "shutdown":
                 self._stopped.set()
             else:
-                self._error("protocol", f"unknown op: {name}")
+                self._error("protocol", f"unknown op: {name}", self._op_id(op))
 
     def _join_run_thread(self, timeout: float = 10.0) -> None:
         """Wait briefly for the active run thread to unwind (shutdown)."""

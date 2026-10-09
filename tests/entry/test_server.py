@@ -14,6 +14,7 @@ import unittest
 from unittest import mock
 
 from python_agent_harness.entry import server as server_module
+from python_agent_harness.entry.headless import PROTOCOL_VERSION
 from python_agent_harness.entry.server import (
     CAPABILITIES,
     AgentServer,
@@ -1899,3 +1900,133 @@ class RaiseSiteErrorCodeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHelloNegotiation(ServerTestBase):
+    """``hello`` is the host's half of version negotiation.
+
+    ``ready`` announces what this build speaks, which a host can only
+    accept or reject wholesale.  ``hello`` lets the host state what IT
+    can parse, so a mismatch is settled once, before any run, instead
+    of surfacing as misparsed events.
+    """
+
+    def _hello(self, server: AgentServer, op: dict) -> list[dict]:
+        server.inp = io.StringIO(json.dumps(op) + "\n")
+        server._read_ops()
+        return _lines(server.out)
+
+    def test_hello_is_advertised_as_a_capability(self) -> None:
+        self.assertIn("hello", CAPABILITIES)
+        self.assertIn("op_id", CAPABILITIES)
+
+    def test_a_shared_version_is_confirmed(self) -> None:
+        server = self._server()
+        lines = self._hello(server, {"op": "hello", "protocol_versions": [1, 2]})
+        hello = _of_type(lines, "hello")
+        self.assertEqual(len(hello), 1)
+        self.assertEqual(hello[0]["protocol_version"], PROTOCOL_VERSION)
+        self.assertIn("submit", hello[0]["capabilities"])
+        self.assertEqual(server.host_protocol_versions, [1, 2])
+        self.assertEqual(_of_type(lines, "error"), [])
+
+    def test_no_shared_version_is_refused_before_any_run(self) -> None:
+        server = self._server()
+        lines = self._hello(server, {"op": "hello", "protocol_versions": [7, 9]})
+        self.assertEqual(_of_type(lines, "hello"), [])
+        errors = _of_type(lines, "error")
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["error"]["code"], "protocol")
+        self.assertIn("no shared protocol version", errors[0]["message"])
+        self.assertIn("[7, 9]", errors[0]["message"])
+        self.assertEqual(server.host_protocol_versions, [7, 9])
+
+    def test_a_scalar_version_is_accepted(self) -> None:
+        server = self._server()
+        lines = self._hello(server, {"op": "hello", "protocol_version": 1})
+        self.assertEqual(len(_of_type(lines, "hello")), 1)
+
+    def test_a_versionless_greeting_just_confirms(self) -> None:
+        """A hello with nothing parseable is a greeting, not a
+        negotiation: it must not be treated as "no overlap"."""
+        server = self._server()
+        lines = self._hello(server, {"op": "hello"})
+        self.assertEqual(len(_of_type(lines, "hello")), 1)
+        self.assertEqual(_of_type(lines, "error"), [])
+
+    def test_garbled_versions_do_not_refuse(self) -> None:
+        server = self._server()
+        lines = self._hello(server, {"op": "hello", "protocol_versions": ["x", None]})
+        self.assertEqual(len(_of_type(lines, "hello")), 1)
+
+    def test_hello_echoes_the_op_id(self) -> None:
+        server = self._server()
+        lines = self._hello(server, {"op": "hello", "protocol_versions": [1], "op_id": "h1"})
+        self.assertEqual(_of_type(lines, "hello")[0]["op_id"], "h1")
+
+
+class TestOpIdAttribution(ServerTestBase):
+    """A refusal must name the op it refused.
+
+    There is no generic ack on this protocol, so an op's effect on the
+    stream IS its acknowledgement -- but an effect that never happened
+    cannot be correlated.  Echoing the caller's own id makes failures
+    attributable without adding receipts to the success path.
+    """
+
+    def _drive(self, server: AgentServer, ops: list[dict]) -> list[dict]:
+        server.inp = io.StringIO("".join(json.dumps(o) + "\n" for o in ops))
+        server._read_ops()
+        return _lines(server.out)
+
+    def test_unknown_op_error_carries_the_op_id(self) -> None:
+        server = self._server()
+        lines = self._drive(server, [{"op": "teleport", "op_id": "a7"}])
+        errors = _of_type(lines, "error")
+        self.assertEqual(errors[0]["op_id"], "a7")
+        self.assertIn("unknown op", errors[0]["message"])
+
+    def test_submit_refusals_carry_the_op_id(self) -> None:
+        server = self._server()
+        lines = self._drive(server, [{"op": "submit", "op_id": "s1"}])
+        self.assertEqual(_of_type(lines, "error")[0]["op_id"], "s1")
+
+    def test_answer_refusal_carries_the_op_id(self) -> None:
+        server = self._server()
+        lines = self._drive(
+            server, [{"op": "answer", "run_id": "r1", "answers": ["x"], "op_id": "ans-9"}]
+        )
+        self.assertEqual(_of_type(lines, "error")[0]["op_id"], "ans-9")
+
+    def test_cancel_refusal_carries_the_op_id(self) -> None:
+        server = self._server()
+        lines = self._drive(server, [{"op": "cancel", "run_id": "nope", "op_id": "c3"}])
+        self.assertEqual(_of_type(lines, "error")[0]["op_id"], "c3")
+
+    def test_two_pipelined_refusals_are_distinguishable(self) -> None:
+        """The point of the whole thing: without the echo both come back
+        as bare errors and the host cannot tell them apart."""
+        server = self._server()
+        lines = self._drive(
+            server,
+            [
+                {"op": "answer", "run_id": "r1", "answers": ["x"], "op_id": "the-answer"},
+                {"op": "cancel", "run_id": "r1", "op_id": "the-cancel"},
+            ],
+        )
+        ids = [e.get("op_id") for e in _of_type(lines, "error")]
+        self.assertEqual(ids, ["the-answer", "the-cancel"])
+
+    def test_ping_echoes_the_op_id(self) -> None:
+        server = self._server()
+        lines = self._drive(server, [{"op": "ping", "op_id": "p1"}])
+        self.assertEqual(_of_type(lines, "pong")[0]["op_id"], "p1")
+
+    def test_an_op_without_an_id_omits_the_field(self) -> None:
+        """Wire-compatible with a host that does not correlate."""
+        server = self._server()
+        lines = self._drive(server, [{"op": "cancel", "run_id": "nope"}])
+        errors = _of_type(lines, "error")
+        self.assertNotIn("op_id", errors[0])
+        lines2 = self._drive(server, [{"op": "ping"}])
+        self.assertNotIn("op_id", _of_type(lines2, "pong")[0])

@@ -284,9 +284,13 @@ Protocol (one JSON object per line):
 host → agent: {"op": "submit", "prompt": ..., "run_id": ...}
               {"op": "answer", "run_id": ..., "answers": [...], "ask_id": ...}
               {"op": "cancel", "run_id": ...}
+              {"op": "hello", "protocol_versions": [...]}
               {"op": "ping"} | {"op": "shutdown"}
+              ... any op may carry "op_id", echoed on what it causes
 agent → host: {"protocol": V, "type": "ready", "pid": ...,
                "protocol_version": V, "capabilities": [...]}   first line
+              {"protocol": V, "type": "hello", "protocol_version": V,
+               "capabilities": [...], "op_id": ...}   negotiation reply
               {"protocol": V, "seq": N, "type": "start"|"delta"|"notify"|"log",
                "run_id": ...}
               {"protocol": V, "seq": N, "type": "result", "run_id": ...,
@@ -296,6 +300,24 @@ agent → host: {"protocol": V, "type": "ready", "pid": ...,
                "error": {"code": "protocol", "message": ...},
                "message": ...}                      protocol failures
 ```
+
+Version negotiation runs both ways.  `ready` announces what the build
+speaks — a single integer a host can only accept or reject wholesale.
+`hello` is the other direction: the host states the versions *it* can
+parse and the server confirms a shared one or refuses with a
+`protocol` error, so a mismatch is settled once, before any run,
+rather than surfacing as misparsed events.  With one line shape today
+the only outcomes are "agreed" or "no overlap", but it is the hook a
+future version needs in order to downgrade instead of breaking an
+older host.  Both halves are advertised as the `hello` capability.
+
+There is no generic `ack`: each op is acknowledged by its own effect
+on the stream.  Failures are the exception, because an effect that
+never happened cannot be correlated — so an op may carry an `op_id`,
+echoed on the `error` (or `pong`) it causes.  A host that pipelined an
+`answer` and a `cancel` can then tell which one was refused instead of
+seeing two indistinguishable error lines.  Advertised as the `op_id`
+capability; omitting the field keeps the older behaviour.
 
 A mid-run question arrives as a `notify` with `kind: "ask"` (data has
 `kind: "ask"|"confirm"` and an `ask_id`); reply with `answer`, echoing
