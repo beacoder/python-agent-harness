@@ -1959,6 +1959,58 @@ class TestHelloNegotiation(ServerTestBase):
         lines = self._hello(server, {"op": "hello", "protocol_versions": ["x", None]})
         self.assertEqual(len(_of_type(lines, "hello")), 1)
 
+    def test_numeric_strings_are_accepted(self) -> None:
+        server = self._server()
+        lines = self._hello(server, {"op": "hello", "protocol_versions": [" 1 "]})
+        self.assertEqual(len(_of_type(lines, "hello")), 1)
+        self.assertEqual(server.host_protocol_versions, [1])
+
+    def test_booleans_are_not_read_as_versions(self) -> None:
+        """bool is an int subclass, so without the guard ``False`` would
+        be read as version 0 and the greeting refused as "no overlap".
+
+        Tested with False rather than True on purpose: ``int(True)`` is
+        1, which is the version we speak, so True cannot distinguish
+        the two behaviours.
+        """
+        server = self._server()
+        lines = self._hello(server, {"op": "hello", "protocol_versions": [False]})
+        # nothing parseable -> a bare greeting, confirmed, not refused
+        self.assertEqual(len(_of_type(lines, "hello")), 1)
+        self.assertEqual(_of_type(lines, "error"), [])
+        self.assertEqual(server.host_protocol_versions, [PROTOCOL_VERSION])
+
+    def test_non_finite_versions_do_not_kill_the_server(self) -> None:
+        """``json`` accepts Infinity/NaN by default and ``int()`` refuses
+        them.  Uncaught, that unwound the reader loop and took the whole
+        sandbox down over one malformed greeting."""
+        for value in (float("inf"), float("-inf"), float("nan")):
+            server = self._server()
+            lines = self._hello(server, {"op": "hello", "protocol_versions": [value]})
+            self.assertEqual(len(_of_type(lines, "hello")), 1, value)
+            self.assertEqual(_of_type(lines, "error"), [], value)
+            self.assertEqual(server.host_protocol_versions, [PROTOCOL_VERSION])
+
+    def test_an_integral_float_version_is_accepted(self) -> None:
+        server = self._server()
+        lines = self._hello(server, {"op": "hello", "protocol_versions": [1.0]})
+        self.assertEqual(len(_of_type(lines, "hello")), 1)
+        self.assertEqual(server.host_protocol_versions, [1])
+
+    def test_a_fractional_float_is_not_truncated(self) -> None:
+        """Truncating 1.9 to 1 would silently claim a shared version."""
+        server = self._server()
+        lines = self._hello(server, {"op": "hello", "protocol_versions": [1.9]})
+        self.assertEqual(len(_of_type(lines, "hello")), 1)
+        self.assertEqual(server.host_protocol_versions, [PROTOCOL_VERSION])
+
+    def test_a_version_the_host_cannot_parse_is_still_refused(self) -> None:
+        """Narrowing must not turn "no overlap" into "greeting"."""
+        server = self._server()
+        lines = self._hello(server, {"op": "hello", "protocol_versions": ["7"]})
+        self.assertEqual(_of_type(lines, "hello"), [])
+        self.assertIn("no shared protocol version", _of_type(lines, "error")[0]["message"])
+
     def test_hello_echoes_the_op_id(self) -> None:
         server = self._server()
         lines = self._hello(server, {"op": "hello", "protocol_versions": [1], "op_id": "h1"})

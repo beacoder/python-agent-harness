@@ -820,12 +820,28 @@ class AgentServer:
         raw = op.get("protocol_versions")
         if raw is None:
             raw = op.get("protocol_version")
+        candidates: list[Any] = (
+            list(raw) if isinstance(raw, list) else ([] if raw is None else [raw])
+        )
+        # Narrow before converting rather than letting ``int()`` raise on
+        # whatever arrives: the op is untrusted input, so the accepted
+        # shapes belong in the code instead of in an ``except TypeError``.
+        # An uncaught conversion error here would unwind the reader loop
+        # and take the whole sandbox down with it.
         versions: list[int] = []
-        for value in raw if isinstance(raw, list) else [raw]:
-            try:
-                versions.append(int(value))
-            except (TypeError, ValueError):
-                continue
+        for value in candidates:
+            if isinstance(value, bool):
+                continue  # False would otherwise be read as version 0
+            if isinstance(value, int):
+                versions.append(value)
+            elif isinstance(value, float):
+                # is_integer() is False for inf and nan too, which
+                # ``json`` accepts by default and ``int()`` refuses
+                if value.is_integer():
+                    versions.append(int(value))
+            elif isinstance(value, str):
+                with contextlib.suppress(ValueError):
+                    versions.append(int(value.strip()))
         if not versions:
             # A hello with no parseable version is a greeting, not a
             # negotiation: confirm what we speak and carry on.
