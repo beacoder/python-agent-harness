@@ -24,7 +24,6 @@ class Read(Tool):
 - You need to examine file contents
 - Before editing any file (required)
 - You know the exact file path
-- Viewing images, PDFs, or Jupyter notebooks
 - Understanding code structure and implementation
 
 **When NOT to use `Read`:**
