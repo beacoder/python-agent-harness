@@ -301,69 +301,6 @@ agent → host: {"protocol": V, "type": "ready", "pid": ...,
                "message": ...}                      protocol failures
 ```
 
-Version negotiation runs both ways.  `ready` announces what the build
-speaks — a single integer a host can only accept or reject wholesale.
-`hello` is the other direction: the host states the versions *it* can
-parse and the server confirms a shared one or refuses with a
-`protocol` error, so a mismatch is settled once, before any run,
-rather than surfacing as misparsed events.  With one line shape today
-the only outcomes are "agreed" or "no overlap", but it is the hook a
-future version needs in order to downgrade instead of breaking an
-older host.  Both halves are advertised as the `hello` capability.
-
-There is no generic `ack`: each op is acknowledged by its own effect
-on the stream.  Failures are the exception, because an effect that
-never happened cannot be correlated — so an op may carry an `op_id`,
-echoed on the `error` (or `pong`) it causes.  A host that pipelined an
-`answer` and a `cancel` can then tell which one was refused instead of
-seeing two indistinguishable error lines.  Advertised as the `op_id`
-capability; omitting the field keeps the older behaviour.
-
-A mid-run question arrives as a `notify` with `kind: "ask"` (data has
-`kind: "ask"|"confirm"` and an `ask_id`); reply with `answer`, echoing
-the `ask_id` so the reply is matched to its question.  A mismatched id
-is refused rather than applied to whatever is pending — otherwise a
-reply sent for a question that has since timed out would resolve the
-*next* one.  Omitting `ask_id` keeps the older behaviour, except once
-some ask in the run has timed out, when an uncorrelated answer is
-ambiguous and is refused.
-
-One run at a time; a `submit` while one is active is rejected with an
-`error` line.  `--answer-timeout SECONDS` bounds how long a pending
-question waits for the host's answer (default: forever).  The result
-line's shape is identical to `headless --json`'s, so a driver can
-speak both protocols with one parser.
-
-`ready` carries a `capabilities` list naming the features the build
-supports, so a host can adapt instead of inferring a feature's absence
-from events that never arrive.  A `notify` of kind `usage` reports the
-run's running `{input, output, rounds}` after each round, so a host can
-meter mid-run and `cancel` a run that outruns its budget rather than
-learning the cost only from the terminal `result`.  Classified
-failures carry their code from the raise site (`errors[].code` of
-`budget` or `timeout`), so a driver never has to match words in a
-human-readable message.
-
-`--max-rounds N` and `--timeout SECONDS` (or the config file's `serve`
-section) bound **each** run rather than the process — the resident
-server grants every `submit` a fresh budget.  Both are off by default.
-They are deliberately not fields on the `submit` op: `serve` sandboxes
-untrusted agent code on a host's behalf, so the ceiling belongs to
-whoever starts the sandbox, not to the caller.  A tripped budget
-unwinds the agent loop through its normal path, so the run still ends
-with a `result` line carrying `errors[].code` of `budget` or `timeout`
-plus the token usage consumed — a host bills and reports it like any
-other outcome.
-
-`timeout` is **cooperative** — checked between rounds, not by a
-watchdog — so it bounds work at those checkpoints but does not
-forcibly interrupt a blocking operation mid-round (a hung tool, a slow
-network read, or a run parked on a mid-run question awaiting a human
-answer). Use `--answer-timeout` to cap how long an ask waits, and rely
-on the hosting process's own exec watchdog (which sends `cancel` then
-kills) as the hard wall-clock stop for anything the cooperative budget
-cannot reach.
-
 ### Slash commands
 
 | Command | Description |
