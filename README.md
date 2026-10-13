@@ -131,32 +131,9 @@ All LLM settings live in a single JSON configuration file. Environment variables
     "_comment": "Optional per-model context-window overrides (tokens). Keys are model names or substrings (e.g. deepseek-v4 = 1000000); matched in file order, first match wins. Overrides the built-in CONTEXT_WINDOWS table in config.py.",
     "deepseek-v4": 1000000
   },
-  "subagent_llm": {
-    "profile": null,
-    "base_url": null,
-    "api_key": null,
-    "model": null,
-    "temperature": null,
-    "max_tokens": null,
-    "timeout": null,
-    "reasoning_effort": null,
-    "stream": null,
-    "supports_image_input": null
-  },
-  "default_agent": null,
   "paths": {
     "context_path": null,
     "skill_path": null
-  },
-  "lsp": {
-    "servers": {
-      ".c":   { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "c" },
-      ".h":   { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "c" },
-      ".cpp": { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "cpp" },
-      ".cc":  { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "cpp" },
-      ".hpp": { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "cpp" },
-      ".cxx": { "command": ["clangd", "--compile-commands-dir=$REPO/build/Linux_x86_64", "--background-index"], "language_id": "cpp" }
-    }
   },
   "mcp": {
     "servers": {
@@ -195,6 +172,8 @@ All LLM settings live in a single JSON configuration file. Environment variables
 - **LLM logging** — request and response bodies are logged as JSON to `/tmp/python-agent-harness-<date>-<id>.json`. Set `LLM_LOG_DIR` to change the directory. The log path is printed at startup.
 
 ## Usage
+
+### Tui mode
 
 ```sh
 python-agent-harness run [--project DIR]
