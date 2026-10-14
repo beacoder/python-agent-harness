@@ -310,20 +310,6 @@ An agent file may carry YAML frontmatter with two optional keys:
 - `name:` — override the agent name (defaults to the file stem)
 - `exclude_tools:` — a list of tool names the agent must not see. An entry matches a tool by exact name, glob pattern (`mcp__git__*`), or `__`-delimited prefix (`mcp__git` hides `mcp__git__list_repos` but `Write` does NOT hide `TodoWrite`). The built-in `default` agent always sees all tools.
 
-```markdown
----
-name: assistant
-exclude_tools:
-  - Bash
-  - Edit
-  - Write
-  - mcp__git__*
----
-
-# Role and Behavior
-You are a personal assistant. You do NOT modify files or run shell commands.
-```
-
 #### Commands vs Agents
 
 | | Commands (`/review`) | Agents (`/agent reviewer`) |
