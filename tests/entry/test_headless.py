@@ -137,6 +137,32 @@ class TestFinalAnswerText(unittest.TestCase):
         session.last_messages = [Message(role="user", content="hi")]
         self.assertEqual(final_answer_text(session), "")
 
+    def test_never_reports_a_previous_runs_answer(self):
+        """Regression: history persists across runs (serve) and restored
+        sessions, so a run that ended without answering (cancelled, or
+        died) used to report the PREVIOUS run's answer as its own.  The
+        scan stops at this run's prompt."""
+        session = mock.Mock()
+        session.last_messages = [
+            Message(role="user", content="first"),
+            Message(role="assistant", content="ANSWER OF RUN 1"),
+            Message(role="user", content="second"),  # this run: no answer yet
+        ]
+        self.assertEqual(final_answer_text(session), "")
+
+    def test_injected_messages_are_not_the_run_boundary(self):
+        """Nudges / plan reminders / mid-run prompts are ``injected``:
+        the run's answer before such a message still counts."""
+        session = mock.Mock()
+        session.last_messages = [
+            Message(role="user", content="old"),
+            Message(role="assistant", content="old answer"),
+            Message(role="user", content="task"),
+            Message(role="assistant", content="this run's answer"),
+            Message(role="user", content="keep going", injected=True),
+        ]
+        self.assertEqual(final_answer_text(session), "this run's answer")
+
     def test_empty_when_history_empty(self):
         session = mock.Mock()
         session.last_messages = []

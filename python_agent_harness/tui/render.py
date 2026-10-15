@@ -8,12 +8,14 @@ Todos panel, and scrollback dump rendering.
 from __future__ import annotations
 
 import math
+import re
 import time
 from typing import TYPE_CHECKING, Any
 
 from rich.cells import cell_len
 from rich.console import Console, Group
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -36,6 +38,48 @@ SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇",
 # tool results dim) so roles never blend into tool activity
 USER_STYLE = "cyan"
 ASSISTANT_STYLE = "green"
+
+# Terminal control sequences, most specific first: string sequences
+# (OSC title/clipboard/hyperlink, DCS, SOS, PM, APC) up to their BEL/ST
+# terminator -- or the end of the line when unterminated, so a stray
+# introducer cannot hide every following line from the user --, CSI
+# sequences (cursor movement, screen clearing, colors), both in their
+# 7-bit (ESC-prefixed) and 8-bit (C1) forms, other two-byte ESC
+# sequences, then any remaining C0/C1 control character except tab and
+# newline (\r included: it rewinds the line, letting later text
+# overwrite what came before).
+_TERMINAL_CONTROL = re.compile(
+    r"(?:\x1b[\]PX^_]|[\x90\x98\x9d\x9e\x9f])[^\x07\x1b\x9c\n]*(?:\x07|\x1b\\|\x9c)?"
+    r"|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]"
+    r"|\x1b[ -~]?"
+    r"|[\x00-\x08\x0b-\x1f\x7f-\x9f]"
+)
+
+
+def sanitize_terminal(text: str) -> str:
+    """Strip terminal control sequences from untrusted display text.
+
+    Model output, tool results (file contents, command output, MCP
+    results) and diffs are rendered verbatim, and Rich passes escape
+    sequences straight through to the terminal: a file the agent read
+    could retitle the window, clear or overwrite the screen (hiding
+    what actually ran), spoof hyperlinks, or -- on terminals that honor
+    OSC 52 -- write the user's clipboard.  Tabs and newlines survive;
+    colors in command output are dropped along with everything else.
+    """
+    return _TERMINAL_CONTROL.sub("", text)
+
+
+def safe_markup(value: object) -> str:
+    """VALUE made safe to embed in a Rich markup string.
+
+    Paths, error messages and user input interpolated into
+    ``f"[red]...{value}...[/red]"`` are parsed as markup: a value like
+    ``notes[/draft].md`` raised MarkupError (killing the TUI), and
+    ``arr[i]`` silently lost its ``[i]``.  Escapes markup and strips
+    terminal control sequences.
+    """
+    return escape(sanitize_terminal(str(value)))
 
 
 def _tail_lines(text: str, n: int) -> str:
@@ -176,16 +220,21 @@ class RenderMixin:
             # last_messages (during the first assistant stream), show
             # the text the user just submitted so the round isn't blank
             if len(all_messages) <= self.round_start and self.round_user_text:
-                body = _tail_lines(self.round_user_text, 12)
+                body = _tail_lines(sanitize_terminal(self.round_user_text), 12)
                 if body.strip():
-                    rows.append(Markdown(f"**user:** {body}", style=USER_STYLE))
+                    rows.append(Markdown(f"**user:** {body}", style=USER_STYLE, hyperlinks=False))
 
+        # Markdown rows use hyperlinks=False: Rich would otherwise turn
+        # [text](url) into a terminal hyperlink showing only TEXT, so
+        # model output or a file could display one URL while the click
+        # opens another.  Unlinked, the real target is printed beside it.
         for m in messages:
+            text = sanitize_terminal(m.text())
             # compacted summaries live in the user turn (system prompt is
             # separate); match on content so both live sessions and
             # restored files (role lost in the markdown round-trip) render
-            if m.text().startswith("**[Compacted Summary]**"):
-                rows.append(Text("📦 " + _tail_chars(m.text(), 200), style="dim italic"))
+            if text.startswith("**[Compacted Summary]**"):
+                rows.append(Text("📦 " + _tail_chars(text, 200), style="dim italic"))
                 continue
             if m.role == "user":
                 # harness-injected messages (completion nudge,
@@ -197,15 +246,21 @@ class RenderMixin:
                 # is lost in the markdown round-trip.
                 if m.injected or _is_injected_user_text(m.text()):
                     continue
-                body = m.text() if full else _tail_lines(m.text(), 12)
+                body = text if full else _tail_lines(text, 12)
                 indicator = _image_indicator(m)
                 if body.strip() or indicator:
-                    rows.append(Markdown(f"**user:** {body.strip()}{indicator}", style=USER_STYLE))
+                    rows.append(
+                        Markdown(
+                            f"**user:** {body.strip()}{indicator}",
+                            style=USER_STYLE,
+                            hyperlinks=False,
+                        )
+                    )
             elif m.role == "assistant":
-                body = m.text()
+                body = text
                 collapsed_reasoning = False
                 if isinstance(m.reasoning, str) and m.reasoning:
-                    stripped = _strip_reasoning(body, m.reasoning)
+                    stripped = _strip_reasoning(body, sanitize_terminal(m.reasoning))
                     if stripped != body:
                         body = stripped
                         collapsed_reasoning = True
@@ -221,12 +276,14 @@ class RenderMixin:
                     for tc in m.tool_calls:
                         params = " ".join(f"{k}={v}" for k, v in display_args(tc.arguments).items())
                         label = f"tool: {tc.name}({params})" if params else f"tool: {tc.name}"
-                        rows.append(Text(f"▶ {label}", style="magenta"))
+                        rows.append(Text(f"▶ {sanitize_terminal(label)}", style="magenta"))
                 if body.strip():
-                    rows.append(Markdown(f"**assistant:** {body}", style=ASSISTANT_STYLE))
+                    rows.append(
+                        Markdown(f"**assistant:** {body}", style=ASSISTANT_STYLE, hyperlinks=False)
+                    )
             elif m.role == "tool":
-                preview = _tool_result_preview(m.text())
-                name = (m.name or "tool").lower()
+                preview = _tool_result_preview(text)
+                name = sanitize_terminal((m.name or "tool").lower())
                 call = calls_by_id.get(m.tool_call_id)
                 # tool failures surface as "Error: ..." results (agent
                 # containment, missing args, MCP-reported errors)
@@ -241,7 +298,7 @@ class RenderMixin:
                 row.append(f"\n{preview}")
                 rows.append(row)
                 if call is not None and call.diff:
-                    rows.append(render_diff(call.diff))
+                    rows.append(render_diff(sanitize_terminal(call.diff)))
         return rows
 
     def _todos_panel(self) -> Group | None:
@@ -265,7 +322,10 @@ class RenderMixin:
                 content = str(raw.get("content", ""))
             else:
                 mark, content = "•", repr(raw)
-            t.add_row(mark, content)
+            # Text, not str: add_row parses plain strings as markup, so a
+            # model-written todo like "fix [/tmp] paths" raised
+            # MarkupError on the render thread and killed the TUI
+            t.add_row(mark, Text(sanitize_terminal(content)))
         return Group(Text("Todos", style="bold"), t)
 
     def _history_rows(self) -> list[Any]:
@@ -290,7 +350,7 @@ class RenderMixin:
         """Live stream row (cheap Text, tail-capped)."""
         with self.lock:
             stream = self.stream_text
-        stream = _strip_final_check(stream)
+        stream = _strip_final_check(sanitize_terminal(stream))
         if not stream:
             return None
         cap = self._visible_row_cap()
@@ -455,7 +515,7 @@ class RenderMixin:
                 tool = self._current_tool
                 status = self.status
             if tool:
-                t.append(f" {tool}", style="bold cyan")
+                t.append(f" {sanitize_terminal(tool)}", style="bold cyan")
         elif self.question is not None:
             t.append(" ❓", style="yellow")
             with self.lock:

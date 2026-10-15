@@ -32,7 +32,11 @@ from ..session import config
 from ..session.session import Session
 from .commands import CommandMixin
 from .input import InputMixin, SlashCompleter, UiQuestion, _history_path, _make_prompt_session
-from .render import RenderMixin
+from .render import RenderMixin, safe_markup
+
+# Unexpected UI exceptions in a row (no successful input read in
+# between) after which the main loop stops recovering and re-raises.
+_MAX_CONSECUTIVE_UI_ERRORS = 3
 
 
 class Tui(RenderMixin, InputMixin, CommandMixin):
@@ -249,9 +253,12 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             )
         )
         if config.LLM_LOG_ENABLED:
-            self.console.print(f"[dim]LLM logs: {self._controller.client.log_path}[/dim]")
+            self.console.print(
+                f"[dim]LLM logs: {safe_markup(self._controller.client.log_path)}[/dim]"
+            )
         for warning in self._controller.startup_warnings:
-            self.console.print(f"[yellow]warning: {warning}[/yellow]")
+            self.console.print(f"[yellow]warning: {safe_markup(warning)}[/yellow]")
+        consecutive_errors = 0
         while True:
             try:
                 if self.question is not None:
@@ -260,6 +267,7 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
                 self.console.print(self._status_bar())
                 self._flush()
                 text = self._read_multiline()
+                consecutive_errors = 0  # input works: the app is alive
                 if text is None:
                     break
                 if not text.strip():
@@ -272,6 +280,32 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             except KeyboardInterrupt:
                 # stray Ctrl-C outside input/execution: stay in the app
                 self.console.print("[dim]cancelled — Ctrl-D or /exit to quit[/dim]")
+            except Exception as e:  # noqa: BLE001 - the TUI must survive its own bugs
+                consecutive_errors += 1
+                if consecutive_errors >= _MAX_CONSECUTIVE_UI_ERRORS:
+                    # The failure repeats without a single successful
+                    # read in between (e.g. the terminal is gone after an
+                    # SSH disconnect): recovering would spin forever at
+                    # full CPU, so give up the way the app used to.
+                    raise
+                self._recover_from_ui_error(e)
+
+    def _recover_from_ui_error(self, error: Exception) -> None:
+        """Keep the app alive after an unexpected UI exception.
+
+        Without this any rendering/command bug (e.g. a Rich MarkupError
+        on unusual text) propagated out of ``run`` and closed the TUI.
+        A run whose display loop died was already cancelled and released
+        by ``_start_agent`` (``_abandon_run``); here the error is only
+        reported, so an error in an unrelated command never cancels or
+        restores anything.
+        """
+        self.agent_running = False
+        with contextlib.suppress(Exception):  # never let the report itself crash
+            self.console.print(
+                Text(f"internal error: {type(error).__name__}: {error}", style="red")
+            )
+            self._flush()
 
     def _start_agent(
         self,
@@ -291,9 +325,9 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             # all @file references failed and nothing else to send
             return
         for err in handle.errors:
-            self.console.print(f"[red]@{err.path}: {err.message}[/red]")
+            self.console.print(f"[red]@{safe_markup(err.path)}: {safe_markup(err.message)}[/red]")
         for warning in handle.warnings:
-            self.console.print(f"[yellow]warning: {warning}[/yellow]")
+            self.console.print(f"[yellow]warning: {safe_markup(warning)}[/yellow]")
         self.stream_text = ""
         self.status = " running"
         self._current_tool = ""
@@ -327,27 +361,38 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             # hung HTTP read may take a while, and the UI must return to
             # the input prompt immediately.
             cancelled = True
-            self._controller.cancel()
-            if self.question is not None:
-                # a pending question wedges the worker in its wait: the
-                # run is cancelled, so release it now — it must not be
-                # re-prompted after the run is over
-                self.question.answer = ""
-                self.question.event.set()
-                self.question = None
-            if self._restore is not None:
-                # release state the cancelled run borrowed (e.g. a slash
-                # command's project dir) now: the worker may finish late
-                # (stale) and its own finally must not touch it then
-                self._restore()
-                self._restore = None
+            self._abandon_run()
             self.console.print("\n[dim]execution cancelled — add more messages or /exit[/dim]")
             self._flush()
+        except Exception:
+            # The display loop itself failed (a rendering bug): the run's
+            # output can no longer be shown, so cancel it the same way,
+            # then let the main loop report the error and keep going.
+            cancelled = True
+            self._abandon_run()
+            raise
         finally:
             self.agent_running = False
             if not cancelled:
                 self.console.print()
                 self._flush()
+
+    def _abandon_run(self) -> None:
+        """Cancel the active run and release what it holds (UI side)."""
+        self._controller.cancel()
+        if self.question is not None:
+            # a pending question wedges the worker in its wait: the
+            # run is cancelled, so release it now — it must not be
+            # re-prompted after the run is over
+            self.question.answer = ""
+            self.question.event.set()
+            self.question = None
+        if self._restore is not None:
+            # release state the cancelled run borrowed (e.g. a slash
+            # command's project dir) now: the worker may finish late
+            # (stale) and its own finally must not touch it then
+            self._restore()
+            self._restore = None
 
     def _run_live(self, worker: threading.Thread) -> bool:
         """Live-based display (real terminal). Returns True if cancelled.

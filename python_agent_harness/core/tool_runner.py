@@ -76,8 +76,18 @@ class ToolRunner:
         if isinstance(args, str):
             try:
                 args = json.loads(args)
-            except json.JSONDecodeError:
-                args = {}
+            except json.JSONDecodeError as e:
+                # Do NOT fall back to {}: the required-argument check
+                # below would then report "missing required argument(s)"
+                # for arguments the model DID send -- typically a large
+                # Write/Edit cut off by max_tokens -- and the model tends
+                # to retry the identical oversized call.
+                return (
+                    f"Error: {call.name} arguments are not valid JSON ({e.msg} at char "
+                    f"{e.pos} of {len(args)}). If the arguments are large (e.g. a whole "
+                    "file), the response was probably truncated by the output token "
+                    "limit: split the change into smaller calls."
+                )
         if not isinstance(args, dict):
             args = {}
         # Validate required parameters from the tool schema

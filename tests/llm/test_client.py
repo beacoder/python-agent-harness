@@ -566,7 +566,9 @@ class TestClientRetry(unittest.TestCase):
                 c.chat(
                     [Message(role="user", content="hi")],
                     stream=False,
-                    cancel_check=lambda: True,
+                    # cancel lands after the first attempt, i.e. during
+                    # the backoff (a cancel before it never sends)
+                    cancel_check=lambda: bool(fake_openai_server.REQUEST_BODIES),
                 )
         finally:
             c.close()
@@ -1089,10 +1091,16 @@ class TestClientNetworkErrors(unittest.TestCase):
         c = make_client(retry_max=2, retry_base_delay=0.01, retry_max_delay=0.05)
         try:
             with (
-                mock.patch.object(c._http, "stream", side_effect=httpx.ConnectError("refused")),
+                mock.patch.object(
+                    c._http, "stream", side_effect=httpx.ConnectError("refused")
+                ) as stream_mock,
                 self.assertRaises(ApiError) as ctx,
             ):
-                c.chat([Message(role="user", content="hi")], cancel_check=lambda: True)
+                # cancel during the backoff after the first failed attempt
+                c.chat(
+                    [Message(role="user", content="hi")],
+                    cancel_check=lambda: stream_mock.call_count > 0,
+                )
             self.assertIn("network error", str(ctx.exception))
         finally:
             c.close()
@@ -1275,12 +1283,15 @@ class TestClientResetHttp(unittest.TestCase):
         c = make_offline_client(retry_max=3, retry_base_delay=60.0, retry_max_delay=60.0)
         old_http = c._http
         with (
-            mock.patch.object(c._http, "stream", side_effect=httpx.ConnectError("refused")),
+            mock.patch.object(
+                c._http, "stream", side_effect=httpx.ConnectError("refused")
+            ) as stream_mock,
             self.assertRaises(ApiError),
         ):
             c.chat(
                 [Message(role="user", content="hi")],
-                cancel_check=lambda: True,
+                # cancel during the backoff after the first failed attempt
+                cancel_check=lambda: stream_mock.call_count > 0,
             )
         self.assertIsNot(c._http, old_http)
         self.assertFalse(c._http.is_closed)
@@ -1435,7 +1446,7 @@ class TestClientCallbackIsolation(unittest.TestCase):
         c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
         calls = {"n": 0}
 
-        def fake_stream(payload, on_delta, on_tool_call, usage):
+        def fake_stream(payload, on_delta, on_tool_call, usage, cancel_check=None):
             on_delta("hello")  # invokes the wrapped user callback
             return (["hello"], [], {})
 
@@ -1459,7 +1470,7 @@ class TestClientCallbackIsolation(unittest.TestCase):
         c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
         calls = {"n": 0}
 
-        def fake_stream(payload, on_delta, on_tool_call, usage):
+        def fake_stream(payload, on_delta, on_tool_call, usage, cancel_check=None):
             on_tool_call("Read", "call_1", '{"path":"x"}')
             return ([], [], {0: {"id": "call_1", "name": "Read", "arguments": '{"path":"x"}'}})
 
@@ -1491,7 +1502,7 @@ class TestRetryAfterPartialStream(unittest.TestCase):
         deltas: list[str] = []
         retries = {"n": 0}
 
-        def fake_stream(payload, on_delta, on_tool_call, usage):
+        def fake_stream(payload, on_delta, on_tool_call, usage, cancel_check=None):
             n = calls["n"]
             calls["n"] += 1
             if n == 0:
@@ -1535,7 +1546,7 @@ class TestAuthRefreshOn401(unittest.TestCase):
         c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
         calls = {"n": 0}
 
-        def fake_stream(payload, on_delta, on_tool_call, usage):
+        def fake_stream(payload, on_delta, on_tool_call, usage, cancel_check=None):
             n = calls["n"]
             calls["n"] += 1
             if n == 0:
@@ -1562,7 +1573,7 @@ class TestAuthRefreshOn401(unittest.TestCase):
         c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
         calls = {"n": 0}
 
-        def fake_stream(payload, on_delta, on_tool_call, usage):
+        def fake_stream(payload, on_delta, on_tool_call, usage, cancel_check=None):
             calls["n"] += 1
             raise AuthExpiredError("API error 401: Unauthorized")
 
@@ -1587,7 +1598,7 @@ class TestAuthRefreshOn401(unittest.TestCase):
         c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
         calls = {"n": 0}
 
-        def fake_stream(payload, on_delta, on_tool_call, usage):
+        def fake_stream(payload, on_delta, on_tool_call, usage, cancel_check=None):
             calls["n"] += 1
             raise AuthExpiredError("API error 401: Unauthorized")
 
@@ -1611,7 +1622,7 @@ class TestAuthRefreshOn401(unittest.TestCase):
         c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
         old_http = c._http
 
-        def fake_stream(payload, on_delta, on_tool_call, usage):
+        def fake_stream(payload, on_delta, on_tool_call, usage, cancel_check=None):
             raise AuthExpiredError("API error 401: Unauthorized")
 
         with (
@@ -1764,7 +1775,7 @@ class TestAuthRefreshOnConfigurableStatusCodes(unittest.TestCase):
         c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
         calls = {"n": 0}
 
-        def fake_stream(payload, on_delta, on_tool_call, usage):
+        def fake_stream(payload, on_delta, on_tool_call, usage, cancel_check=None):
             n = calls["n"]
             calls["n"] += 1
             if n == 0:
@@ -1789,7 +1800,7 @@ class TestAuthRefreshOnConfigurableStatusCodes(unittest.TestCase):
         c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
         calls = {"n": 0}
 
-        def fake_stream(payload, on_delta, on_tool_call, usage):
+        def fake_stream(payload, on_delta, on_tool_call, usage, cancel_check=None):
             calls["n"] += 1
             raise AuthExpiredError("API error 502: Bad Gateway")
 
@@ -1812,7 +1823,7 @@ class TestAuthRefreshOnConfigurableStatusCodes(unittest.TestCase):
         c = make_offline_client(retry_max=3, retry_base_delay=0.01, retry_max_delay=0.01)
         calls = {"n": 0}
 
-        def fake_stream(payload, on_delta, on_tool_call, usage):
+        def fake_stream(payload, on_delta, on_tool_call, usage, cancel_check=None):
             n = calls["n"]
             calls["n"] += 1
             if n == 0:
@@ -1838,7 +1849,7 @@ class TestAuthRefreshOnConfigurableStatusCodes(unittest.TestCase):
         c = make_offline_client(retry_max=2, retry_base_delay=0.01, retry_max_delay=0.01)
         calls = {"n": 0}
 
-        def fake_stream(payload, on_delta, on_tool_call, usage):
+        def fake_stream(payload, on_delta, on_tool_call, usage, cancel_check=None):
             calls["n"] += 1
             raise RetryableApiError("API error 503: Service Unavailable")
 
@@ -2018,6 +2029,66 @@ class TestImageInputModelResolution(unittest.TestCase):
             payload["messages"][0]["content"],
             "[1 image omitted: model does not support image input]",
         )
+
+
+class TestClientCancelCheck(unittest.TestCase):
+    """A cancel that lands while the payload is being built (after the
+    agent loop's last check, before ``abort`` has a socket to kill) used
+    to be cleared by ``chat()`` and the request ran to completion on the
+    fresh pool.  ``cancel_check`` is now honored before the request is
+    opened and between streamed chunks."""
+
+    def tearDown(self) -> None:
+        fake_openai_server.reset_state()
+
+    def test_cancel_before_request_never_opens_it(self):
+        from python_agent_harness.llm.client import ApiError, RequestCancelled
+
+        fake_openai_server.reset_state()
+        c = make_client()
+        try:
+            for stream in (True, False):
+                with self.subTest(stream=stream), self.assertRaises(RequestCancelled) as cm:
+                    c.chat(
+                        [Message(role="user", content="hi")],
+                        stream=stream,
+                        cancel_check=lambda: True,
+                    )
+                self.assertIsInstance(cm.exception, ApiError)  # existing handlers apply
+            self.assertEqual(fake_openai_server.REQUEST_BODIES, [])
+        finally:
+            c.close()
+
+    def test_cancel_mid_stream_stops_at_next_chunk(self):
+        from python_agent_harness.llm.client import RequestCancelled
+
+        fake_openai_server.reset_state()
+        fake_openai_server.STREAM_CHUNKS = [
+            {"choices": [{"delta": {"content": f"part{i} "}}]} for i in range(5)
+        ]
+        c = make_client()
+        deltas: list[str] = []
+        try:
+            with self.assertRaises(RequestCancelled):
+                c.chat(
+                    [Message(role="user", content="hi")],
+                    on_delta=deltas.append,
+                    # cancel lands once the first chunk has been delivered
+                    cancel_check=lambda: bool(deltas),
+                )
+            self.assertEqual(deltas, ["part0 "])
+            self.assertEqual(len(fake_openai_server.REQUEST_BODIES), 1)  # not retried
+        finally:
+            c.close()
+
+    def test_no_cancel_check_streams_normally(self):
+        fake_openai_server.reset_state()
+        c = make_client()
+        try:
+            msg, _ = c.chat([Message(role="user", content="hi")], cancel_check=lambda: False)
+            self.assertIn("Hello world", msg.content)
+        finally:
+            c.close()
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from rich.console import Console
 from rich.live import Live
+from rich.text import Text
 
 from ..core.models import ImagePart, Message, TextPart
 from ..io.attachments import image_placeholder, parse_at_references
@@ -30,6 +31,7 @@ from ..prompts import RESERVED_AGENT_NAME, discover_agents
 from ..session import config
 from ..session.commands import find_command
 from .input import _history_path
+from .render import safe_markup, sanitize_terminal
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -92,7 +94,7 @@ class CommandMixin:
             self._run_compact()
         elif cmd == "/save":
             path = self._controller.save(self._conversation_text())
-            self.console.print(f"saved: {path}")
+            self.console.print(f"saved: {safe_markup(path)}")
         elif cmd == "/summary":
             self._run_summary()
         elif cmd in ("/init", "/review") or find_command(cmd[1:]) is not None:
@@ -140,7 +142,7 @@ class CommandMixin:
                 markup=False,
             )
         else:
-            self.console.print(f"unknown command: {cmd}")
+            self.console.print(f"unknown command: {safe_markup(cmd)}")
         return False
 
     # ------------------------------------------------------------------
@@ -200,7 +202,7 @@ class CommandMixin:
         """
         cmd = find_command(name)
         if cmd is None:
-            self.console.print(f"[yellow]unknown command: /{name}[/yellow]")
+            self.console.print(f"[yellow]unknown command: /{safe_markup(name)}[/yellow]")
             return
         project, extra = self._command_args(name, arg)
         if name == "explain" and project is None and not extra:
@@ -270,7 +272,7 @@ class CommandMixin:
                     planexit_restore()
 
                 restore = _restore
-        self.console.print(f"[cyan]/{name}: {kickoff.strip()}[/cyan]")
+        self.console.print(f"[cyan]/{safe_markup(name)}: {safe_markup(kickoff.strip())}[/cyan]")
         # Parse @file references in the kickoff (e.g. "/review @diff.patch"
         # or "/explain @client.py"): images become ImagePart attachments,
         # text files become TextPart attachments, and the @path token is
@@ -279,7 +281,7 @@ class CommandMixin:
             kickoff, str(self._controller.project_dir)
         )
         for err in errors:
-            self.console.print(f"[red]@{err.path}: {err.message}[/red]")
+            self.console.print(f"[red]@{safe_markup(err.path)}: {safe_markup(err.message)}[/red]")
         if attachments:
             parts: list[Any] = []
             if cleaned_kickoff.strip():
@@ -391,7 +393,7 @@ class CommandMixin:
             # full conversation and immediately re-compact it.
             self.conversation_history = list(self._controller.last_messages)
             self._history_dirty = True
-        self.console.print(msg)
+        self.console.print(Text(sanitize_terminal(str(msg))))
 
     def _refresh_model_profiles(self) -> None:
         """Re-read the config file's ``models`` section so profiles
@@ -402,7 +404,7 @@ class CommandMixin:
                 self._controller.config_path
             )
         except ValueError as e:
-            self.console.print(f"[red]{e}[/red]")
+            self.console.print(f"[red]{safe_markup(e)}[/red]")
 
     def _model_list_names(self) -> list[str]:
         """Names shown by /model: the original default model (as
@@ -421,10 +423,10 @@ class CommandMixin:
         """Switch to a named profile (or ``default``) and report the outcome."""
         success, msg = self._controller.switch_model(name)
         if success:
-            self.console.print(f"[green]{msg}[/green]")
+            self.console.print(f"[green]{safe_markup(msg)}[/green]")
             self._data_event.set()
         else:
-            self.console.print(f"[red]{msg}[/red]")
+            self.console.print(f"[red]{safe_markup(msg)}[/red]")
 
     def _run_model_command(self, arg: str) -> None:
         """Handle /model command for switching LLM profiles."""
@@ -449,7 +451,7 @@ class CommandMixin:
                     marker = " *" if current_model == default_model else ""
                     self.console.print(
                         f"  [cyan]{idx})[/cyan] default{marker} — "
-                        f"{default_model} @ {default_base_url}"
+                        f"{safe_markup(default_model)} @ {safe_markup(default_base_url)}"
                     )
                 else:
                     profile = self._controller.model_profiles[name]
@@ -457,11 +459,11 @@ class CommandMixin:
                     base_url = profile.get("base_url", "(inherited)")
                     marker = " *" if model_name == current_model else ""
                     self.console.print(
-                        f"  [cyan]{idx})[/cyan] {name}{marker} — {model_name} @ {base_url}"
+                        f"  [cyan]{idx})[/cyan] {safe_markup(name)}{marker} — {safe_markup(model_name)} @ {safe_markup(base_url)}"
                     )
 
             total_count = len(all_names)
-            self.console.print(f"\n[dim]Current: {current_model}[/dim]")
+            self.console.print(f"\n[dim]Current: {safe_markup(current_model)}[/dim]")
             self.console.print(
                 f"[dim]Type a number (1-{total_count}) to switch, or enter a model name directly[/dim]\n"
             )
@@ -483,7 +485,7 @@ class CommandMixin:
                             self._model_switch_by_name(selected)
                     else:
                         self.console.print(
-                            f"[red]Invalid selection: {selection}. Choose 1-{len(all_names)}[/red]"
+                            f"[red]Invalid selection: {safe_markup(selection)}. Choose 1-{len(all_names)}[/red]"
                         )
                 else:
                     # Treat as model name
@@ -509,7 +511,7 @@ class CommandMixin:
                     self._model_switch_by_name(selected)
             else:
                 self.console.print(
-                    f"[red]Invalid selection: {arg}. Choose 1-{len(all_names)}[/red]"
+                    f"[red]Invalid selection: {safe_markup(arg)}. Choose 1-{len(all_names)}[/red]"
                 )
             return
         # Switch to named model
@@ -536,11 +538,12 @@ class CommandMixin:
         if msg == "Summary appended.":
             last_msg = self._controller.last_messages[-1]
             if last_msg.role == "assistant" and last_msg.content:
-                self.console.print(last_msg.content)
+                # model-written: Text (no markup parsing) + sanitized
+                self.console.print(Text(sanitize_terminal(last_msg.text())))
             else:
-                self.console.print(msg)
+                self.console.print(Text(sanitize_terminal(str(msg))))
         else:
-            self.console.print(msg)
+            self.console.print(Text(sanitize_terminal(str(msg))))
 
     def _refresh_agent_profiles(self) -> None:
         """Re-discover agent prompt files from the prompts/agents/ directory.
@@ -559,10 +562,10 @@ class CommandMixin:
         """Switch to a named agent (or ``default``) and report."""
         success, msg = self._controller.switch_agent(name)
         if success:
-            self.console.print(f"[green]{msg}[/green]")
+            self.console.print(f"[green]{safe_markup(msg)}[/green]")
             self._data_event.set()
         else:
-            self.console.print(f"[red]{msg}[/red]")
+            self.console.print(f"[red]{safe_markup(msg)}[/red]")
 
     def _run_agent_command(self, arg: str) -> None:
         """Handle /agent command for switching agent system prompts."""
@@ -579,7 +582,9 @@ class CommandMixin:
                     self.console.print(f"  [cyan]{idx})[/cyan] default — agent.md")
                 else:
                     prompt_file = self._discovered_agents[name]
-                    self.console.print(f"  [cyan]{idx})[/cyan] {name} — {prompt_file}")
+                    self.console.print(
+                        f"  [cyan]{idx})[/cyan] {safe_markup(name)} — {safe_markup(prompt_file)}"
+                    )
             total_count = len(all_names)
             self.console.print(
                 f"\n[dim]Type a number (1-{total_count}) to switch, or enter an agent name directly[/dim]\n"
@@ -594,7 +599,7 @@ class CommandMixin:
                         self._agent_switch_by_name(all_names[idx])
                     else:
                         self.console.print(
-                            f"[red]Invalid selection: {selection}. Choose 1-{len(all_names)}[/red]"
+                            f"[red]Invalid selection: {safe_markup(selection)}. Choose 1-{len(all_names)}[/red]"
                         )
                 else:
                     self._agent_switch_by_name(selection)
@@ -610,7 +615,7 @@ class CommandMixin:
                 self._agent_switch_by_name(all_names[idx])
             else:
                 self.console.print(
-                    f"[red]Invalid selection: {arg}. Choose 1-{len(all_names)}[/red]"
+                    f"[red]Invalid selection: {safe_markup(arg)}. Choose 1-{len(all_names)}[/red]"
                 )
             return
         self._agent_switch_by_name(arg)
@@ -634,7 +639,7 @@ class CommandMixin:
             body = SessionPersistence.strip_metadata(text)
             n_msgs = len(parse_saved_body(body))
             self.console.print(
-                f"  {basename:50s}  model={model:20s}  project={project}  {n_msgs} messages"
+                f"  {safe_markup(basename):50s}  model={safe_markup(model):20s}  project={safe_markup(project)}  {n_msgs} messages"
             )
 
     def _run_restore(self, arg: str) -> None:
@@ -664,13 +669,13 @@ class CommandMixin:
             )
             return
         if not os.path.isfile(path):
-            self.console.print(f"[red]file not found: {path}[/red]")
+            self.console.print(f"[red]file not found: {safe_markup(path)}[/red]")
             return
         try:
             with open(path, encoding="utf-8") as fh:
                 text = fh.read()
         except OSError as e:
-            self.console.print(f"[red]cannot read {path}: {e}[/red]")
+            self.console.print(f"[red]cannot read {safe_markup(path)}: {safe_markup(e)}[/red]")
             return
         meta = SessionPersistence.parse_metadata(text)
         body = SessionPersistence.strip_metadata(text)
@@ -698,14 +703,16 @@ class CommandMixin:
             try:
                 success, msg = self._controller.switch_agent(agent)
                 if success:
-                    self.console.print(f"[green]{msg}[/green]")
+                    self.console.print(f"[green]{safe_markup(msg)}[/green]")
                 else:
                     # Agent no longer exists: reset to default to avoid
                     # stale exclusions from the previously active agent
                     self._controller.switch_agent("default")
-                    self.console.print(f"[yellow]warning: {msg}[/yellow]")
+                    self.console.print(f"[yellow]warning: {safe_markup(msg)}[/yellow]")
             except Exception as e:
-                self.console.print(f"[yellow]warning: could not restore agent: {e}[/yellow]")
+                self.console.print(
+                    f"[yellow]warning: could not restore agent: {safe_markup(e)}[/yellow]"
+                )
         # Restore model if saved: /model's profile switching is the
         # canonical path — it also fixes base_url/api_key/temperature
         # and other settings that a bare model-name change would leave
@@ -725,7 +732,7 @@ class CommandMixin:
                     # original llm settings (profile names were not saved,
                     # so there is no better match).
                     success, msg = self._controller.switch_model("default")
-                    self.console.print(f"[green]{msg}[/green]")
+                    self.console.print(f"[green]{safe_markup(msg)}[/green]")
                 else:
                     success, msg = self._controller.switch_model(model)
                     if not success:
@@ -740,14 +747,16 @@ class CommandMixin:
                         if profile:
                             success, msg = self._controller.switch_model(profile)
                     if success:
-                        self.console.print(f"[green]{msg}[/green]")
+                        self.console.print(f"[green]{safe_markup(msg)}[/green]")
                     else:
                         self.console.print(
-                            f"[yellow]warning: model {model!r} has no matching profile, "
+                            f"[yellow]warning: model {safe_markup(repr(model))} has no matching profile, "
                             f"keeping current model[/yellow]"
                         )
             except Exception as e:
-                self.console.print(f"[yellow]warning: could not restore model: {e}[/yellow]")
+                self.console.print(
+                    f"[yellow]warning: could not restore model: {safe_markup(e)}[/yellow]"
+                )
         # Replace conversation history: a new generation.  Invalidate any
         # worker still winding down from a cancelled run so its salvaged
         # history can't clobber the restored session.
@@ -765,8 +774,8 @@ class CommandMixin:
         project = meta.get("python-agent-harness--project-dir", "?")
         agent_display = meta.get("python-agent-harness--agent", "default")
         self.console.print(
-            f"[green]restored:[/green] {os.path.basename(path)} "
-            f"(model={model}, agent={agent_display}, project={project}, {len(messages)} messages)"
+            f"[green]restored:[/green] {safe_markup(os.path.basename(path))} "
+            f"(model={safe_markup(model)}, agent={safe_markup(agent_display)}, project={safe_markup(project)}, {len(messages)} messages)"
         )
 
     def _switch_input_history(self, project_dir: str) -> None:

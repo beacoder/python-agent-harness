@@ -127,10 +127,9 @@ import time
 import uuid
 from typing import Any, TextIO
 
-from ..io.text_filter import strip_final_check
 from ..session.session import Session
 from .controller import Controller
-from .headless import PROTOCOL_VERSION, JsonlView, _restorable_handler
+from .headless import PROTOCOL_VERSION, JsonlView, _restorable_handler, final_answer_text
 
 DEFAULT_ANSWER_TIMEOUT = 0.0  # wait forever for a host answer
 
@@ -583,17 +582,11 @@ class AgentServer:
     def _final_answer(self) -> str:
         """The run's final assistant answer, TUI-filtered (headless shape).
 
-        Skips assistant messages that strip to empty (e.g. a trailing
-        check-only [FINAL CHECK] message) in favor of the real answer
-        before them — see ``headless.final_answer_text``.
+        Delegates to ``headless.final_answer_text``: skips check-only
+        [FINAL CHECK] messages and stops at this run's own prompt, so
+        a run that produced no answer never reports the previous run's.
         """
-        for msg in reversed(self.session.last_messages):
-            if getattr(msg, "role", None) != "assistant":
-                continue
-            text = strip_final_check(msg.text_without_reasoning()).strip()
-            if text:
-                return text
-        return ""
+        return final_answer_text(self.session)
 
     def _usage_snapshot(self) -> dict[str, Any] | None:
         """Cumulative input/output tokens and rounds of the current run."""

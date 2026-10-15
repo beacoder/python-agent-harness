@@ -1392,6 +1392,51 @@ class ServeBudgetTests(ServerTestBase):
         self.assertFalse(result["cancelled"])
 
 
+class ServeStaleAnswerEndToEndTests(unittest.TestCase):
+    """Regression: the resident server keeps history across runs, and a
+    run that ended without answering (here: cancelled before the model
+    replied) used to carry the PREVIOUS run's answer on its result line.
+    Drives a real Session/Controller/AgentLoop."""
+
+    def _wait_idle(self, server: AgentServer) -> None:
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            with server._active_guard:
+                if server._active_run_id is None:
+                    return
+            time.sleep(0.01)
+        self.fail("run never finished")
+
+    def test_cancelled_second_run_does_not_report_first_answer(self):
+        from tests.support.agent_test_utils import RecordingSession
+
+        with mock.patch("python_agent_harness.session.config.MAX_NUDGES", 0):
+            session = RecordingSession()
+            session.client.script = ["ANSWER OF RUN 1"]
+            out = io.StringIO()
+            server = AgentServer(session, io.StringIO(), out, err=io.StringIO())
+            server.op_submit({"op": "submit", "prompt": "first", "run_id": "r1"})
+            self._wait_idle(server)
+
+            # run 2: the model hangs until the run is cancelled
+            def hanging_chat(*_a, **_k):
+                session.cancel_event.wait(5)
+                raise RuntimeError("aborted")
+
+            session.client.chat = hanging_chat
+            server.op_submit({"op": "submit", "prompt": "second", "run_id": "r2"})
+            deadline = time.time() + 5
+            while not _of_type(_lines(out), "start")[1:] and time.time() < deadline:
+                time.sleep(0.01)
+            server.op_cancel({"op": "cancel", "run_id": "r2"})
+            self._wait_idle(server)
+
+        results = {r["run_id"]: r for r in _of_type(_lines(out), "result")}
+        self.assertEqual(results["r1"]["answer"], "ANSWER OF RUN 1")
+        self.assertTrue(results["r2"]["cancelled"])
+        self.assertEqual(results["r2"]["answer"], "")
+
+
 class ServeBudgetEndToEndTests(unittest.TestCase):
     """The budget must actually TRIP, not just be forwarded.
 

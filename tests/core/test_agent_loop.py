@@ -389,8 +389,11 @@ class TestAgentLoop(unittest.TestCase):
         by_id = {m.tool_call_id: m.text() for m in loop.messages if m.role == "tool"}
         self.assertEqual(by_id["1"], "file content")
         self.assertEqual(by_id["3"], "file content")
-        # malformed args get clear error messages
-        self.assertIn("missing required argument", by_id["2"])
+        # malformed args get clear error messages: invalid JSON is named
+        # as such (not misreported as missing arguments), a non-object
+        # still fails the required-argument check
+        self.assertIn("not valid JSON", by_id["2"])
+        self.assertNotIn("missing required argument", by_id["2"])
         self.assertIn("missing required argument", by_id["4"])
 
     def test_tool_round_contains_tool_crash(self):
@@ -686,6 +689,91 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(loop.messages[1].role, "user")
         self.assertIn("Compacted Summary", loop.messages[0].text())
         self.assertTrue(any("Compacted Summary" in m.text() for m in loop.messages))
+
+    def test_compaction_that_cannot_shrink_does_not_loop(self):
+        """Regression: compaction keeps every user prompt verbatim, so
+        when the irreducible context alone exceeds CONTEXT_TRIGGER (a
+        huge pasted log, a small-window model) the ratio stays high
+        after compacting.  The loop used to re-enter WAIT and compact
+        again forever -- one paid summary request per iteration.  Now
+        it compacts once, then sends the request anyway."""
+        session = RecordingSession()
+        session.client.script = ["final answer"]
+        compactions = {"n": 0}
+        real_compact = AgentLoop.compact
+
+        def counting_compact(self):
+            compactions["n"] += 1
+            return real_compact(self)
+
+        done = threading.Event()
+        out: dict = {}
+        with (
+            mock.patch("python_agent_harness.session.config.MAX_NUDGES", 0),
+            mock.patch.object(AgentLoop, "compact", counting_compact),
+            mock.patch(
+                "python_agent_harness.core.agent.estimate_payload_tokens",
+                return_value=10_000_000,  # always far above the trigger
+            ),
+        ):
+            loop = AgentLoop(session, messages=[Message(role="user", content="huge log")])
+
+            def drive():
+                out["result"] = loop.run()
+                done.set()
+
+            threading.Thread(target=drive, daemon=True).start()
+            finished = done.wait(5)
+            if not finished:
+                session.cancel_event.set()  # stop the runaway loop
+        self.assertTrue(finished, f"loop still compacting ({compactions['n']} compactions)")
+        self.assertEqual(compactions["n"], 1)
+        self.assertEqual(out["result"], "final answer")
+
+    def _count_compactions(self, script, ratios) -> int:
+        """Run SCRIPT with the context ratio taken from RATIOS (one value
+        per WAIT, the last one repeating); return the compaction count."""
+        session = RecordingSession()
+        session.client.script = script
+        compactions = {"n": 0}
+        real_compact = AgentLoop.compact
+        seq = iter(ratios)
+        last = {"r": 0.0}
+
+        def counting_compact(self):
+            compactions["n"] += 1
+            return real_compact(self)
+
+        def fake_ratio(self):
+            last["r"] = next(seq, last["r"])
+            self.session.context_ratio = last["r"]
+
+        with (
+            mock.patch("python_agent_harness.session.config.MAX_NUDGES", 0),
+            mock.patch.object(AgentLoop, "compact", counting_compact),
+            mock.patch.object(AgentLoop, "_update_context_ratio", fake_ratio),
+        ):
+            loop = AgentLoop(session, messages=[Message(role="user", content="task")])
+            loop.run()
+        return compactions["n"]
+
+    def test_irreducible_context_is_not_recompacted_every_tool_round(self):
+        """Once a compaction could not get below the trigger, the next
+        tool rounds must not each compact again (it would double the
+        requests and summarize every fresh tool result away)."""
+        tool_round = ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x"}')])
+        n = self._count_compactions([tool_round] * 5 + ["done"], [5.0])
+        self.assertEqual(n, 1)
+
+    def test_compaction_resumes_once_context_grows_past_the_floor(self):
+        """The floor only suppresses pointless compactions: when the
+        conversation grows well past it, compaction runs again."""
+        # WAIT 1: 0.95 -> compact; WAIT 2: still 0.80 -> send, floor 0.80;
+        # WAIT 3: 0.85 (< 0.80 + 0.20/2 = 0.90) -> no compaction;
+        # WAIT 4: 0.95 -> grown past the floor -> compact again
+        tool_round = ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x"}')])
+        n = self._count_compactions([tool_round] * 4 + ["done"], [0.95, 0.80, 0.85, 0.95, 0.10])
+        self.assertEqual(n, 2)
 
     def test_compact_resets_nudge_budget(self):
         """Compaction must reset the nudge budget: a terminal answer right

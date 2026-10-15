@@ -137,6 +137,20 @@ class AgentLoop:
         self._local = threading.local()
         self.terminal_text: str | None = None
         self.result: str | None = None
+        # True right after an auto-compaction: the next WAIT must send
+        # the request instead of compacting again.  Compaction keeps
+        # every user prompt verbatim, so when the irreducible part (the
+        # prompts, the system prompt, the tool specs) alone exceeds
+        # CONTEXT_TRIGGER, re-checking the ratio would compact forever
+        # -- one paid summary request per iteration.
+        self._just_compacted = False
+        # The context ratio measured right after a compaction that could
+        # NOT bring it below the trigger (None otherwise).  While set,
+        # compacting again only pays off once the conversation has grown
+        # well past that floor; without it every tool round would be
+        # compacted again -- doubling the requests and summarizing each
+        # fresh tool result away before the model ever saw it.
+        self._compaction_floor: float | None = None
         # Cancellation identity for this run: cancel() bumps the session
         # generation, so a stale worker from a cancelled run stays
         # cancelled even after the next run clears the shared event (and
@@ -512,10 +526,35 @@ class AgentLoop:
             # so their ratio/usage would skew the parent's
             self._update_context_ratio()
             if self._need_compaction():
-                session.log(f"compacting context {session.context_ratio:.1%}")
-                if self.compact():
-                    self.info["compacted"] = True
-                    return
+                ratio = session.context_ratio
+                floor = self._compaction_floor
+                if self._just_compacted:
+                    # Still above the trigger right after compacting:
+                    # what is left is (mostly) irreducible.  Send the
+                    # request -- it either fits, or fails with a
+                    # context-length error (ERRS) instead of looping --
+                    # and remember the floor so later rounds do not
+                    # compact again for nothing.
+                    self._compaction_floor = ratio
+                    session.log(
+                        f"context {ratio:.1%} still above the compaction "
+                        "trigger after compacting; sending anyway"
+                    )
+                elif floor is not None and ratio <= floor + max(0.0, 1.0 - floor) / 2:
+                    # Not yet grown by half the remaining headroom over
+                    # the post-compaction floor (any growth at all once
+                    # the floor is past the window): compacting now
+                    # could only reclaim the latest rounds' output.
+                    pass
+                else:
+                    session.log(f"compacting context {ratio:.1%}")
+                    if self.compact():
+                        self._just_compacted = True
+                        self.info["compacted"] = True
+                        return
+            else:
+                self._compaction_floor = None
+            self._just_compacted = False
 
         def safe_delta(text: str) -> None:
             # Snapshot: a host that swaps views per run unwires

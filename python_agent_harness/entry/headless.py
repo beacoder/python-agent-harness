@@ -148,9 +148,21 @@ def final_answer_text(session: Session) -> str:
     strips to empty and must be skipped in favor of the real answer
     before it.  Empty when no assistant message has visible text
     (e.g. the run errored out).
+
+    The scan stops at THIS run's prompt -- the newest user message the
+    harness did not inject itself (nudges, plan reminders and mid-run
+    prompts are ``injected``; compaction re-adds the prompts as plain
+    user messages, so the run's own prompt is still the newest one).
+    History persists across runs (``serve``) and restored sessions
+    (``--restore``), so without the boundary a run that was cancelled
+    or died before answering reported the PREVIOUS run's answer as its
+    own -- and defeated serve's "run produced no answer" check.
     """
     for msg in reversed(session.last_messages):
-        if getattr(msg, "role", None) != "assistant":
+        role = getattr(msg, "role", None)
+        if role == "user" and not getattr(msg, "injected", False):
+            break
+        if role != "assistant":
             continue
         text = strip_final_check(msg.text_without_reasoning()).strip()
         if text:

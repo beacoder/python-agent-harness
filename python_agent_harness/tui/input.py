@@ -20,6 +20,7 @@ from rich.console import Console
 from rich.text import Text
 
 from ..session import config
+from .render import sanitize_terminal
 
 
 def _option_label(opt: Any) -> str:
@@ -432,7 +433,8 @@ class InputMixin:
         # prompt/options come from the model: coerce to str so a
         # non-string "question" field can never raise rich's
         # TypeError from Text.append / concatenation on the main thread
-        prompt_text = str(q.prompt)
+        # ... and strip terminal control sequences (see sanitize_terminal)
+        prompt_text = sanitize_terminal(str(q.prompt))
         options = q.options or []
         keys = q.keys or []
         if keys and options and len(keys) == len(options):
@@ -440,8 +442,8 @@ class InputMixin:
             # same list look as the Question tool, keys instead of numbers
             self.console.print(Text(prompt_text))
             for key, opt in zip(keys, options, strict=True):
-                line = Text(f"  {key}) ", style="cyan")
-                line.append(opt)
+                line = Text(f"  {sanitize_terminal(str(key))}) ", style="cyan")
+                line.append(sanitize_terminal(str(opt)))
                 self.console.print(line)
             hint = "Enter keys, comma-separated" if q.multiple else "Enter a key"
             if q.custom:
@@ -453,7 +455,7 @@ class InputMixin:
             self.console.print(Text(prompt_text))
             for i, opt in enumerate(options, 1):
                 line = Text(f"  {i}) ", style="cyan")
-                line.append(opt)
+                line.append(sanitize_terminal(str(opt)))
                 self.console.print(line)
             hint = "Enter numbers, comma-separated" if q.multiple else "Enter a number"
             if q.custom:

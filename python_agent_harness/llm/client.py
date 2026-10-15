@@ -108,6 +108,18 @@ class ApiError(Exception):
     """Raised when the API call itself fails (network/HTTP)."""
 
 
+class RequestCancelled(ApiError):
+    """The caller's ``cancel_check`` fired: the request was stopped.
+
+    Raised before a request is opened and between streamed chunks, so a
+    Ctrl-C that lands while the payload is being built (after the agent
+    loop's last cancel check, before ``Client.abort`` has an in-flight
+    socket to kill) still stops the request instead of letting it run to
+    completion on the fresh pool ``abort`` swapped in.  An ``ApiError``
+    subclass, so existing callers' error handling covers it.
+    """
+
+
 # Grace between shutdown(SHUT_RDWR) and close() of an in-flight socket
 # on macOS (see _shutdown_and_close): 50ms proved too tight under load
 # (the woken thread can still be parked in select() when the fd is
@@ -669,10 +681,12 @@ class Client:
             # still be retried, consistent with the connection-error
             # branch below.
             emitted = False
+            if cancel_check is not None and cancel_check():
+                raise RequestCancelled("request cancelled")
             try:
                 if stream:
                     content_parts, reasoning_parts, tc_index = self._stream_response(
-                        payload, wrap_delta, wrap_tool_call, usage
+                        payload, wrap_delta, wrap_tool_call, usage, cancel_check
                     )
                 else:
                     content_parts, reasoning_parts, tc_index = self._sync_response(
@@ -804,12 +818,16 @@ class Client:
         on_delta: Callable[[str], None] | None,
         on_tool_call: Callable[[str, str, str], None] | None,
         usage: Usage,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[list[str], list[str], dict[int, dict[str, Any]]]:
         """POST a streaming request and accumulate SSE deltas.
 
         Returns (content parts, reasoning parts, tool-call index) with
         the same shape as `_sync_response`, so `chat()` assembles the
-        final message identically for both modes.
+        final message identically for both modes.  ``cancel_check`` is
+        polled per SSE line: a cancel that ``abort`` could not deliver
+        as a socket error (the request opened just after it) still
+        stops the stream at the next line.
         """
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -827,6 +845,8 @@ class Client:
                     raise RetryableApiError(message, resp.headers.get("Retry-After"))
                 raise ApiError(message)
             for chunk in _iter_sse(resp.iter_lines()):
+                if cancel_check is not None and cancel_check():
+                    raise RequestCancelled("request cancelled")
                 if not chunk:
                     continue
                 if chunk == "[DONE]":
