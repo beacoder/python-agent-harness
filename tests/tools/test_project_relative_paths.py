@@ -99,12 +99,24 @@ class TestProjectRelativePaths(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(self.project, "~")))
 
     def test_grep(self) -> None:
-        if not (shutil.which("grep") or shutil.which("rg")):
+        """Run under every available non-git backend: CI runners may lack
+        rg, which once hid that the grep fallback (basic regex) treated
+        ``|`` literally and silently matched nothing."""
+        real_which = shutil.which
+        backends = [b for b in ("rg", "grep") if real_which(b)]
+        if not backends:
             self.skipTest("no grep backend")
-        out = Grep().run({"regex": "project|elsewhere", "path": "."}, self.ctx)
-        self.assertIn(os.path.join(self.project, "f.txt"), out)
-        self.assertNotIn(self.elsewhere, out)
-        self.assertNotIn("elsewhere", out.replace(self.project, ""))
+        for backend in backends:
+            hide = {"rg"} if backend == "grep" else set()
+
+            def which(name, *a, _hide=hide, **k):
+                return None if name in _hide else real_which(name, *a, **k)
+
+            with self.subTest(backend=backend), mock.patch("shutil.which", side_effect=which):
+                out = Grep().run({"regex": "project|elsewhere", "path": "."}, self.ctx)
+                self.assertIn(os.path.join(self.project, "f.txt"), out)
+                self.assertNotIn(self.elsewhere, out)
+                self.assertNotIn("elsewhere", out.replace(self.project, ""))
 
     def test_glob_explicit_relative_path(self) -> None:
         if not shutil.which("tree"):

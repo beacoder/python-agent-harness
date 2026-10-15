@@ -147,9 +147,14 @@ class Grep(Tool):
             if proc is not None and proc.returncode in (0, 1):
                 return _grep_out(proc, "rg")
         if shutil.which("grep"):
+            # -E: without it grep uses POSIX *basic* regex, where | + ? ( )
+            # are literals -- "foo|bar" would silently match nothing, while
+            # git grep -P and rg treat it as alternation.  -E is portable
+            # (GNU and BSD/macOS grep).
             cmd = [
                 "grep",
                 "--recursive",
+                "-E",
                 "--max-count=1000",
                 "--line-number",
                 "--regexp",
