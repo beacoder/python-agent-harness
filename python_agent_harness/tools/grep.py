@@ -12,7 +12,7 @@ import os
 import shutil
 import subprocess
 
-from .base import Tool, ToolContext
+from .base import Tool, ToolContext, resolve_path
 from .filesystem import _git_root, _spool
 
 
@@ -63,7 +63,7 @@ class Grep(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         regex = args["regex"]
-        path = os.path.realpath(os.path.expanduser(args["path"]))
+        path = resolve_path(args["path"], ctx.cwd)
         if not os.path.isdir(path) and not os.path.isfile(path):
             return f"Error: path {args['path']} is not readable"
         glob = args.get("glob")

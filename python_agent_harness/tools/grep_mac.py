@@ -47,7 +47,7 @@ import os
 import re
 import subprocess
 
-from .base import ToolContext
+from .base import ToolContext, resolve_path
 from .filesystem import _git_root
 from .grep import Grep, _grep_out
 
@@ -158,7 +158,7 @@ class GrepMac(Grep):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         regex = args["regex"]
-        path = os.path.realpath(os.path.expanduser(args["path"]))
+        path = resolve_path(args["path"], ctx.cwd)
         if not os.path.isdir(path) and not os.path.isfile(path):
             return f"Error: path {args['path']} is not readable"
         glob = args.get("glob")

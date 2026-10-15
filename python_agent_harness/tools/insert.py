@@ -6,10 +6,8 @@ conversation panel like any other file edit.
 
 from __future__ import annotations
 
-import os
-
 from ..io.diffrender import unified_diff
-from .base import Tool, ToolContext
+from .base import Tool, ToolContext, resolve_path
 from .edit import _to_crlf, _uses_crlf
 
 
@@ -49,7 +47,7 @@ class Insert(Tool):
     }
 
     def run(self, args: dict, ctx: ToolContext) -> str:
-        path = os.path.realpath(os.path.abspath(os.path.expanduser(args["path"])))
+        path = resolve_path(args["path"], ctx.cwd)
         # surrogateescape + newline="": preserve invalid UTF-8 bytes and
         # the file's own line endings (see Edit._string_replace)
         try:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 from ..io.diffrender import unified_diff
-from .base import Tool, ToolContext
+from .base import Tool, ToolContext, resolve_path
 
 
 class Write(Tool):
@@ -49,13 +49,12 @@ class Write(Tool):
             return "Error: Required argument `content' missing"
         # LLM may put the full file path in "filename" or in "path"
         if filename:
-            path = os.path.realpath(
-                os.path.abspath(
-                    os.path.join(os.path.expanduser(dir_path), os.path.expanduser(filename))
-                )
+            path = resolve_path(
+                os.path.join(os.path.expanduser(dir_path), os.path.expanduser(filename)),
+                ctx.cwd,
             )
         else:
-            path = os.path.realpath(os.path.abspath(os.path.expanduser(dir_path)))
+            path = resolve_path(dir_path, ctx.cwd)
         if not filename:
             filename = os.path.basename(path) or os.path.basename(dir_path)
         existed = os.path.exists(path)

@@ -13,7 +13,7 @@ import os
 import shutil
 import subprocess
 
-from .base import Tool, ToolContext
+from .base import Tool, ToolContext, resolve_path
 from .filesystem import _git_root, _natnump, _spool
 
 
@@ -87,7 +87,7 @@ class GlobTool(Tool):
             return "Error: pattern must not be empty"
         path = args.get("path")
         if path:
-            path = os.path.expanduser(path)
+            path = resolve_path(path, ctx.cwd)
             if not (os.path.isdir(path) and os.access(path, os.R_OK)):
                 return f"Error: path {path} is not readable"
         else:

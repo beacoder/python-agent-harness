@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from .base import Tool, ToolContext
+from .base import Tool, ToolContext, resolve_path
 
 
 class Mkdir(Tool):
@@ -22,7 +22,9 @@ class Mkdir(Tool):
     def run(self, args: dict, ctx: ToolContext) -> str:
         parent = args["parent"]
         name = args["name"]
-        path = os.path.realpath(os.path.abspath(os.path.join(os.path.expanduser(parent), name)))
+        # Only PARENT is a user path (``~``-expanded, project-relative);
+        # NAME is a literal directory name, so a name like "~" stays "./~".
+        path = os.path.realpath(os.path.join(resolve_path(parent, ctx.cwd), name))
         try:
             os.makedirs(path, exist_ok=True)
             return f"Directory {name} created/verified in {parent}"

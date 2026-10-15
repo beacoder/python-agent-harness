@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 
-from .base import Tool, ToolContext
+from .base import Tool, ToolContext, resolve_path
 from .filesystem import READ_SIZE_LIMIT, _spool
 
 
@@ -66,7 +66,7 @@ class Read(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         path = args["file_path"]
-        full = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+        full = resolve_path(path, ctx.cwd)
         if os.path.isdir(full):
             return f"Error: cannot read {path}: is a directory"
         try:

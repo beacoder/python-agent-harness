@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 import subprocess
 
-from .base import ToolContext
+from .base import ToolContext, resolve_path
 from .filesystem import _natnump, _spool
 from .glob import GlobTool
 
@@ -96,7 +96,7 @@ class GlobMac(GlobTool):
             return "Error: pattern must not be empty"
         path = args.get("path")
         if path:
-            path = os.path.expanduser(path)
+            path = resolve_path(path, ctx.cwd)
             if not (os.path.isdir(path) and os.access(path, os.R_OK)):
                 return f"Error: path {path} is not readable"
         else:

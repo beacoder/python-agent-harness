@@ -28,7 +28,7 @@ from ..mcp.manager import MCPManager
 from ..prompts import RESERVED_AGENT_NAME, _tool_excluded, discover_agents, index_skills
 from ..session import config
 from ..tools import Registry, ToolContext
-from ..tools.base import PendingToolResult
+from ..tools.base import PendingToolResult, resolve_path
 from ..tools.filesystem import cleanup_spooled_files
 from ..tools.mcp import mcp_tools_from_manager
 
@@ -445,7 +445,7 @@ class Session:
 
         plan_file = self.plan_mode.plan_file
         raw = str(args.get("path", ""))
-        path = os.path.realpath(os.path.abspath(os.path.expanduser(raw)))
+        path = resolve_path(raw, self.project_dir)
         cwd = _patch_cwd(raw, path)
         text = str(args.get("new_str"))
         text = text if text.endswith("\n") else text + "\n"
@@ -460,20 +460,20 @@ class Session:
 
     def _tool_path(self, name: str, args: dict[str, Any]) -> str | None:
         if name == "Write":
-            return os.path.realpath(
+            return resolve_path(
                 os.path.join(
                     os.path.expanduser(str(args.get("path", ""))),
                     os.path.expanduser(str(args.get("filename", ""))),
-                )
+                ),
+                self.project_dir,
             )
-        if name == "Edit":
-            return os.path.realpath(os.path.expanduser(str(args.get("path", ""))))
-        if name == "Insert":
-            return os.path.realpath(os.path.expanduser(str(args.get("path", ""))))
+        if name in ("Edit", "Insert"):
+            return resolve_path(str(args.get("path", "")), self.project_dir)
         if name == "Mkdir":
+            # Mirrors Mkdir.run: only the parent is ~-expanded.
             return os.path.realpath(
                 os.path.join(
-                    os.path.expanduser(str(args.get("parent", ""))),
+                    resolve_path(str(args.get("parent", "")), self.project_dir),
                     str(args.get("name", "")),
                 )
             )

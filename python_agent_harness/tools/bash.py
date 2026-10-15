@@ -230,7 +230,7 @@ class Bash(Tool):
 **How to use `Bash`:**
 - Quote file paths with spaces using double quotes
 - Chain dependent commands with && (or ; if failures are OK)
-- Use absotead of cd when possible
+- Use absolute paths instead of cd when possible
 - For parallel commands, make multiple `Bash` calls in one message
 
 **Git and GitHub:**
@@ -306,6 +306,12 @@ class Bash(Tool):
             try:
                 out, status = _collect_output(proc, cancel)
             except Exception as e:  # noqa: BLE001 - delivered as an error string
+                # The reader is gone, and with it every cancel/timeout
+                # check: kill the group so nothing outlives the error.
+                # Best effort -- a failing kill must never skip the
+                # delivery below, or the caller's wait() blocks forever.
+                with contextlib.suppress(Exception):
+                    _kill_pgid(pgid)
                 out = f"Error: Bash failed — {e}"
             else:
                 if status == "cancelled":

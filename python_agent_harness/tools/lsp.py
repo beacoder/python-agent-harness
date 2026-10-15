@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from ..lsp import LSPError, get_client
-from .base import Tool, ToolContext
+from .base import Tool, ToolContext, resolve_path
 
 OPERATIONS = (
     "goToDefinition",
@@ -122,13 +122,6 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: _jsonable(v) for k, v in value.items()}
     return value
-
-
-def _resolve_path(raw_path: str, cwd: str) -> str:
-    raw_path = os.path.expanduser(raw_path)
-    if not os.path.isabs(raw_path):
-        return os.path.realpath(os.path.abspath(os.path.join(cwd, raw_path)))
-    return os.path.realpath(raw_path)
 
 
 def _to_lsp_position(lines: list[str], line: int, character: int, encoding: str) -> dict[str, int]:
@@ -250,7 +243,7 @@ class LSP(Tool):
         raw_path = str(args.get("file_path", ""))
         if not raw_path:
             return "Error: file_path must not be empty"
-        path = _resolve_path(raw_path, ctx.cwd)
+        path = resolve_path(raw_path, ctx.cwd)
         if not os.path.isfile(path):
             return f"Error: File not found: {raw_path}"
 

@@ -16,7 +16,7 @@ import shutil
 import subprocess
 
 from ..io.diffrender import unified_diff
-from .base import Tool, ToolContext
+from .base import Tool, ToolContext, resolve_path
 
 # Any line ending, as a single compiled pattern (CRLF first so a CRLF is
 # never rewritten as two endings).
@@ -117,7 +117,7 @@ class Edit(Tool):
 
     def run(self, args: dict, ctx: ToolContext) -> str:
         raw = args["path"]
-        path = os.path.realpath(os.path.abspath(os.path.expanduser(raw)))
+        path = resolve_path(raw, ctx.cwd)
         if not os.access(path, os.R_OK):
             return f"Error: File or directory {path} is not readable"
         new_str = args.get("new_str")

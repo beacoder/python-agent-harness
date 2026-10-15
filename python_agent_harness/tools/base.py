@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from abc import ABC, abstractmethod
 from typing import Any, Protocol, runtime_checkable
 
 from ..core.models import ToolSpec
+
+
+def resolve_path(raw: str, cwd: str) -> str:
+    """Canonical absolute path for a tool's path argument.
+
+    ``~`` is expanded; a relative path resolves against *cwd* (the
+    session's project dir, i.e. ``ToolContext.cwd``) -- the directory
+    ``Bash`` runs in -- NOT the process working directory, which differs
+    under ``--project`` or after a project switch.  An absolute path is
+    unaffected (``os.path.join`` discards *cwd*).  Symlinks are resolved,
+    which the atomic writers require (see ``atomic_write_text``).
+    """
+    return os.path.realpath(os.path.join(cwd, os.path.expanduser(raw)))
 
 
 class PendingToolResult:
