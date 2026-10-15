@@ -21,18 +21,19 @@ $(VENV)/$(BIN)/python:
 	$(PYTHON) -m venv $(VENV)
 
 install: setup
-	$(PIP) install rich httpx prompt_toolkit
 	$(PIP) install -e .
 
+# -t . keeps the repo root as the top-level dir so tests/io and tests/mcp
+# import as tests.io / tests.mcp instead of shadowing stdlib `io` / the mcp SDK.
 test: install
-	$(PY) -m unittest discover -s tests -v
+	$(PY) -m unittest discover -t . -s tests -v
 
 build: setup
 	$(PIP) install build
 	$(PY) -m build
 
 run: install
-	$(PY) -m python_agent_harness.cli run
+	$(PY) -m python_agent_harness run
 
 clean:
 	rm -rf $(VENV) build dist *.egg-info
