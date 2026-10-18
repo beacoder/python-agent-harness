@@ -404,9 +404,20 @@ class TestReadLoopFraming(unittest.TestCase):
         client._reader_dead = True
         client._opened["file:///x"] = 3
         client._texts["file:///x"] = "old"
+        # The reader this start() spawns is PARKED until the assertions are
+        # done.  An immediately-EOF stub let the reader reach its finally
+        # block first: it marks the transport dead (correct behaviour),
+        # which raced the assertFalse below and failed on a slower/differently
+        # scheduled CI runner while passing locally.
+        gate = threading.Event()
+
+        def parked_readline() -> bytes:
+            gate.wait(5)
+            return b""
+
         proc = SimpleNamespace(
             stdin=SimpleNamespace(write=lambda b: None, flush=lambda: None, close=lambda: None),
-            stdout=SimpleNamespace(readline=lambda: b""),
+            stdout=SimpleNamespace(readline=parked_readline),
             poll=lambda: None,
             terminate=mock.Mock(),
             wait=mock.Mock(return_value=0),
@@ -414,12 +425,44 @@ class TestReadLoopFraming(unittest.TestCase):
         )
         with (
             mock.patch.object(lsp_client_module.subprocess, "Popen", return_value=proc),
+            # the handshake is covered elsewhere; keep this test about the
+            # flags and bookkeeping instead of waiting on a real response
+            mock.patch.object(client, "request", return_value={}),
             contextlib.suppress(Exception),
         ):
             client.start()
-        self.assertFalse(client._reader_dead)
-        self.assertEqual(client._opened, {})
-        self.assertEqual(client._texts, {})
+        try:
+            self.assertFalse(client._reader_dead)
+            self.assertEqual(client._opened, {})
+            self.assertEqual(client._texts, {})
+        finally:
+            gate.set()
+            client._reader.join(timeout=5)
+
+    def test_instantly_dying_server_does_not_recurse_into_start(self):
+        """A server that exits before the handshake fails cleanly, once.
+
+        start() performs its handshake through request(), which calls
+        start_if_needed().  With the reader already dead `alive` is False,
+        so an unguarded start() re-entered itself once per level -- spawning
+        a process each time -- until RecursionError.
+        """
+        client = _make_client(timeout=1)
+        client._reader_dead = True
+        proc = SimpleNamespace(
+            stdin=SimpleNamespace(write=lambda b: None, flush=lambda: None, close=lambda: None),
+            stdout=SimpleNamespace(readline=lambda: b""),  # EOF immediately
+            poll=lambda: None,
+            terminate=mock.Mock(),
+            wait=mock.Mock(return_value=0),
+            kill=mock.Mock(),
+        )
+        with (
+            mock.patch.object(lsp_client_module.subprocess, "Popen", return_value=proc) as popen,
+            self.assertRaises(LSPError),
+        ):
+            client.start()
+        self.assertEqual(popen.call_count, 1, "start() re-entered and spawned extra servers")
         client._reader.join(timeout=5)
 
     def test_oversized_content_length_stops_the_reader(self):

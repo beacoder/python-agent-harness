@@ -61,6 +61,12 @@ class LSPClient:
         # dead in its finally block -- the proc identity check alone does
         # not cover the window before the new proc is assigned.
         self._reader_gen = 0
+        # True while start() is running its initialize handshake.  start()
+        # reaches request(), which calls start_if_needed(): a server that
+        # dies immediately leaves `alive` False, so without this flag each
+        # level re-entered start() -- spawning another process -- until
+        # RecursionError instead of a clean "failed to start" error.
+        self._starting = False
 
     @property
     def alive(self) -> bool:
@@ -72,8 +78,25 @@ class LSPClient:
         )
 
     def start(self) -> None:
-        if self.alive:
+        """Start the server if it is not already running.
+
+        Re-entrancy-safe: ``_start()`` performs the initialize handshake
+        through ``request()``, which calls ``start_if_needed()``.  A server
+        that dies immediately (reader EOF before the request is written)
+        leaves ``alive`` False, so without the ``_starting`` guard every
+        level re-entered ``start()`` and spawned another process until
+        RecursionError.  With the guard the inner call is a no-op and the
+        handshake fails fast with a clean LSPError.
+        """
+        if self.alive or self._starting:
             return
+        self._starting = True
+        try:
+            self._start()
+        finally:
+            self._starting = False
+
+    def _start(self) -> None:
         # Invalidate any superseded reader FIRST: _release_proc() below
         # unblocks it, and if it reached its finally block while the
         # generation still matched it would mark this fresh transport dead
