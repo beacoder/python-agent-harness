@@ -2127,3 +2127,59 @@ class TestOpIdAttribution(ServerTestBase):
         self.assertNotIn("op_id", errors[0])
         lines2 = self._drive(server, [{"op": "ping"}])
         self.assertNotIn("op_id", _of_type(lines2, "pong")[0])
+
+
+class TestUnreadableInput(ServerTestBase):
+    """Undecodable stdin must not take the resident process down.
+
+    A single non-UTF-8 byte on a strict-UTF-8 stdin (the common
+    ``LANG=en_US.UTF-8`` container setup) used to raise out of
+    ``_read_ops``, unwinding ``serve_forever`` BEFORE ``_join_run_thread``
+    -- so an in-flight run emitted no ``result`` line at all and the
+    driving host lost the answer, the salvaged history and the billable
+    usage.
+    """
+
+    @staticmethod
+    def _strict_pipe(payload: bytes):
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, payload)
+        os.close(write_fd)
+        return os.fdopen(read_fd, "r", encoding="utf-8", errors="strict", newline="")
+
+    def test_undecodable_byte_reports_protocol_error_and_stops(self):
+        inp = self._strict_pipe(b'{"op":"ping"}\n\xff\n')
+        out = io.StringIO()
+        server = AgentServer(FakeSession(), inp, out, err=io.StringIO())
+        try:
+            server._read_ops()  # must not raise
+        finally:
+            inp.close()
+        errors = _of_type(_lines(out), "error")
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["error"]["code"], "protocol")
+        self.assertIn("cannot read op", errors[0]["message"])
+
+    def test_closed_stdin_is_reported_not_raised(self):
+        inp = io.StringIO()
+        inp.close()
+        out = io.StringIO()
+        server = AgentServer(FakeSession(), inp, out, err=io.StringIO())
+        server._read_ops()  # must not raise
+        self.assertEqual(_of_type(_lines(out), "error")[0]["error"]["code"], "protocol")
+
+    def test_serve_forever_still_drains_the_run(self):
+        """The run drain must run even when the input is unreadable.
+
+        Regression: the decode error unwound serve_forever, so an active
+        run never emitted its terminal result line.
+        """
+        inp = self._strict_pipe(b"\xff\n")
+        out = io.StringIO()
+        server = AgentServer(FakeSession(), inp, out, err=io.StringIO())
+        drained: list[bool] = []
+        with mock.patch.object(server, "_join_run_thread", lambda **kw: drained.append(True)):
+            server.serve_forever()
+        inp.close()
+        self.assertEqual(drained, [True])
+        self.assertEqual(_of_type(_lines(out), "error")[0]["error"]["code"], "protocol")

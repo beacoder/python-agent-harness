@@ -841,6 +841,52 @@ class TestTuiRender(unittest.TestCase):
         self.assertEqual(Tui._est_lines(Panel("short"), 80), 4)
         self.assertEqual(Tui._est_lines(Panel(Group(Text("a"), Text("b"))), 80), 5)
 
+    def test_est_lines_counts_newlines_and_groups(self):
+        """Multi-line Text and Group rows must never be billed as 1 line.
+
+        Regression: the old estimate divided the TOTAL length by the width
+        (so 20 short lines counted as ~1) and returned a flat 1 for any
+        Group -- a rendered diff is one Text per diff line, so a 300-line
+        Edit diff was billed as a single row.  Under-estimating a tall row
+        lets it through the budget, the frame overflows, and rich's Live
+        crops it from the bottom: exactly the newest rows the budget
+        exists to keep on screen disappear.
+        """
+        from rich.text import Text
+
+        from python_agent_harness.io.diffrender import render_diff
+        from python_agent_harness.tui import Tui
+
+        self.assertEqual(Tui._est_lines(Text("a\nb\nc"), 80), 3)
+        diff = "".join(f"+line {i}\n" for i in range(300))
+        self.assertEqual(Tui._est_lines(render_diff(diff), 100), 300)
+
+    def test_budget_drops_tall_diff_and_keeps_newest_rows(self):
+        """The newest row survives even when a huge diff row is present."""
+        from rich.text import Text
+
+        from python_agent_harness.core.models import Message, ToolCall
+
+        tui, _ = make_tui()
+        diff = "".join(f"+line {i}\n" for i in range(300))
+        tui._controller.last_messages = [
+            Message(role="user", content="edit"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[ToolCall(id="1", name="Edit", arguments="{}", diff=diff)],
+            ),
+            Message(role="tool", content="done", tool_call_id="1", name="Edit"),
+        ]
+        tui._history_dirty = True
+        rows = tui._history_rows()
+        stream = Text("assistant: streaming now")
+        kept = tui._apply_budget(rows + [stream])
+        self.assertIs(kept[-1], stream)  # newest row kept
+        # the 300-line diff row cannot fit the budget and is dropped
+        self.assertLess(len(kept), len(rows) + 1)
+        self.assertNotIn(rows[-1], kept)
+
     # ------------------------------------------------------------------
     # Todos panel
     # ------------------------------------------------------------------

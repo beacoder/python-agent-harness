@@ -892,7 +892,19 @@ class AgentServer:
     def _read_ops(self) -> None:
         """The reader loop proper: dispatch ops until EOF/shutdown."""
         while not self._stopped.is_set():
-            line = self.inp.readline()
+            try:
+                line = self.inp.readline()
+            except (UnicodeDecodeError, ValueError, OSError) as e:
+                # Unreadable input must never take the resident process
+                # down.  A single non-UTF-8 byte on a strict-UTF-8 stdin
+                # (the common C.UTF-8/LANG=en_US.UTF-8 container setup)
+                # raised out of serve_forever, which skipped the run drain
+                # below: an in-flight run then emitted NO result line and
+                # its token usage was lost.  Report it as a protocol error
+                # and stop reading, so the drain still runs.  ValueError
+                # covers a stdin closed underneath us.
+                self._error("protocol", f"cannot read op: {e}")
+                break
             if not line:  # EOF: the host closed the pipe
                 break
             line = line.strip()

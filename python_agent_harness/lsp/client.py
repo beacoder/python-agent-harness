@@ -13,12 +13,20 @@ import os
 import queue
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 
 class LSPError(RuntimeError):
     pass
+
+
+# Upper bound for one framed JSON-RPC message.  A Content-Length header is
+# untrusted input: a bogus or malicious value must not make the reader
+# reserve gigabytes.  Real LSP responses (even documentSymbol on a huge
+# file) are orders of magnitude smaller.
+MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
 
 class LSPClient:
@@ -39,15 +47,52 @@ class LSPClient:
         self._capabilities: dict[str, Any] = {}
         self.position_encoding = "utf-16"
         self._closed = False
+        # Set when the reader thread exits for ANY reason other than an
+        # explicit close(): the transport can no longer deliver responses,
+        # so the client must count as dead even while the child process is
+        # still running (a framing error, a crashed/hung server).  Without
+        # this, `alive` kept reporting True and `manager.get_client` never
+        # replaced the broken client -- every later LSP call then burned
+        # the full request timeout for the rest of the session.
+        self._reader_dead = False
+        # Identity of the CURRENT reader thread's generation.  A reader
+        # superseded by start() can finish after the new one is installed;
+        # without this counter it would mark the fresh (healthy) transport
+        # dead in its finally block -- the proc identity check alone does
+        # not cover the window before the new proc is assigned.
+        self._reader_gen = 0
 
     @property
     def alive(self) -> bool:
-        return self.proc is not None and self.proc.poll() is None and not self._closed
+        return (
+            self.proc is not None
+            and self.proc.poll() is None
+            and not self._closed
+            and not self._reader_dead
+        )
 
     def start(self) -> None:
         if self.alive:
             return
+        # Invalidate any superseded reader FIRST: _release_proc() below
+        # unblocks it, and if it reached its finally block while the
+        # generation still matched it would mark this fresh transport dead
+        # (and fail its waiters) before the replacement is installed.
+        self._reader_gen += 1
+        # A previous child can still be running when only the reader died
+        # (framing error / crashed transport): release it before the pipes
+        # are replaced, or the process and its descriptors leak.
+        if self.proc is not None:
+            self._release_proc()
         self._closed = False
+        self._reader_dead = False
+        # A fresh server has no documents open: forget the previous
+        # session's bookkeeping, or open_document() would send didChange
+        # for a document this process never opened.
+        with self._state_lock:
+            self._opened.clear()
+            self._texts.clear()
+        self.position_encoding = "utf-16"
         try:
             self.proc = subprocess.Popen(
                 self.command,
@@ -59,8 +104,9 @@ class LSPClient:
             )
         except OSError as e:
             raise LSPError(f"failed to start LSP server {' '.join(self.command)!r}: {e}") from e
+        gen = self._reader_gen
         self._reader = threading.Thread(
-            target=self._read_loop, daemon=True, name=f"lsp-reader:{self.command[0]}"
+            target=self._read_loop, args=(gen,), daemon=True, name=f"lsp-reader:{self.command[0]}"
         )
         self._reader.start()
         try:
@@ -111,7 +157,7 @@ class LSPClient:
             message["params"] = params
         try:
             self._send(message)
-            kind, value = waiter.get(timeout=self.timeout)
+            kind, value = self._wait_response(waiter, method)
         except queue.Empty as e:
             with self._state_lock:
                 self._pending.pop(request_id, None)
@@ -129,6 +175,27 @@ class LSPClient:
             )
             raise LSPError(f"LSP {method} failed ({code}): {msg}")
         return value
+
+    def _wait_response(self, waiter: queue.Queue, method: str) -> tuple[str, Any]:
+        """Wait for WAITER, failing fast once the transport is dead.
+
+        The reader drains every waiter when it exits, but a request that
+        registers AFTER that drain finds an empty pending map and could
+        only wait out the full request timeout for a response nobody can
+        deliver.  Polling in slices lets the wait end as soon as the
+        transport is known to be dead.  Raises ``queue.Empty`` on a real
+        timeout so the caller keeps its single timeout message.
+        """
+        deadline = time.monotonic() + self.timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise queue.Empty
+            try:
+                return waiter.get(timeout=min(0.1, remaining))
+            except queue.Empty:
+                if self._reader_dead:
+                    raise LSPError(f"LSP server exited while waiting for {method}") from None
 
     def notify(self, method: str, params: Any = None) -> None:
         self.start_if_needed()
@@ -149,6 +216,7 @@ class LSPClient:
         # write can deadlock the reader thread (which needs _state_lock to
         # deliver responses/diagnostics) if the pipe buffer fills.
         with self._state_lock:
+            gen = self._reader_gen
             version = self._opened.get(uri, 0)
             if version:
                 if self._texts.get(uri) == text:
@@ -174,6 +242,16 @@ class LSPClient:
                     }
                 }
         self.notify(method, params)
+        if self._reader_gen != gen:
+            # The transport restarted between the bookkeeping above and the
+            # send: start() cleared _opened, and this notification either
+            # went to a server that is gone or to a replacement that never
+            # received didOpen.  Drop the stale claim so the next call
+            # re-opens the document against the current server instead of
+            # sending didChange for a document it does not know.
+            with self._state_lock:
+                self._opened.pop(uri, None)
+                self._texts.pop(uri, None)
 
     def close_document(self, uri: str) -> None:
         with self._state_lock:
@@ -192,28 +270,20 @@ class LSPClient:
         if self._closed:
             return
         proc = self.proc
-        was_alive = proc is not None and proc.poll() is None
+        # The graceful path (shutdown request + exit notification) goes
+        # through request()/notify(), which call start_if_needed() — and
+        # with the reader dead `alive` is False, so closing would SPAWN A
+        # FRESH SERVER just to shut it down, leaking the old process.
+        # When the transport is already broken there is nobody to talk to:
+        # go straight to terminate.
+        was_alive = proc is not None and proc.poll() is None and not self._reader_dead
         if was_alive:
             with contextlib.suppress(Exception):
                 self.request("shutdown", None)
             with contextlib.suppress(Exception):
                 self.notify("exit", None)
         self._closed = True
-        proc = self.proc
-        if proc is not None and proc.poll() is None:
-            with contextlib.suppress(Exception):
-                proc.terminate()
-                proc.wait(timeout=2)
-            with contextlib.suppress(Exception):
-                proc.kill()
-        # Close the pipe file objects so their file descriptors are
-        # released (subprocess does not close them on terminate/kill —
-        # leaving them open leaks fds and emits ResourceWarning).
-        if proc is not None:
-            for stream in (proc.stdin, proc.stdout):
-                if stream is not None:
-                    with contextlib.suppress(Exception):
-                        stream.close()
+        self._release_proc()
         with self._state_lock:
             with contextlib.suppress(queue.Full):
                 for waiter in self._pending.values():
@@ -221,6 +291,33 @@ class LSPClient:
             self._pending.clear()
             self._opened.clear()
             self._texts.clear()
+
+    def _release_proc(self) -> None:
+        """Terminate + reap the current server process and close its pipes.
+
+        Shared by ``close()`` (explicit teardown) and ``start()`` (a
+        restart after the reader died): in the latter case the child may
+        still be running, and the pipes MUST be released either way --
+        ``subprocess`` does not close them on terminate/kill, so leaving
+        them open leaks descriptors and emits ResourceWarning.
+        """
+        proc = self.proc
+        if proc is None:
+            return
+        if proc.poll() is None:
+            with contextlib.suppress(Exception):
+                proc.terminate()
+                proc.wait(timeout=2)
+            with contextlib.suppress(Exception):
+                proc.kill()
+            # Reap the killed child so it does not linger as a zombie
+            # until subprocess's global cleanup runs.
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=2)
+        for stream in (getattr(proc, "stdin", None), getattr(proc, "stdout", None)):
+            if stream is not None:
+                with contextlib.suppress(Exception):
+                    stream.close()
 
     def _send(self, message: dict[str, Any]) -> None:
         data = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -235,16 +332,24 @@ class LSPClient:
             except OSError as e:
                 raise LSPError(f"failed writing to LSP server: {e}") from e
 
-    def _read_loop(self) -> None:
+    def _read_loop(self, gen: int | None = None) -> None:
+        proc = self.proc
         try:
-            proc = self.proc
             if proc is None or proc.stdout is None:
                 return
             stream = proc.stdout
             while not self._closed:
                 headers: dict[str, str] = {}
                 while True:
-                    line = stream.readline()
+                    try:
+                        line = stream.readline()
+                    except (ValueError, OSError):
+                        # close() may release the pipes while this thread
+                        # is parked in a read; that surfaces here as a
+                        # closed-file/most-unblocked error.  Treat it as
+                        # EOF instead of letting a traceback escape a
+                        # daemon thread.
+                        return
                     if not line:
                         return
                     line = line.rstrip(b"\r\n")
@@ -259,8 +364,14 @@ class LSPClient:
                     length = int(headers.get("content-length", "0"))
                 except ValueError:
                     continue
-                payload = stream.read(length)
-                if len(payload) != length:
+                if length < 0 or length > MAX_MESSAGE_BYTES:
+                    # Unusable framing: a bogus/huge header must not make
+                    # read() reserve gigabytes, and a negative one can
+                    # never be satisfied.  Stop reading; the finally block
+                    # marks the transport dead so the server is replaced.
+                    return
+                payload = self._read_exactly(stream, length)
+                if payload is None:
                     return
                 try:
                     message = json.loads(payload.decode("utf-8"))
@@ -268,12 +379,57 @@ class LSPClient:
                     continue
                 self._handle_message(message)
         finally:
-            with self._state_lock:
-                pending = list(self._pending.values())
-                self._pending.clear()
-            with contextlib.suppress(queue.Full):
+            # Mark the transport dead for every exit path except an
+            # explicit close(): `alive` must go False so the manager
+            # replaces this client instead of sending requests into a
+            # pipe nobody reads (which only produced timeouts).  Both
+            # guards matter: a superseded reader (start() installed a
+            # replacement) must not kill the fresh transport, and a
+            # concurrent close() already owns the flag.
+            current = (gen is None or gen == self._reader_gen) and self.proc is proc
+            if current:
+                self._reader_dead = True
+                # Only the CURRENT reader owns this client's waiters: a
+                # superseded reader exiting during a restart must not fail
+                # requests that belong to the replacement transport.
+                with self._state_lock:
+                    pending = list(self._pending.values())
+                    self._pending.clear()
                 for waiter in pending:
-                    waiter.put_nowait(("error", {"message": "LSP server exited"}))
+                    # Per waiter: one already-filled queue must not stop
+                    # the rest from being notified.
+                    with contextlib.suppress(queue.Full):
+                        waiter.put_nowait(("error", {"message": "LSP server exited"}))
+
+    @staticmethod
+    def _read_exactly(stream: Any, length: int) -> bytes | None:
+        """Read exactly LENGTH bytes from STREAM; None on EOF first.
+
+        ``read(n)`` on a pipe-backed raw stream returns UP TO n bytes: it
+        reports what a single ``read(2)`` delivered, which for a message
+        larger than the pipe buffer is a partial message.  Treating that
+        short read as EOF killed the reader thread permanently -- one
+        large documentSymbol/hover/findReferences result silently
+        disabled LSP for the rest of the session.  Accumulate until the
+        framed length is satisfied; only a genuinely empty read (every
+        writer gone) is EOF.
+        """
+        if length == 0:
+            return b""
+        chunks: list[bytes] = []
+        remaining = length
+        while remaining:
+            try:
+                chunk = stream.read(remaining)
+            except (ValueError, OSError):
+                return None  # pipe closed under us (see the readline guard)
+            if not chunk:
+                return None
+            chunks.append(chunk)
+            # Clamp: a stream that over-delivers must not make `remaining`
+            # negative (a negative read() means "until EOF", i.e. a loop).
+            remaining = max(0, remaining - len(chunk))
+        return b"".join(chunks)
 
     def _handle_message(self, message: dict[str, Any]) -> None:
         if "id" in message and ("result" in message or "error" in message):

@@ -465,14 +465,39 @@ class RenderMixin:
 
     @staticmethod
     def _est_lines(row: Any, width: int) -> int:
-        """Rough wrapped-line estimate for a row (used for the budget)."""
+        """Estimated wrapped-line count for ROW at WIDTH (budget math).
+
+        The estimate must never be a LOWER bound: ``_apply_budget`` keeps
+        the newest rows by subtracting estimates from a fixed budget, so
+        under-estimating a tall row lets it through, the frame overflows,
+        and rich's ``Live`` crops it from the BOTTOM -- hiding exactly the
+        newest rows the budget exists to protect.
+
+        Two shapes made the old per-type estimate collapse to 1 line:
+
+        - multi-line ``Text`` (the old formula divided the total length by
+          the width, so 20 short lines counted as ~2 and were billed as 1);
+        - ``Group`` (a rendered diff is one ``Text`` per diff line, so a
+          300-line Edit diff was counted as a single line and disabled the
+          budget entirely).
+
+        Both now count real newlines, and ``Group`` recurses into its
+        renderables.
+        """
+        width = max(1, width)
+
+        def _wrapped(text: str) -> int:
+            return sum(max(1, math.ceil(cell_len(line) / width)) for line in text.split("\n"))
+
         if isinstance(row, Text):
-            return max(1, math.ceil(len(row.plain) / max(1, width)))
+            return _wrapped(row.plain)
         if isinstance(row, Markdown):
-            return max(1, math.ceil(len(row.markup) / max(1, width)))
+            return _wrapped(row.markup)
         if isinstance(row, Panel):
             inner = getattr(row.renderable, "renderables", None)
             return 3 + (len(inner) if isinstance(inner, (list, tuple)) else 1)
+        if isinstance(row, Group):
+            return sum(RenderMixin._est_lines(child, width) for child in row.renderables)
         return 1
 
     def _render_frame(self) -> Group:
