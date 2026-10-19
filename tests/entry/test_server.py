@@ -8,6 +8,7 @@ import io
 import json
 import os
 import signal
+import tempfile
 import threading
 import time
 import unittest
@@ -802,6 +803,23 @@ class TestServerView(unittest.TestCase):
                     return view._pending
             time.sleep(0.01)
         self.fail("pending never appeared")
+
+    def test_write_line_with_lone_surrogate_still_writes(self):
+        """serve's _write_line suppresses (BrokenPipeError, ValueError,
+        OSError) to survive a dead host — but UnicodeEncodeError IS a
+        ValueError, so a surrogate in a restored session's answer used to
+        be swallowed: the run reported success while stdout stayed empty
+        (no `result` line at all).  The sink must sanitize instead."""
+        with (
+            tempfile.TemporaryDirectory() as d,
+            open(os.path.join(d, "out.jsonl"), "w", encoding="utf-8", errors="strict") as out,
+        ):
+            view = ServerView(out=out, err=io.StringIO(), run_id="r1")
+            view._write({"type": "result", "answer": "caf\udce9"})
+            with open(os.path.join(d, "out.jsonl"), encoding="utf-8") as fh:
+                data = fh.read()
+        self.assertIn('"result"', data)
+        self.assertIn("caf\ufffd", data)
 
     def test_wait_answer_cancel_before_event(self):
         """Cancel while waiting, event never set: the loop's own

@@ -127,6 +127,7 @@ import time
 import uuid
 from typing import Any, TextIO
 
+from ..core.models import api_safe
 from ..session.session import Session
 from .controller import Controller
 from .headless import PROTOCOL_VERSION, JsonlView, _restorable_handler, final_answer_text
@@ -530,7 +531,11 @@ class AgentServer:
         live run lines get ``seq``/``run_id`` via the view's ``_write``.
         """
         text = (
-            json.dumps({"protocol": PROTOCOL_VERSION, **payload}, ensure_ascii=False, default=str)
+            api_safe(
+                json.dumps(
+                    {"protocol": PROTOCOL_VERSION, **payload}, ensure_ascii=False, default=str
+                )
+            )
             + "\n"
         )
         view = self.view

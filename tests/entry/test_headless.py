@@ -6,6 +6,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import threading
 import unittest
 import unittest.mock as mock
@@ -1149,6 +1150,60 @@ class TestProtocolHardening(unittest.TestCase):
         self.assertEqual(result["usage"], {"input": 120, "output": 45, "rounds": 2})
         self.assertEqual(result["model"], "m-test")
         self.assertIs(result["cancelled"], False)
+
+    def test_result_line_with_lone_surrogate_still_written(self):
+        """A restored session can carry a lone surrogate; the answer is
+        JSON-encoded with ensure_ascii=False and written to the driver's
+        stdout, where the encode raised UnicodeEncodeError — the run ended
+        with a `start` line and no terminal `result` line, hanging the
+        driver.  The sink must sanitize."""
+        session = self._session()
+        session.last_messages = [Message(role="assistant", content="caf\udce9 done")]
+        worker = threading.Thread(target=lambda: None)
+        worker.start()
+        handle = RunHandle(worker=worker, seq=1, display_text="hi", errors=[], warnings=[])
+        with (
+            tempfile.TemporaryDirectory() as d,
+            open(os.path.join(d, "out.jsonl"), "w", encoding="utf-8", errors="strict") as out,
+            mock.patch("python_agent_harness.entry.headless.Controller") as ctrl_cls,
+        ):
+            path = os.path.join(d, "out.jsonl")
+            ctrl_cls.return_value.submit.return_value = handle
+            rc = run_headless_jsonl(session, "hi", out=out)
+            with open(path, encoding="utf-8") as fh:
+                lines = [json.loads(x) for x in fh.read().splitlines() if x]
+        self.assertEqual(rc, 0)
+        self.assertEqual(lines[-1]["type"], "result")
+        self.assertEqual(lines[-1]["answer"], "caf\ufffd done")
+
+    def test_plain_headless_surrogate_answer_still_written(self):
+        """run_headless prints the answer verbatim on a strict-UTF-8
+        stdout; the write used to raise and lose the result entirely."""
+        session = self._session()
+        session.last_messages = [Message(role="assistant", content="caf\udce9 done")]
+        worker = threading.Thread(target=lambda: None)
+        worker.start()
+        handle = RunHandle(worker=worker, seq=1, display_text="hi", errors=[], warnings=[])
+        with (
+            tempfile.TemporaryDirectory() as d,
+            open(os.path.join(d, "out.txt"), "w", encoding="utf-8", errors="strict") as out,
+            mock.patch("python_agent_harness.entry.headless.Controller") as ctrl_cls,
+        ):
+            path = os.path.join(d, "out.txt")
+            ctrl_cls.return_value.submit.return_value = handle
+            rc = run_headless(session, "hi", out=out)
+            with open(path, encoding="utf-8") as fh:
+                data = fh.read()
+        self.assertEqual(rc, 0)
+        self.assertEqual(data, "caf\ufffd done\n")
+
+    def test_final_answer_text_sanitizes_surrogates(self):
+        session = self._session()
+        session.last_messages = [
+            Message(role="user", content="q"),
+            Message(role="assistant", content="caf\udce9 done"),
+        ]
+        self.assertEqual(final_answer_text(session), "caf\ufffd done")
 
     def test_usage_read_after_submit_swaps_totals(self):
         """submit() replaces session.usage_totals with a fresh dict; the

@@ -22,6 +22,7 @@ import sys
 import threading
 from typing import Any, TextIO
 
+from ..core.models import api_safe
 from ..io.text_filter import strip_final_check
 from ..session.session import Session
 from .controller import Controller
@@ -166,7 +167,13 @@ def final_answer_text(session: Session) -> str:
             continue
         text = strip_final_check(msg.text_without_reasoning()).strip()
         if text:
-            return text
+            # api_safe: the answer is written to stdout (headless prints it
+            # verbatim; --json and serve JSON-encode it), and a lone
+            # surrogate from a restored non-UTF-8 session raised
+            # UnicodeEncodeError there — headless died before writing the
+            # result line, and serve's _write_line SWALLOWED it (it is a
+            # ValueError), reporting success with an empty stream.
+            return api_safe(text)
     return ""
 
 
@@ -420,7 +427,10 @@ def run_headless(
         return 1
     answer = final_answer_text(session)
     if answer:
-        view.out.write(answer + "\n")
+        # api_safe: the answer carries whatever the conversation carried
+        # (a restored non-UTF-8 session), and a strict-UTF-8 stdout
+        # raised UnicodeEncodeError here — losing the result line.
+        view.out.write(api_safe(answer) + "\n")
         view.out.flush()
     return 1 if view.errors else 0
 
@@ -515,7 +525,11 @@ class JsonlView(HeadlessView):
         line = {"seq": self._seq, "protocol": PROTOCOL_VERSION, **payload}
         if self.run_id is not None:
             line["run_id"] = self.run_id
-        self.out.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
+        # api_safe at the sink: the JSON body is written to the driver's
+        # stdout, and a lone surrogate (restored non-UTF-8 session) made
+        # the write raise UnicodeEncodeError — the run then ended without
+        # its terminal `result` line.
+        self.out.write(api_safe(json.dumps(line, ensure_ascii=False, default=str)) + "\n")
         self.out.flush()
 
     def _emit(self, payload: dict[str, Any]) -> None:
