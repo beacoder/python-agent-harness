@@ -825,6 +825,24 @@ class TestEditTool(unittest.TestCase):
             with open(path) as f:
                 self.assertEqual(f.read(), "one\ndup\n")
 
+    def test_replace_all_fails_closed_on_a_non_boolean(self):
+        """A model that emits the STRING "false" (or 0) must not be read as
+        "replace everything": bool("false") is True, which would silently
+        mass-replace.  Anything that is not the JSON boolean true is
+        treated as false, matching the `diff is False` style."""
+        for value in ("false", "0", 0, None, "no"):
+            with tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "f.txt")
+                with open(path, "w") as f:
+                    f.write("dup\ndup\n")
+                ctx, _ = make_ctx()
+                result = Edit().run(
+                    {"path": path, "old_str": "dup", "new_str": "x", "replace_all": value}, ctx
+                )
+                self.assertIn("not unique", result, f"replace_all={value!r} must fail closed")
+                with open(path) as f:
+                    self.assertEqual(f.read(), "dup\ndup\n")
+
     def test_replace_all_preserves_line_endings(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "f.txt")

@@ -136,8 +136,12 @@ class Edit(Tool):
         diffp = args.get("diff")
         # gptel: string mode when `diff` is false OR `old_str` is provided.
         if diffp is False or old is not None:
+            # `is True`, not bool(): a model that sends the string "false"
+            # (or 0) must not be read as "replace every occurrence" --
+            # bool("false") is True, which would silently mass-replace.
+            # Anything unrecognised fails closed, like `diffp is False`.
             return self._string_replace(
-                path, old, new_str, ctx, replace_all=bool(args.get("replace_all"))
+                path, old, new_str, ctx, replace_all=args.get("replace_all") is True
             )
         # Diff mode runs `patch` in Emacs `file-name-directory' of the path
         # (see _patch_cwd): a trailing-slash directory path -> that

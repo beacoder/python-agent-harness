@@ -985,6 +985,27 @@ class TestTuiRender(unittest.TestCase):
         self.assertIn("fixed the bug", out)
         self.assertNotIn("**user:**", out)
 
+    def test_lone_surrogates_never_reach_the_terminal(self):
+        """A restored session can carry lone surrogates (the tools read
+        non-UTF-8 files with surrogateescape).  Rich hands them to the
+        terminal verbatim, where the UTF-8 encoder raised
+        UnicodeEncodeError — killing the TUI while rendering."""
+        tui, buf = make_tui()
+        tui._controller.last_messages = [Message(role="user", content="caf\udce9 byte")]
+        tui.console.print(tui._render_frame())
+        self.assertNotIn("\udce9", buf.getvalue())
+        self.assertIn("caf\ufffd byte", buf.getvalue())
+
+        # the same text through a real strict-UTF-8 stream must not raise
+        import tempfile
+
+        path = tempfile.mktemp()
+        with open(path, "w", encoding="utf-8", errors="strict", newline="") as fh:
+            Console(file=fh, width=80).print(tui._render_frame())
+        import os
+
+        os.unlink(path)
+
 
 if __name__ == "__main__":
     unittest.main()

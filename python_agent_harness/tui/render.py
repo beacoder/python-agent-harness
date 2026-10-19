@@ -20,7 +20,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ..core.models import ImagePart, display_args
+from ..core.models import ImagePart, api_safe, display_args
 from ..io.diffrender import render_diff
 from ..io.text_filter import strip_final_check, strip_reasoning
 from ..prompts import _is_mode_reminder_text
@@ -66,8 +66,13 @@ def sanitize_terminal(text: str) -> str:
     what actually ran), spoof hyperlinks, or -- on terminals that honor
     OSC 52 -- write the user's clipboard.  Tabs and newlines survive;
     colors in command output are dropped along with everything else.
+
+    Lone surrogates (a non-UTF-8 file read with ``surrogateescape``)
+    become U+FFFD: Rich would hand them to the terminal verbatim and the
+    UTF-8 encoder raised ``UnicodeEncodeError`` — killing the TUI while
+    rendering a restored session.
     """
-    return _TERMINAL_CONTROL.sub("", text)
+    return _TERMINAL_CONTROL.sub("", api_safe(text))
 
 
 def safe_markup(value: object) -> str:

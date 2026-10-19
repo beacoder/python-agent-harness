@@ -5,6 +5,7 @@ import unittest
 
 from python_agent_harness.core.models import (
     Message,
+    TextPart,
     ToolCall,
     ToolSpec,
     Usage,
@@ -68,6 +69,39 @@ class TestMessageToApi(unittest.TestCase):
     def test_none_content_omitted(self):
         api = Message(role="assistant").to_api()
         self.assertEqual(api, {"role": "assistant"})
+
+    def test_lone_surrogates_are_replaced_at_the_api_boundary(self):
+        """Tools read files with errors="surrogateescape", so a conversation
+        can carry lone surrogates.  A request body containing one cannot be
+        encoded to UTF-8 (httpx raised UnicodeEncodeError), so they are
+        replaced with U+FFFD on the way out — the stored message keeps the
+        original bytes."""
+        m = Message(role="user", content="caf\udce9 byte")
+        api = m.to_api()
+        self.assertEqual(api["content"], "caf\ufffd byte")
+        json.dumps(api).encode("utf-8")  # must not raise
+        self.assertEqual(m.content, "caf\udce9 byte")  # stored copy untouched
+
+    def test_lone_surrogates_in_tool_arguments_are_replaced(self):
+        m = Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="c1", name="Edit", arguments='{"new_str": "caf\udce9"}')],
+        )
+        args = m.to_api()["tool_calls"][0]["function"]["arguments"]
+        self.assertNotIn("\udce9", args)
+        json.dumps(m.to_api()).encode("utf-8")
+
+    def test_lone_surrogates_in_text_parts_are_replaced(self):
+        m = Message(role="user", content=[TextPart(text="caf\udce9")])
+        parts = m.to_api()["content"]
+        self.assertEqual(parts[0]["text"], "caf\ufffd")
+
+    def test_non_ascii_content_is_preserved(self):
+        """Sanitization must touch only surrogates: legitimate non-ASCII
+        (CJK, emoji, accents) has to reach the provider unchanged."""
+        text = "日本語 🎉 café"
+        self.assertEqual(Message(role="user", content=text).to_api()["content"], text)
 
     def test_reasoning_prefix_stripped_from_api_content(self):
         """The client merges reasoning ahead of the answer into content;

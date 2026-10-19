@@ -5,8 +5,29 @@ from __future__ import annotations
 import base64
 import enum
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Union
+
+# Lone surrogates (\ud800-\udfff) reach a str when a file is decoded with
+# errors="surrogateescape" — which every tool deliberately does, so a
+# non-UTF-8 source file round-trips instead of becoming U+FFFD.  Such a
+# string cannot be encoded to UTF-8, so anything that leaves the process
+# (a JSON request body, a terminal write) must replace them first.
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def api_safe(text: str) -> str:
+    """TEXT with lone surrogates replaced by U+FFFD, safe to serialize.
+
+    The tools read files with ``errors="surrogateescape"``, so a
+    conversation can carry lone surrogates from a non-UTF-8 (Latin-1,
+    GBK, ...) source.  A request body containing one cannot be encoded
+    to UTF-8 — ``httpx`` raised ``UnicodeEncodeError`` — so they are
+    replaced at the OUTBOUND boundary only: the stored history, the
+    session file and the file on disk keep the exact bytes.
+    """
+    return _SURROGATE_RE.sub("\ufffd", text)
 
 
 class AgentMode(enum.Enum):
@@ -136,7 +157,10 @@ class Message:
     def to_api(self) -> dict[str, Any]:
         d: dict[str, Any] = {"role": self.role}
         if self.content is not None:
-            d["content"] = self._api_content()
+            content = self._api_content()
+            # outbound boundary: a lone surrogate cannot be encoded into
+            # the JSON body (see api_safe)
+            d["content"] = api_safe(content) if isinstance(content, str) else content
         if self.tool_calls:
             d["tool_calls"] = [
                 {
@@ -144,9 +168,13 @@ class Message:
                     "type": "function",
                     "function": {
                         "name": tc.name,
-                        "arguments": tc.arguments
-                        if isinstance(tc.arguments, str)
-                        else json.dumps(tc.arguments, ensure_ascii=False),
+                        # ensure_ascii=False keeps non-ASCII readable;
+                        # api_safe then removes the unencodable surrogates
+                        "arguments": api_safe(
+                            tc.arguments
+                            if isinstance(tc.arguments, str)
+                            else json.dumps(tc.arguments, ensure_ascii=False)
+                        ),
                     },
                 }
                 for tc in self.tool_calls
@@ -188,7 +216,11 @@ class Message:
     @staticmethod
     def _part_to_api(part: ContentPart) -> Any:
         """Serialize one content part to its provider-specific dict."""
-        if isinstance(part, (TextPart, ImagePart)):
+        if isinstance(part, TextPart):
+            # text parts are a second carrier of file content into the
+            # payload, so they need the same outbound treatment
+            return {"type": "text", "text": api_safe(part.text)}
+        if isinstance(part, ImagePart):
             return part.to_api()
         return part
 
