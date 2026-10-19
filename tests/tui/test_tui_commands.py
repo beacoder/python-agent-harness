@@ -370,6 +370,23 @@ class TestTuiCommands(unittest.TestCase):
             tui._run_sessions()  # must not raise
         self.assertEqual(buf.getvalue(), "")
 
+    def test_run_sessions_reads_a_session_with_raw_bytes(self):
+        """A saved session can carry lone surrogates (the tools read
+        non-UTF-8 files with surrogateescape and the writer mirrors it).
+        A strict decode raised UnicodeDecodeError — not an OSError — so one
+        such file aborted the whole listing."""
+        tui, buf = make_tui()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "raw_250101120000.md")
+            with open(path, "wb") as f:
+                f.write(b"**user**: caf\xe9\n\n;; Local Variables:\n;; End:\n")
+            with mock.patch(
+                "python_agent_harness.tui.commands.SessionPersistence.list_sessions",
+                return_value=[path],
+            ):
+                tui._run_sessions()  # must not raise
+        self.assertIn("raw_250101120000.md", buf.getvalue())
+
     # ------------------------------------------------------------------
     # /restore paths
     # ------------------------------------------------------------------

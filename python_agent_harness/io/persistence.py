@@ -195,7 +195,16 @@ class SessionPersistence:
             session_dir().mkdir(parents=True, exist_ok=True)
             content = conversation_text.rstrip("\n") + "\n\n" + self.metadata_block() + "\n"
             tmp = path + ".tmp"
-            Path(tmp).write_text(content, encoding="utf-8")
+            # surrogateescape: the tools deliberately read files with it
+            # (see atomic_write_text / Edit._string_replace), so a
+            # conversation can legitimately carry lone surrogates from a
+            # non-UTF-8 source file.  A strict write raised
+            # UnicodeEncodeError, which is NOT an OSError, so it escaped
+            # auto_save's handler: the turn was never saved and a stray
+            # <name>.md.tmp was left behind.  The matching reads
+            # (headless restore_session, TUI /restore and /sessions) use
+            # the same error handler so the bytes round-trip.
+            Path(tmp).write_text(content, encoding="utf-8", errors="surrogateescape")
             os.replace(tmp, path)
             return path
 

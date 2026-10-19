@@ -628,7 +628,8 @@ class CommandMixin:
             return
         for f in files:
             try:
-                with open(f, encoding="utf-8") as fh:
+                # surrogateescape mirrors SessionPersistence.save (see there)
+                with open(f, encoding="utf-8", errors="surrogateescape") as fh:
                     text = fh.read()
             except OSError:
                 continue
@@ -672,7 +673,8 @@ class CommandMixin:
             self.console.print(f"[red]file not found: {safe_markup(path)}[/red]")
             return
         try:
-            with open(path, encoding="utf-8") as fh:
+            # surrogateescape mirrors SessionPersistence.save (see there)
+            with open(path, encoding="utf-8", errors="surrogateescape") as fh:
                 text = fh.read()
         except OSError as e:
             self.console.print(f"[red]cannot read {safe_markup(path)}: {safe_markup(e)}[/red]")

@@ -741,6 +741,103 @@ class TestEditTool(unittest.TestCase):
             result = Edit().run({"path": path, "old_str": "dup", "new_str": "x"}, ctx)
             self.assertIn("not unique", result)
 
+    def test_not_unique_error_mentions_replace_all(self):
+        """The failure must tell the model how to proceed, and the schema
+        must expose the parameter it names (it used to be advertised in the
+        instructions only, so the model retried an argument that could
+        never work)."""
+        self.assertIn("replace_all", Edit.parameters["properties"])
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("dup\ndup\n")
+            ctx, _ = make_ctx()
+            result = Edit().run({"path": path, "old_str": "dup", "new_str": "x"}, ctx)
+            self.assertIn("replace_all: true", result)
+            self.assertIn("2 occurrences", result)
+
+    def test_replace_all_replaces_every_occurrence(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("foo foo foo\nfoo\n")
+            ctx, sess = make_ctx()
+            result = Edit().run(
+                {"path": path, "old_str": "foo", "new_str": "bar", "replace_all": True}, ctx
+            )
+            self.assertIn("all 4 occurrences", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "bar bar bar\nbar\n")
+            self.assertEqual(len(sess.recorded_diffs), 1)
+
+    def test_replace_all_false_keeps_unique_requirement(self):
+        """Explicit false (and an absent flag) must behave like the old
+        single-match rule."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("dup\ndup\n")
+            ctx, _ = make_ctx()
+            result = Edit().run(
+                {"path": path, "old_str": "dup", "new_str": "x", "replace_all": False}, ctx
+            )
+            self.assertIn("not unique", result)
+
+    def test_replace_all_with_unique_match_still_works(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("only\n")
+            ctx, _ = make_ctx()
+            result = Edit().run(
+                {"path": path, "old_str": "only", "new_str": "new", "replace_all": True}, ctx
+            )
+            self.assertIn("Successfully replaced", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "new\n")
+
+    def test_empty_old_str_is_rejected(self):
+        """``str.replace("", x)`` splices x between every character — with
+        replace_all that would silently explode the file."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("abc\n")
+            ctx, _ = make_ctx()
+            result = Edit().run(
+                {"path": path, "old_str": "", "new_str": "X", "replace_all": True}, ctx
+            )
+            self.assertIn("must not be empty", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "abc\n")
+
+    def test_replace_all_does_not_affect_diff_mode(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "w") as f:
+                f.write("dup\ndup\n")
+            ctx, _ = make_ctx()
+            diff = "--- a/f.txt\n+++ b/f.txt\n@@ -1,2 +1,2 @@\n-dup\n+one\n dup\n"
+            result = Edit().run(
+                {"path": path, "new_str": diff, "diff": True, "replace_all": True}, ctx
+            )
+            self.assertIn("Diff successfully applied", result)
+            with open(path) as f:
+                self.assertEqual(f.read(), "one\ndup\n")
+
+    def test_replace_all_preserves_line_endings(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "f.txt")
+            with open(path, "wb") as f:
+                f.write(b"dup\r\ndup\r\n")
+            ctx, _ = make_ctx()
+            result = Edit().run(
+                {"path": path, "old_str": "dup", "new_str": "x", "replace_all": True}, ctx
+            )
+            self.assertIn("all 2 occurrences", result)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"x\r\nx\r\n")
+
     def test_string_mode_rejects_directory(self):
         # String replacement is single-file only (mirrors gptel).
         with tempfile.TemporaryDirectory() as d:

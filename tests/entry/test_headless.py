@@ -352,6 +352,30 @@ class TestRestoreSession(unittest.TestCase):
         self.assertEqual(ctrl.run_generation, 1)
         ctrl.clear_todos.assert_called_once()
 
+    def test_restore_reads_a_session_with_raw_bytes(self):
+        """A saved session may carry lone surrogates (the tools read
+        non-UTF-8 files with surrogateescape and the writer now mirrors
+        that).  A strict decode raised UnicodeDecodeError here — not an
+        OSError, so it escaped the caller entirely."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            from python_agent_harness.io.persistence import SessionPersistence
+
+            store = SessionPersistence(project_dir=d, model="gpt-x", agent="default")
+            store.file_path = os.path.join(d, "raw_260101120000.md")
+            # written through the real save path, which now uses
+            # surrogateescape — exercising both directions together
+            path = store.save("**user**: caf\udce9 byte\n")
+            assert path is not None
+            with open(path, "rb") as f:
+                self.assertIn(b"\xe9", f.read())  # raw byte on disk
+            ctrl = self._fake_controller()
+            err = io.StringIO()
+            ok = restore_session(ctrl, path, err)
+        self.assertTrue(ok)
+        self.assertEqual(len(ctrl.last_messages), 1)
+
     def test_restore_latest(self):
         from python_agent_harness.io.persistence import session_dir
 

@@ -97,6 +97,52 @@ class TestSession(unittest.TestCase):
             finally:
                 config.SESSION_DIR = old_dir
 
+    def test_save_survives_lone_surrogate(self):
+        """A conversation carrying a lone surrogate (the tools read
+        non-UTF-8 files with surrogateescape) must still save: a strict
+        write raised UnicodeEncodeError, which is not an OSError, so it
+        escaped auto_save's handler and lost the turn — leaving a stray
+        .tmp behind too."""
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            from python_agent_harness.session import config
+
+            old_dir = config.SESSION_DIR
+            config.SESSION_DIR = __import__("pathlib").Path(d)
+            try:
+                store = SessionPersistence(project_dir=d, model="m")
+                path = store.save("user: caf\udce9 byte\n")
+                self.assertTrue(path)
+                self.assertTrue(os.path.exists(path))
+                self.assertEqual([f for f in os.listdir(d) if f.endswith(".tmp")], [])
+                with open(path, encoding="utf-8", errors="surrogateescape") as f:
+                    self.assertIn("\udce9", f.read())
+            finally:
+                config.SESSION_DIR = old_dir
+
+    def test_auto_save_never_raises_on_encode_error(self):
+        """auto_save is on the post-response path: any failure must be
+        reported, never propagated into the agent loop."""
+
+        class BoomStore:
+            def save(self, text):
+                raise UnicodeEncodeError("utf-8", "x", 0, 1, "boom")
+
+        from python_agent_harness.session.session import Session
+
+        saved = {}
+        sess = Session.__new__(Session)
+        sess.store = BoomStore()
+        sess._save_error = None
+        sess._conversation_text = lambda messages: "text"
+        sess.log = lambda msg: saved.setdefault("log", msg)
+        sess.notify = lambda kind, data=None: saved.setdefault("notify", kind)
+        sess.auto_save([], None)  # must not raise
+        self.assertEqual(saved["notify"], "save-error")
+        self.assertIn("boom", saved["log"])
+
     def test_apply_title_renames(self):
         import os
         import tempfile

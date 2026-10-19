@@ -698,7 +698,11 @@ class Session:
                 self.store.save(text)
                 self._save_error = None
                 return
-            except OSError as e:
+            except (OSError, UnicodeError) as e:
+                # UnicodeError too: a save failure must never escape into
+                # the agent loop (it unwound the run and lost the turn).
+                # The writer uses surrogateescape now, so this is a
+                # defensive net rather than the primary fix.
                 self._save_error = str(e)
                 if attempt == 1:
                     time.sleep(0.2)

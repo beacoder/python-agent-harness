@@ -65,14 +65,16 @@ class Edit(Tool):
 
 **When NOT to use `Edit`:**
 - Creating brand new files → use `Write`
-- You haven't read the file yet → must `Read` first (tool will error)
-- The old_string is not unique and you want to replace all occurrences → use `replace_all: true`
+- You haven't read the file yet → must `Read` first
+- The old_string is not unique and you want to replace all occurrences → pass `replace_all: true`
 
 **How to use `Edit`:**
-- MUST `Read` the file first (required, tool will error otherwise)
-- Provide exact `old_string` to match (including proper inion from file content, not line number prefixes)
+- MUST `Read` the file first
+- Provide exact `old_string` to match (including proper indentation from the file content, not line number prefixes)
 - Provide `new_string` as replacement (must be different from old_string)
-- The edit will FAIL if old_string is not unique
+- The edit will FAIL if old_string is not unique — add context, or set `replace_all: true`
+- `replace_all: true` replaces EVERY occurrence (use it deliberately: it is not
+  scoped to one region)
 - Preserve exact indentation from the file content (ignore line number prefixes from `Read` output)
 - Always prefer editing existing files over creating new ones
 """
@@ -107,6 +109,13 @@ class Edit(Tool):
                 "description": "Original string to replace.  If providing a unified diff, this should be false",
             },
             "new_str": {"type": "string", "description": "Replacement string OR unified diff text"},
+            "replace_all": {
+                "type": "boolean",
+                "description": (
+                    "Replace EVERY occurrence of old_str instead of failing when it "
+                    "is not unique.  Default false (a non-unique match is an error)."
+                ),
+            },
             "diff": {
                 "type": "boolean",
                 "description": "Whether the replacement is a string or a diff.  `true` for a diff, `false` otherwise.",
@@ -127,7 +136,9 @@ class Edit(Tool):
         diffp = args.get("diff")
         # gptel: string mode when `diff` is false OR `old_str` is provided.
         if diffp is False or old is not None:
-            return self._string_replace(path, old, new_str, ctx)
+            return self._string_replace(
+                path, old, new_str, ctx, replace_all=bool(args.get("replace_all"))
+            )
         # Diff mode runs `patch` in Emacs `file-name-directory' of the path
         # (see _patch_cwd): a trailing-slash directory path -> that
         # directory itself, so a multi-file diff applies to files within
@@ -135,7 +146,15 @@ class Edit(Tool):
         cwd = _patch_cwd(raw, path)
         return self._apply_patch(path, cwd, new_str, ctx)
 
-    def _string_replace(self, path: str, old: str | None, new_str: str, ctx: ToolContext) -> str:
+    def _string_replace(
+        self,
+        path: str,
+        old: str | None,
+        new_str: str,
+        ctx: ToolContext,
+        *,
+        replace_all: bool = False,
+    ) -> str:
         if os.path.isdir(path):
             return (
                 f"Error: String replacement is intended for single files, not directories ({path})"
@@ -144,6 +163,10 @@ class Edit(Tool):
             return "Error: old_str is required for non-diff edits"
         if not isinstance(old, str) or not isinstance(new_str, str):
             return "Error: old_str and new_str must be strings"
+        if not old:
+            # `str.count("")` is len+1 and `replace("", x)` splices x
+            # between every character — never a meaningful edit.
+            return "Error: old_str must not be empty"
         # surrogateescape: invalid UTF-8 bytes (Latin-1, GBK, ...) survive
         # the read/rewrite round trip — errors="replace" would silently
         # persist U+FFFD for every such byte.  newline="": the file's own
@@ -162,12 +185,12 @@ class Edit(Tool):
         count = content.count(old)
         if count == 0:
             return f'Error: Could not find old_str "{old[:20]}" in file {path}'
-        if count > 1:
+        if count > 1 and not replace_all:
             return (
-                "Error: Match is not unique. Consider providing more context "
-                "for the replacement, or a unified diff"
+                f"Error: Match is not unique ({count} occurrences). Consider providing more "
+                "context for the replacement, passing replace_all: true, or using a unified diff"
             )
-        new = content.replace(old, new_str, 1)
+        new = content.replace(old, new_str) if replace_all else content.replace(old, new_str, 1)
         from .filesystem import atomic_write_text
 
         try:
@@ -177,6 +200,11 @@ class Edit(Tool):
         diff_text = unified_diff(content, new, path)
         if diff_text:
             ctx.record_diff(diff_text)
+        if replace_all and count > 1:
+            return (
+                f"Successfully replaced all {count} occurrences of {old[:20]} (truncated) "
+                f"with {new_str[:20]} (truncated)"
+            )
         return f"Successfully replaced {old[:20]} (truncated) with {new_str[:20]} (truncated)"
 
     def _apply_patch(self, path: str, cwd: str, diff: str, ctx: ToolContext) -> str:

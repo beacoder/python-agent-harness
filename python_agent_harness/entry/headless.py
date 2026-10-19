@@ -295,7 +295,10 @@ def restore_session(controller: Controller, spec: str, err: TextIO) -> bool:
     if not path or not os.path.isfile(path):
         err.write(f"no session found: {spec or 'latest'}\n")
         return False
-    with open(path, encoding="utf-8") as fh:
+    # surrogateescape must mirror SessionPersistence.save: the saved body
+    # may carry lone surrogates (the tools read non-UTF-8 files that way),
+    # and a strict decode raised UnicodeDecodeError here.
+    with open(path, encoding="utf-8", errors="surrogateescape") as fh:
         text = fh.read()
     meta = SessionPersistence.parse_metadata(text)
     body = SessionPersistence.strip_metadata(text)
