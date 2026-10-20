@@ -563,7 +563,19 @@ class RenderMixin:
         cells); line 2 gets the full terminal width.  Newlines in the
         message are flattened, words break at spaces where possible,
         and anything beyond two lines is truncated with an ellipsis.
+
+        The status is the one display path that reaches the terminal
+        unsanitized: it is set from endpoint/MCP error text
+        (``error_display_text``) and ``_on_log`` messages (``agent
+        error: {e}``, ``compaction failed: {e}``, ``MCP: [{server}]
+        {err}``), any of which can carry a hostile server's escape
+        sequences.  Strip them here -- the single sink for every status
+        source -- mirroring the sibling paths (tool name, history rows)
+        that already call ``sanitize_terminal``.  Sanitizing BEFORE the
+        newline flatten below keeps a stray OSC introducer from hiding
+        the rest of the line.
         """
+        msg = sanitize_terminal(msg)
         msg = " ".join(msg.splitlines())
         width = self.console.width or 80
         avail1 = max(1, width - used - 1)

@@ -216,6 +216,45 @@ class TestTuiTerminalEscapes(unittest.TestCase):
         self.assertNotIn("\x1b]8;", out)  # no terminal hyperlink
         self.assertIn("https://evil.example/x", out)  # the real target is visible
 
+    def _status_out(self, tui) -> str:
+        """Render the status bar through a plain (no-color) console so any
+        ESC in the output came from the status content, not styling."""
+        console, buf = _plain_console()
+        tui.console = console
+        console.print(tui._status_bar())
+        return buf.getvalue()
+
+    def test_status_bar_strips_escapes_from_log_messages(self):
+        """Regression (#1): ``_on_log`` feeds endpoint/MCP/agent error
+        text (``agent error: ...``, ``compaction failed: ...``, ``MCP:
+        [srv] ...``) straight into the status, which ``_fit_status``
+        rendered raw -- a hostile server could retitle the window, clear
+        the screen or write the clipboard.  The status is now sanitized
+        like every sibling display path."""
+        tui, _ = make_tui()
+        tui._on_log("agent error: " + HOSTILE)
+        out = self._status_out(tui)
+        self.assertNotIn(ESC, out)
+        self.assertNotIn("\x9b", out)
+        self.assertNotIn("\x07", out)
+        self.assertNotIn("PWNED-TITLE", out)
+        # the human-readable parts survive
+        self.assertIn("agent error", out)
+        self.assertIn("before", out)
+        self.assertIn("after", out)
+
+    def test_status_bar_strips_escapes_from_error_notification(self):
+        """The ``error`` notification path (``error_display_text`` of a
+        raw endpoint error body) reaches the same status sink and must
+        be sanitized too."""
+        tui, _ = make_tui()
+        tui._on_notify("error", "Error: 500 " + HOSTILE)
+        out = self._status_out(tui)
+        self.assertNotIn(ESC, out)
+        self.assertNotIn("\x9b", out)
+        self.assertNotIn("PWNED-TITLE", out)
+        self.assertIn("Error: 500", out)
+
 
 if __name__ == "__main__":
     unittest.main()

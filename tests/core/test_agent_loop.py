@@ -775,6 +775,57 @@ class TestAgentLoop(unittest.TestCase):
         n = self._count_compactions([tool_round] * 4 + ["done"], [0.95, 0.80, 0.85, 0.95, 0.10])
         self.assertEqual(n, 2)
 
+    def _count_failed_compactions(self, script, ratios) -> int:
+        """Like ``_count_compactions`` but ``compact`` always FAILS
+        (returns False without changing the history), so the only thing
+        under test is how often a failed compaction is retried."""
+        session = RecordingSession()
+        session.client.script = script
+        compactions = {"n": 0}
+        seq = iter(ratios)
+        last = {"r": 0.0}
+
+        def failing_compact(self):
+            compactions["n"] += 1
+            return False  # empty summary / no reducible prompts / exception
+
+        def fake_ratio(self):
+            last["r"] = next(seq, last["r"])
+            self.session.context_ratio = last["r"]
+
+        with (
+            mock.patch("python_agent_harness.session.config.MAX_NUDGES", 0),
+            mock.patch.object(AgentLoop, "compact", failing_compact),
+            mock.patch.object(AgentLoop, "_update_context_ratio", fake_ratio),
+        ):
+            loop = AgentLoop(session, messages=[Message(role="user", content="task")])
+            loop.run()
+        return compactions["n"]
+
+    def test_failed_compaction_does_not_recompact_every_round(self):
+        """Regression (#2): ``compact`` returning False (empty summary or
+        an exception) left ``_compaction_floor`` unset, so the next WAIT
+        saw the same above-trigger ratio and compacted again -- one paid
+        summary request per round forever.  Now a failed compaction sets
+        the floor, so it is attempted once per genuine trigger crossing,
+        not every round."""
+        tool_round = ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x"}')])
+        # ratio stays flat and above the trigger across every round
+        n = self._count_failed_compactions([tool_round] * 5 + ["done"], [0.95])
+        self.assertEqual(n, 1)
+
+    def test_failed_compaction_retries_once_context_grows_past_floor(self):
+        """A failed compaction must not be permanently abandoned: once
+        the conversation grows well past the failure-time floor, it is
+        attempted again (the same growth semantics as a successful but
+        still-above-trigger compaction)."""
+        # WAIT 1: 0.95 -> compact fails, floor 0.95;
+        # WAIT 2: 0.96 (< 0.95 + 0.05/2 = 0.975) -> no retry;
+        # WAIT 3: 0.99 -> grown past the floor -> compact again (fails);
+        tool_round = ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x"}')])
+        n = self._count_failed_compactions([tool_round] * 3 + ["done"], [0.95, 0.96, 0.99, 0.10])
+        self.assertEqual(n, 2)
+
     def test_compact_resets_nudge_budget(self):
         """Compaction must reset the nudge budget: a terminal answer right
         after compaction must not end the run just because the budget was

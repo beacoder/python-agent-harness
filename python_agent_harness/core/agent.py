@@ -552,6 +552,20 @@ class AgentLoop:
                         self._just_compacted = True
                         self.info["compacted"] = True
                         return
+                    # Compaction failed (empty summary, no reducible
+                    # prompts, or an exception -- see ContextManager.
+                    # compact): the history is unchanged, so without a
+                    # guard the next WAIT round sees the same
+                    # above-trigger ratio and compacts again, re-billing
+                    # the summary request every round for nothing.
+                    # Remember the current ratio as the floor -- reusing
+                    # the same mechanism as the "still above trigger
+                    # after a successful compaction" case above -- so
+                    # the guard below suppresses re-compaction until the
+                    # context grows meaningfully past it, at which point
+                    # a retry is warranted (the conversation really did
+                    # grow) rather than a no-op loop.
+                    self._compaction_floor = ratio
             else:
                 self._compaction_floor = None
             self._just_compacted = False
