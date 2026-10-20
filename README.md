@@ -40,7 +40,7 @@ Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_
 - **FSM-driven execution** — explicit `WAIT` / `TOOL` / `TRET` / `SUPERVISE` / `DONE` / `ERRS` / `ABRT` states. Completion supervision nudges the model when it stops early; failed tool calls are sanitized. Transient API failures (`429` / `5xx`) retry with exponential backoff. Auth-expired codes (configurable via `AUTH_REFRESH_STATUS_CODES` in `config.py`; defaults to `[401, 502]`) trigger automatic API key re-read from config/env.
 - **Context management** — CJK-aware token estimation, per-model context windows, automatic compaction at 70% usage.
 - **Image & text attachments** — attach with `@path` (e.g. `@screenshot.png`, `@README.md`): images (PNG/JPEG/GIF/WebP, up to 20 MB) become multimodal `image_url` parts; text files are inlined. Web URLs supported for images.
-- **Coding tools** — `Agent`, `TodoWrite`, `Glob`, `Grep`, `Read`, `Insert`, `Edit` (incl. unified diffs), `Write`, `Mkdir`, `Bash`, `Skill`, `Question`, `LSP`, `PlanExit`. Read-only tool rounds (`Read`, `Glob`, `Grep`, `Skill`, `LSP`) dispatch concurrently; async tools (`Bash`, `Agent`) can also run concurrently. Results always delivered in emitted order.
+- **Coding tools** — `Agent`, `TodoWrite`, `Glob`, `Grep`, `Read`, `Insert`, `Edit` (incl. unified diffs), `Write`, `Mkdir`, `Bash`, `Skill`, `Question`, `PlanExit`. Read-only tool rounds (`Read`, `Glob`, `Grep`, `Skill`) dispatch concurrently; async tools (`Bash`, `Agent`) can also run concurrently. Results always delivered in emitted order.
 - **Plan / Build modes** — plan mode is read-only except for the per-session plan file.
 - **Persistent sessions** — auto-saved after every response to `~/.local/share/python-agent-harness/sessions/`, with LLM-generated titles and `/restore --latest` / `/sessions`.
 - **Focused TUI** — Rich-based with pinned status bar, Todos panel, inline diff rendering, and a `prompt_toolkit` editor with history and completion. `Esc+Enter` submits, `Ctrl-D` quits, `Ctrl-C` cancels.
@@ -157,7 +157,6 @@ All LLM settings live in `~/.config/python-agent-harness/config.json`. Environme
 - **`subagent_llm`** — LLM config for `Agent` tool. Unset values inherit from `llm`. Set `profile` to reuse a `models` entry. Precedence: profile > `subagent_llm` > `llm` > env vars.
 - **`default_agent`** — agent name to use at session start (must exist in `prompts/agents/`). `null` = built-in default.
 - **`paths.context_path` / `paths.skill_path`** — locations for context files and skills. Default: project-local `contexts/` and `skills/`.
-- **`lsp.servers`** — per-extension LSP server overrides for the `LSP` tool. Keys are extensions (`.py`, `.cpp`); each has `command` (argv) and optional `language_id`. Layers on top of `DEFAULT_SERVERS` in `lsp/manager.py`.
 - **`mcp.servers`** — MCP server config (requires `[mcp]` extra). Each supports `transport`, `command`, `args`, `env`, `url`, `headers`, `parallel`, `timeout`, `enabled`.
 - **`headless` / `serve`** — optional budget limits: `max_rounds` (LLM rounds) and `timeout` (wall-clock seconds). `--max-rounds` / `--timeout` override per call; `<= 0` or `null` disables. Unset = unlimited.
 - **Precedence** — code defaults < config file < `OPENAI_*` env vars. Sub-agents also support `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`).

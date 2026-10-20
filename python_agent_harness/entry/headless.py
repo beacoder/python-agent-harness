@@ -59,8 +59,8 @@ def _as_error(value: Any) -> dict[str, Any]:
     ``HeadlessView.errors`` accumulates whatever the notifier passed:
     the agent loop sends a structured ``{"code", "message"}`` for
     classified failures (``budget``/``timeout``), other sites send a
-    plain string whose code is then derived from the text, and the LSP
-    client sends a ``{"message": ...}`` dict.  A nested
+    plain string whose code is then derived from the text, and some
+    callers send a ``{"message": ...}`` dict.  A nested
     ``{"error": {...}}`` shape is unwrapped; a dict carrying only a
     ``code`` falls back to that code for its message so the two never
     disagree on emptiness.
@@ -106,8 +106,7 @@ def error_display_text(value: Any) -> str:
 
     ``notify("error", ...)`` carries either a plain message string or a
     structured ``{"code", "message"}`` payload (the agent loop sends
-    the latter where the outcome is known; the LSP client sends a
-    ``{"message": ...}`` dict too).  Views render this rather than the
+    the latter where the outcome is known).  Views render this rather than the
     raw value, so a structured error does not reach a human as a dict
     repr.
 

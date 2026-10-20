@@ -139,17 +139,17 @@ class TestTuiRun(unittest.TestCase):
         self.assertEqual(tui.status, " error")
 
     def test_on_notify_error_structured_payload(self):
-        """A {"code", "message"} payload (budget/timeout outcomes, LSP
-        failures) is unwrapped to its message — never rendered as a
-        dict repr in the status bar."""
+        """A {"code", "message"} payload (budget/timeout outcomes) is
+        unwrapped to its message — never rendered as a dict repr in the
+        status bar."""
         tui, _ = make_tui()
         tui._on_notify("error", {"code": "budget", "message": "Error: out of rounds"})
         self.assertEqual(tui.status, " Error: out of rounds")
         self.assertNotIn("code", tui.status)
 
     def test_on_notify_error_dict_without_message(self):
-        """A dict lacking 'message' (an LSP {"message": ...} variant or
-        a code-only payload) still avoids a raw dict repr."""
+        """A dict lacking 'message' (a code-only payload) still avoids
+        a raw dict repr."""
         tui, _ = make_tui()
         tui._on_notify("error", {"code": "timeout"})
         self.assertEqual(tui.status, " timeout")

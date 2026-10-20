@@ -3,7 +3,6 @@
 from .core.models import AgentMode, ImagePart, Message, TextPart, ToolCall, ToolSpec
 from .entry.cli import main  # noqa: F401  (public lib surface: main entry point)
 from .llm.client import Client, LLMClient
-from .lsp.config import LSPConfig, LSPServerConfig
 from .mcp.config import MCPConfig, MCPServerConfig
 from .mcp.manager import MCPManager
 from .session.session import Session
@@ -15,8 +14,6 @@ __all__ = [
     "LLMClient",
     "Session",
     "AgentMode",
-    "LSPConfig",
-    "LSPServerConfig",
     "MCPConfig",
     "MCPManager",
     "MCPServerConfig",

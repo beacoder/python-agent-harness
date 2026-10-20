@@ -2,7 +2,7 @@
 
 Regression: Read/Edit/Insert/Write/Mkdir/Grep/Glob used to resolve a
 relative path against the PROCESS working directory, while Bash (and
-LSP/diffapply) used ``ToolContext.cwd`` (the project dir).  Under
+diffapply) used ``ToolContext.cwd`` (the project dir).  Under
 ``--project`` or after a project switch the two differ, so ``Read
 f.txt`` and ``Bash cat f.txt`` read different files and Edit/Write could
 modify a file outside the project.  The plan-mode guard must resolve

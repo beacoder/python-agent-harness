@@ -1891,18 +1891,14 @@ class RaiseSiteErrorCodeTests(unittest.TestCase):
         self.assertIn("round budget", errors[-1]["message"])
 
     def test_structured_error_stays_human_readable(self):
-        """Views must render the message, not a dict repr.
-
-        The LSP client already notified ``{"message": ...}`` dicts, so
-        this also fixes a pre-existing display regression.
-        """
+        """Views must render the message, not a dict repr."""
         from python_agent_harness.entry.headless import error_display_text
 
         self.assertEqual(
             error_display_text({"code": "budget", "message": "Error: out of rounds"}),
             "Error: out of rounds",
         )
-        self.assertEqual(error_display_text({"message": "LSP server exited"}), "LSP server exited")
+        self.assertEqual(error_display_text({"message": "server exited"}), "server exited")
         self.assertEqual(error_display_text("plain string"), "plain string")
         # No message key: fall back to the code rather than a dict repr.
         self.assertEqual(error_display_text({"code": "budget"}), "budget")
@@ -1950,7 +1946,7 @@ class RaiseSiteErrorCodeTests(unittest.TestCase):
             {"code": "budget", "message": "Error: out of rounds"},
             {"code": "budget"},  # code-only
             {"error": {"code": "timeout", "message": "slow"}},  # nested
-            {"message": "LSP server exited"},  # LSP shape
+            {"message": "server exited"},  # message-only dict
             "Error: a plain string",
             {"error": "flat error string"},
         ):

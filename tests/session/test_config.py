@@ -178,7 +178,6 @@ class TestConfigFile(unittest.TestCase):
         self.assertIn('"stream"', config.CONFIG_TEMPLATE)
         self.assertIn('"subagent_llm"', config.CONFIG_TEMPLATE)
         self.assertIn('"context_windows"', config.CONFIG_TEMPLATE)
-        self.assertIn('"lsp"', config.CONFIG_TEMPLATE)
 
     def test_template_renders_to_valid_json(self):
         """`config --init` must emit a parseable file.
@@ -192,7 +191,7 @@ class TestConfigFile(unittest.TestCase):
         rendered = config.CONFIG_TEMPLATE.format(path="/tmp/x.json")
         data = json.loads(rendered)
         self.assertIsInstance(data, dict)
-        for section in ("llm", "headless", "serve", "lsp", "mcp", "paths"):
+        for section in ("llm", "headless", "serve", "mcp", "paths"):
             self.assertIn(section, data, f"template lost the {section!r} section")
             self.assertIsInstance(data[section], dict)
         # Budget sections ship disabled, so a fresh template changes
@@ -200,98 +199,6 @@ class TestConfigFile(unittest.TestCase):
         for section in ("headless", "serve"):
             self.assertIsNone(data[section]["max_rounds"])
             self.assertIsNone(data[section]["timeout"])
-
-
-class TestLspConfig(unittest.TestCase):
-    """Config-file LSP server overrides: loaded from the ``lsp.servers``
-    object, keyed by file extension."""
-
-    def setUp(self):
-        self._saved = {k: os.environ.get(k) for k in ENV_KEYS}
-        for k in ENV_KEYS:
-            os.environ.pop(k, None)
-
-    def tearDown(self):
-        for k, v in self._saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-
-    def test_missing_file_returns_empty(self):
-        self.assertEqual(config.load_lsp_config("/no/such/file.json").servers, {})
-
-    def test_empty_section_returns_empty(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"llm": {"model": "m"}}', encoding="utf-8")
-            self.assertEqual(config.load_lsp_config(p).servers, {})
-
-    def test_override_with_language_id(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text(
-                '{"lsp": {"servers": {".cpp": '
-                '{"command": ["clangd", "--background-index"], "language_id": "cpp"}}}}',
-                encoding="utf-8",
-            )
-            loaded = config.load_lsp_config(p)
-            self.assertEqual(loaded.servers[".cpp"].command, ["clangd", "--background-index"])
-            self.assertEqual(loaded.servers[".cpp"].language_id, "cpp")
-            self.assertEqual(loaded.servers[".cpp"].ext, ".cpp")
-
-    def test_language_id_defaults_to_extension(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"lsp": {"servers": {".zig": {"command": ["zls"]}}}}', encoding="utf-8")
-            loaded = config.load_lsp_config(p)
-            self.assertEqual(loaded.servers[".zig"].command, ["zls"])
-            self.assertEqual(loaded.servers[".zig"].language_id, "zig")
-
-    def test_comment_key_ignored(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text(
-                '{"lsp": {"servers": {"_comment": "note", ".zig": {"command": ["zls"]}}}}',
-                encoding="utf-8",
-            )
-            loaded = config.load_lsp_config(p)
-            self.assertNotIn("_comment", loaded.servers)
-            self.assertIn(".zig", loaded.servers)
-
-    def test_missing_command_raises(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"lsp": {"servers": {".zig": {"language_id": "zig"}}}}', encoding="utf-8")
-            with self.assertRaises(ValueError):
-                config.load_lsp_config(p)
-
-    def test_command_not_a_list_raises(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"lsp": {"servers": {".zig": {"command": "zls"}}}}', encoding="utf-8")
-            with self.assertRaises(ValueError):
-                config.load_lsp_config(p)
-
-    def test_lsp_not_object_raises(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text('{"lsp": [1, 2]}', encoding="utf-8")
-            with self.assertRaises(ValueError):
-                config.load_lsp_config(p)
-
-    def test_template_lsp_section_is_loadable(self):
-        # The rendered template must produce a config whose lsp section
-        # load_lsp_config accepts (the inert '.example' entry).
-        from python_agent_harness.entry.cli import main
-
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            rc = main(["config", "--init", "--path", str(p)])
-            self.assertEqual(rc, 0)
-            loaded = config.load_lsp_config(p)
-            self.assertIn(".example", loaded.servers)
-            self.assertEqual(loaded.servers[".example"].command[0], "clangd")
 
 
 class TestContextWindowsConfig(unittest.TestCase):
@@ -680,37 +587,6 @@ class TestConfigCli(unittest.TestCase):
                 rc = main(["config", "--path", str(p)])
             self.assertEqual(rc, 0)
             self.assertIn("subagent_llm: (inherits main)", buf.getvalue())
-
-    def test_config_show_lsp_servers(self):
-        """config output lists configured LSP servers, and reports a
-        'none configured' note when the section is absent."""
-        import io
-        from contextlib import redirect_stdout
-
-        from python_agent_harness.entry.cli import main
-
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "config.json"
-            p.write_text(
-                '{"lsp": {"servers": {".cpp": '
-                '{"command": ["clangd", "--background-index"], "language_id": "cpp"}}}}',
-                encoding="utf-8",
-            )
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                rc = main(["config", "--path", str(p)])
-            self.assertEqual(rc, 0)
-            out = buf.getvalue()
-            self.assertIn("lsp servers:", out)
-            self.assertIn(".cpp: language_id=cpp, command=clangd --background-index", out)
-
-            # no lsp section -> "none configured" note
-            p.write_text('{"llm": {"model": "m"}}', encoding="utf-8")
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                rc = main(["config", "--path", str(p)])
-            self.assertEqual(rc, 0)
-            self.assertIn("lsp servers: (none configured", buf.getvalue())
 
     def test_config_init_refuses_overwrite(self):
         import io

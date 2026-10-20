@@ -45,11 +45,6 @@ def make_session(
     settings = config.load_llm_config(config_path)
     paths = config.load_paths_config(config_path)
     mcp_config = config.load_mcp_config(config_path)
-    # Validate lsp.servers eagerly so a malformed override fails fast at
-    # session start (with a clear message) instead of poisoning the first
-    # LSP tool call mid-session.  The LSP manager re-reads it lazily via
-    # config_path; this call only surfaces config errors early.
-    config.load_lsp_config(config_path)
     model = model or settings["model"]
     # resolve sub-agent overrides against the EFFECTIVE main settings
     # (so a CLI/caller model override is inherited too when the
@@ -345,14 +340,6 @@ def cmd_config(args: argparse.Namespace) -> int:
             print(f"  {pattern}: {size}")
     else:
         print("context_windows: (none configured — built-in table in config.py applies)")
-    # Show LSP server overrides (per-extension, layered over the built-ins)
-    lsp_config = config.load_lsp_config(args.path)
-    if lsp_config.servers:
-        print("lsp servers:")
-        for ext, server in sorted(lsp_config.servers.items()):
-            print(f"  {ext}: language_id={server.language_id}, command={' '.join(server.command)}")
-    else:
-        print("lsp servers: (none configured — built-in DEFAULT_SERVERS in lsp/manager.py applies)")
     # Show default agent
     default_agent = config.load_default_agent(args.path)
     print(f"default_agent: {default_agent or '(default: agent.md)'}")

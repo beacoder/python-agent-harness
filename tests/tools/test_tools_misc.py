@@ -588,7 +588,6 @@ class TestToolInstructions(unittest.TestCase):
             "Agent",
             "TodoWrite",
             "Glob",
-            "LSP",
             "Grep",
             "Read",
             "Insert",

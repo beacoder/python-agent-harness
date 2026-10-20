@@ -165,8 +165,7 @@ class ToolContext:
     def config_path(self) -> str | None:
         """Path to the active config file (None = default resolution).
 
-        Tools that read the config file (e.g. the LSP tool, which loads
-        per-extension server overrides) use this so a session started
+        Tools that read the config file use this so a session started
         with ``--config PATH`` reads the same file.
         """
         if self.session:

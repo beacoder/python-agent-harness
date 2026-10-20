@@ -202,7 +202,7 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
                 # old bare "error" so the user sees WHAT failed; the
                 # red styling comes from "error" appearing in the text.
                 # A structured {"code", "message"} payload (budget /
-                # timeout outcomes, LSP failures) is unwrapped by the
+                # timeout outcomes) is unwrapped by the
                 # shared helper — rendering the dict would both look
                 # wrong and lose the detail.
                 detail = error_display_text(data) if data else ""

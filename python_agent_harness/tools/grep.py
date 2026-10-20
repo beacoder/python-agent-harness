@@ -31,7 +31,6 @@ class Grep(Tool):
 **When NOT to use `Grep`:**
 - Searching for files by name → use `Glob`
 - Reading known file contents → use `Read`
-- Navigating a known code symbol (its definition, references, implementations, type info, or call hierarchy) → use `LSP` (semantically correct; `Grep` matches text, not symbols)
 - open-ended search that may require multiple rounds of globbing and grepping → use `Agent`
 
 **How to use `Grep`:**
