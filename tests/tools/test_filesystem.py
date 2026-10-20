@@ -21,8 +21,6 @@ from python_agent_harness.tools.filesystem import (
     Edit,
     GlobTool,
     Grep,
-    Insert,
-    Mkdir,
     Read,
     Write,
     _fix_patch_headers,
@@ -1046,70 +1044,6 @@ class TestWriteTool(unittest.TestCase):
             self.assertEqual(len(sess.recorded_diffs), 1)
 
 
-class TestInsertTool(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.path = os.path.join(self.tmp.name, "f.txt")
-        with open(self.path, "w") as f:
-            f.write("a\nb\nc\n")
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_insert_after_line_number(self):
-        Insert().run({"path": self.path, "line_number": 2, "new_str": "X"}, ToolContext())
-        with open(self.path) as f:
-            self.assertEqual(f.read(), "a\nb\nX\nc\n")
-
-    def test_insert_at_beginning(self):
-        Insert().run({"path": self.path, "line_number": 0, "new_str": "Z"}, ToolContext())
-        with open(self.path) as f:
-            self.assertEqual(f.read(), "Z\na\nb\nc\n")
-
-    def test_insert_at_end(self):
-        Insert().run({"path": self.path, "line_number": -1, "new_str": "Y"}, ToolContext())
-        with open(self.path) as f:
-            self.assertEqual(f.read(), "a\nb\nc\nY\n")
-
-    def test_insert_adds_missing_trailing_newline(self):
-        Insert().run({"path": self.path, "line_number": 1, "new_str": "X"}, ToolContext())
-        with open(self.path) as f:
-            self.assertEqual(f.read(), "a\nX\nb\nc\n")
-
-    def test_insert_preserves_crlf_and_non_utf8_bytes(self):
-        """Regression: the whole file used to be rewritten to LF with
-        invalid bytes replaced."""
-        with open(self.path, "wb") as f:
-            f.write(b"a\r\ncaf\xe9\r\nb\r\n")
-        Insert().run({"path": self.path, "line_number": 1, "new_str": "X"}, ToolContext())
-        with open(self.path, "rb") as f:
-            self.assertEqual(f.read(), b"a\r\nX\r\ncaf\xe9\r\nb\r\n")
-
-
-class TestMkdirTool(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_create_directory(self):
-        out = Mkdir().run({"parent": self.tmp.name, "name": "sub"}, ToolContext())
-        self.assertIn("created/verified", out)
-        self.assertTrue(os.path.isdir(os.path.join(self.tmp.name, "sub")))
-
-    def test_create_nested_directory(self):
-        out = Mkdir().run({"parent": self.tmp.name, "name": "sub/deep"}, ToolContext())
-        self.assertIn("created/verified", out)
-        self.assertTrue(os.path.isdir(os.path.join(self.tmp.name, "sub/deep")))
-
-    def test_existing_directory_is_noop(self):
-        d = os.path.join(self.tmp.name, "sub")
-        os.makedirs(d)
-        out = Mkdir().run({"parent": self.tmp.name, "name": "sub"}, ToolContext())
-        self.assertIn("created/verified", out)
-
-
 class TestSpoolDirAndTruncate(unittest.TestCase):
     """_truncate small-text passthrough and _spool_dir candidate selection."""
 
@@ -1340,8 +1274,8 @@ class TestGrepFallbackBranches(unittest.TestCase):
         self.assertNotIn("b.md", out)
 
 
-class TestWriteEditInsertMkdirErrors(unittest.TestCase):
-    """OSError paths in Mkdir/Write/Edit/Insert (read and write sides)."""
+class TestWriteEditErrors(unittest.TestCase):
+    """OSError paths in Write/Edit (read and write sides)."""
 
     def setUp(self):
         self.ctx = ToolContext()
@@ -1349,11 +1283,6 @@ class TestWriteEditInsertMkdirErrors(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def test_mkdir_oserror_reported(self):
-        with mock.patch("os.makedirs", side_effect=PermissionError("denied")):
-            out = Mkdir().run({"parent": self.tmp.name, "name": "sub"}, self.ctx)
-        self.assertIn("Error", out)
 
     def test_write_existing_unreadable_falls_back_to_blank(self):
         p = os.path.join(self.tmp.name, "f.txt")
@@ -1414,26 +1343,6 @@ class TestWriteEditInsertMkdirErrors(unittest.TestCase):
         # the new content goes to a temp file via Path.write_text first
         with mock.patch("pathlib.Path.write_text", side_effect=OSError("disk full")):
             out = Edit().run({"path": p, "old_str": "a", "new_str": "b"}, self.ctx)
-        self.assertIn("Error: disk full", out)
-        with open(p) as f:
-            self.assertEqual(f.read(), "a\n")  # original intact, not truncated
-        self.assertEqual(os.listdir(self.tmp.name), ["f.txt"])  # no temp residue
-
-    def test_insert_read_oserror_reported(self):
-        p = os.path.join(self.tmp.name, "f.txt")
-        with open(p, "w") as f:
-            f.write("a\n")
-        with mock.patch("builtins.open", side_effect=OSError("boom")):
-            out = Insert().run({"path": p, "line_number": 0, "new_str": "x"}, self.ctx)
-        self.assertIn("Error: cannot read", out)
-
-    def test_insert_write_oserror_reported(self):
-        p = os.path.join(self.tmp.name, "f.txt")
-        with open(p, "w") as f:
-            f.write("a\n")
-        # the new content goes to a temp file via Path.write_text first
-        with mock.patch("pathlib.Path.write_text", side_effect=OSError("disk full")):
-            out = Insert().run({"path": p, "line_number": 0, "new_str": "x"}, self.ctx)
         self.assertIn("Error: disk full", out)
         with open(p) as f:
             self.assertEqual(f.read(), "a\n")  # original intact, not truncated
@@ -2056,23 +1965,6 @@ class TestTildeExpansion(unittest.TestCase):
         with open(p) as f:
             self.assertEqual(f.read(), "new\n")
 
-    def test_insert_expands_tilde(self):
-        p = os.path.join(self.home, "insert.txt")
-        with open(p, "w") as f:
-            f.write("line1\nline2\n")
-        out = Insert().run(
-            {"path": "~/insert.txt", "line_number": 1, "new_str": "inserted\n"},
-            ToolContext(),
-        )
-        self.assertIn("inserted text", out)
-        with open(p) as f:
-            self.assertEqual(f.read(), "line1\ninserted\nline2\n")
-
-    def test_mkdir_expands_tilde(self):
-        out = Mkdir().run({"parent": "~", "name": "newdir"}, ToolContext())
-        self.assertIn("created/verified", out)
-        self.assertTrue(os.path.isdir(os.path.join(self.home, "newdir")))
-
     def test_glob_expands_tilde(self):
         os.makedirs(os.path.join(self.home, "proj"))
         with open(os.path.join(self.home, "proj", "a.py"), "w") as f:
@@ -2089,13 +1981,13 @@ class TestTildeExpansion(unittest.TestCase):
 
 
 class TestWritesAreAtomic(unittest.TestCase):
-    """Edit / Insert / Write / the diff applier must never destroy a file.
+    """Edit / Write / the diff applier must never destroy a file.
 
     A truncating ``open(path, "w")`` empties the file BEFORE writing, so a
     write that failed partway through (ENOSPC, a quota, an I/O error, the
     process being killed) left the file empty and the original content
     unrecoverable while the tool returned a tidy "Error: ..." string.  All
-    four writers now go through a sibling temp file plus ``os.replace``
+    three writers now go through a sibling temp file plus ``os.replace``
     (the same discipline as ``SessionPersistence.save``).  These tests pin
     the resulting contract: on failure the original survives byte-for-byte
     and no temp file is left behind.
@@ -2132,13 +2024,6 @@ class TestWritesAreAtomic(unittest.TestCase):
             out = Edit().run(
                 {"path": self.path, "old_str": "line2", "new_str": "CHANGED"}, self.ctx
             )
-        self.assertTrue(out.startswith("Error"))
-        self.assertEqual(self._contents(), self.ORIG)
-        self.assertEqual(self._strays(), [])
-
-    def test_insert_preserves_file_when_write_fails(self):
-        with self._failing_write():
-            out = Insert().run({"path": self.path, "line_number": 1, "new_str": "X"}, self.ctx)
         self.assertTrue(out.startswith("Error"))
         self.assertEqual(self._contents(), self.ORIG)
         self.assertEqual(self._strays(), [])

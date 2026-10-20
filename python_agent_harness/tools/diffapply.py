@@ -227,7 +227,7 @@ def _apply_section(section: _Section, cwd: str, fallback_path: str | None) -> tu
     # realpath BEFORE writing (the same resolution diff_targets applies):
     # the write goes through atomic_write_text, whose os.replace would
     # otherwise overwrite a symlink with a regular file and leave the real
-    # target untouched.  Edit/Insert/Write resolve their own paths already.
+    # target untouched.  Edit/Write resolve their own paths already.
     target = os.path.realpath(_resolve_target(section.new_path, cwd, fallback_path))
     if not os.path.isfile(target):
         return False, f"target file does not exist: {target}"

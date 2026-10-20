@@ -678,13 +678,13 @@ class TestPlanModeWriteGuard(unittest.TestCase):
 
     def random_mutating_call(self, rng, tmpdir, outside, seed, i):
         """A mutating call and its side-effect target: for creation
-        tools (Write/Mkdir/Bash) TARGET must not exist afterwards; for
-        mutation tools (Edit/Insert) TARGET is a pre-created file whose
+        tools (Write/Bash) TARGET must not exist afterwards; for
+        mutation tools (Edit) TARGET is a pre-created file whose
         content must stay untouched (checked by the caller).  TARGETS
         live inside the two per-test tempdirs (the project dir and a
         separate "outside" dir) so the test never depends on — or
         pollutes — shared locations like /tmp."""
-        name = rng.choice(("Write", "Edit", "Insert", "Mkdir", "Bash"))
+        name = rng.choice(("Write", "Edit", "Bash"))
         tag = f"seed-{seed}-call-{i}"
         if name == "Write":
             path = rng.choice(
@@ -702,17 +702,6 @@ class TestPlanModeWriteGuard(unittest.TestCase):
                 diff = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n"
                 return name, {"path": target, "new_str": diff, "diff": True}, None
             return name, {"path": target, "old_str": "content", "new_str": "HACKED"}, None
-        if name == "Insert":
-            target = os.path.join(tmpdir, f"seed-{seed}-file-{rng.randint(0, 2)}.txt")
-            return name, {"path": target, "line_number": 0, "new_str": "HACKED"}, None
-        if name == "Mkdir":
-            parent = rng.choice((tmpdir, outside, os.path.join(outside, "sub")))
-            name_dir = f"{tag}-dir"
-            return (
-                name,
-                {"parent": parent, "name": name_dir},
-                os.path.realpath(os.path.join(parent, name_dir)),
-            )
         return name, {"command": f"touch {os.path.join(outside, tag)}"}, os.path.join(outside, tag)
 
     def test_plan_mode_blocks_every_mutating_tool_on_arbitrary_targets(self):
@@ -771,8 +760,8 @@ class TestPlanModeWriteGuard(unittest.TestCase):
             )
             self.assertNotIn("blocked by plan mode", r)
             r = session.execute_tool(
-                "Insert",
-                {"path": plan_file, "line_number": -1, "new_str": "- step 1"},
+                "Edit",
+                {"path": plan_file, "old_str": "# plan v2", "new_str": "# plan v2\n- step 1"},
                 call_id="i1",
             )
             self.assertNotIn("blocked by plan mode", r)
@@ -894,9 +883,19 @@ class TestPlanModeWriteGuard(unittest.TestCase):
             )
             self.assertNotIn("blocked by plan mode", r)
             self.assertTrue(os.path.exists(os.path.join(tmpdir, "built.txt")))
-            r = session.execute_tool("Mkdir", {"parent": tmpdir, "name": "sub"}, call_id="b2")
+            r = session.execute_tool(
+                "Write",
+                {
+                    "path": os.path.join(tmpdir, "sub"),
+                    "filename": "nested.txt",
+                    "content": "nested",
+                },
+                call_id="b2",
+            )
             self.assertNotIn("blocked by plan mode", r)
+            # Write creates parent directories, so the subdir lands too.
             self.assertTrue(os.path.isdir(os.path.join(tmpdir, "sub")))
+            self.assertTrue(os.path.exists(os.path.join(tmpdir, "sub", "nested.txt")))
 
 
 class TestToolResultCompleteness(unittest.TestCase):

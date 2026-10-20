@@ -1,6 +1,6 @@
 """Relative tool paths resolve against the session's project dir.
 
-Regression: Read/Edit/Insert/Write/Mkdir/Grep/Glob used to resolve a
+Regression: Read/Edit/Write/Grep/Glob used to resolve a
 relative path against the PROCESS working directory, while Bash (and
 diffapply) used ``ToolContext.cwd`` (the project dir).  Under
 ``--project`` or after a project switch the two differ, so ``Read
@@ -24,7 +24,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 from python_agent_harness.session.session import Session
-from python_agent_harness.tools import Edit, GlobTool, Grep, Insert, Mkdir, Read, Write
+from python_agent_harness.tools import Edit, GlobTool, Grep, Read, Write
 from python_agent_harness.tools.base import ToolContext, resolve_path
 from tests.support import session_sandbox  # noqa: F401,E402  (side-effect: redirect SESSION_DIR)
 
@@ -75,28 +75,11 @@ class TestProjectRelativePaths(unittest.TestCase):
         self.assertEqual(self._read(self.project), "edited\n")
         self.assertEqual(self._read(self.elsewhere), "elsewhere\n")
 
-    def test_insert(self) -> None:
-        out = Insert().run({"path": "f.txt", "line_number": 0, "new_str": "top"}, self.ctx)
-        self.assertNotIn("Error", out)
-        self.assertEqual(self._read(self.project), "top\nproject\n")
-        self.assertEqual(self._read(self.elsewhere), "elsewhere\n")
-
     def test_write(self) -> None:
         out = Write().run({"path": ".", "filename": "new.txt", "content": "x\n"}, self.ctx)
         self.assertNotIn("Error", out)
         self.assertTrue(os.path.isfile(os.path.join(self.project, "new.txt")))
         self.assertFalse(os.path.exists(os.path.join(self.elsewhere, "new.txt")))
-
-    def test_mkdir(self) -> None:
-        Mkdir().run({"parent": ".", "name": "sub"}, self.ctx)
-        self.assertTrue(os.path.isdir(os.path.join(self.project, "sub")))
-        self.assertFalse(os.path.exists(os.path.join(self.elsewhere, "sub")))
-
-    def test_mkdir_name_is_literal(self) -> None:
-        """Only ``parent`` is ~-expanded: a NAME of "~" is a literal dir
-        in the project, not a no-op on $HOME."""
-        Mkdir().run({"parent": "", "name": "~"}, self.ctx)
-        self.assertTrue(os.path.isdir(os.path.join(self.project, "~")))
 
     def test_grep(self) -> None:
         """Run under every available non-git backend: CI runners may lack
@@ -131,17 +114,11 @@ class TestProjectRelativePaths(unittest.TestCase):
         expected = os.path.join(self.project, "f.txt")
         for name, args in (
             ("Edit", {"path": "f.txt"}),
-            ("Insert", {"path": "f.txt"}),
             ("Write", {"path": ".", "filename": "f.txt"}),
             ("Write", {"path": "f.txt", "filename": ""}),
-            ("Mkdir", {"parent": ".", "name": "f.txt"}),
         ):
             with self.subTest(name=name, args=args):
                 self.assertEqual(Session._tool_path(stub, name, args), expected)
-        self.assertEqual(
-            Session._tool_path(stub, "Mkdir", {"parent": "", "name": "~"}),
-            os.path.join(self.project, "~"),
-        )
 
 
 class TestBashReaderCrashKillsGroup(unittest.TestCase):

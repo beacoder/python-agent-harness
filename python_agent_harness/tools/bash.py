@@ -217,6 +217,8 @@ class Bash(Tool):
 - Commands that truly require shell execution
 - Running builds, tests, or development servers
 - System administration tasks
+- Creating empty directories: use `mkdir -p <path>` (idempotent; `Write`
+  already creates parent directories for any file it writes)
 
 **When NOT to use `Bash`:**
 - File operations → use `Read`, `Write`, `Edit`, `Glob`, `Grep` instead

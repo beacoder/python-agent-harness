@@ -564,8 +564,8 @@ class TestToolInstructions(unittest.TestCase):
 
     def test_default_tool_has_empty_instructions(self):
         """The base Tool class defaults instructions to empty string."""
-        # PlanExit and Mkdir don't have per-tool instructions in the
-        # prompt template, so they keep the empty default
+        # PlanExit doesn't have per-tool instructions in the
+        # prompt template, so it keeps the empty default
         self.assertEqual(PlanExit().instructions, "")
 
     def test_registry_tool_instructions_returns_non_empty(self):
@@ -590,7 +590,6 @@ class TestToolInstructions(unittest.TestCase):
             "Glob",
             "Grep",
             "Read",
-            "Insert",
             "Bash",
             "Edit",
             "Write",
@@ -599,13 +598,13 @@ class TestToolInstructions(unittest.TestCase):
         self.assertEqual(set(ti.keys()), expected)
 
     def test_registry_tool_instructions_excludes_empty(self):
-        """Tools without instructions (Mkdir, Question, PlanExit) must
+        """Tools without instructions (Question, PlanExit) must
         not appear in the tool_instructions dict."""
         from python_agent_harness.tools import default_registry
 
         reg = default_registry()
         ti = reg.tool_instructions()
-        for name in ("Mkdir", "Question", "PlanExit"):
+        for name in ("Question", "PlanExit"):
             self.assertNotIn(name, ti)
 
     def test_registry_tool_instructions_names_filter(self):

@@ -9,7 +9,7 @@ from .base import PendingToolResult, Registry, Tool, ToolContext
 from .bash import Bash
 from .edit import Edit
 from .edit_mac import EditMac
-from .filesystem import GlobTool, Grep, Insert, Mkdir, Read, Write
+from .filesystem import GlobTool, Grep, Read, Write
 from .glob_mac import GlobMac
 from .grep_mac import GrepMac
 from .mcp import MCPTool, mcp_tools_from_manager, normalize_mcp_result
@@ -31,9 +31,7 @@ __all__ = [
     "GlobTool",
     "Grep",
     "GrepMac",
-    "Insert",
     "MCPTool",
-    "Mkdir",
     "PlanExit",
     "Question",
     "Read",
@@ -61,10 +59,8 @@ def default_registry() -> Registry:
         glob_tool,
         grep_tool,
         Read(),
-        Insert(),
         edit_tool,
         Write(),
-        Mkdir(),
         bash_tool,
         Skill(),
         Question(),

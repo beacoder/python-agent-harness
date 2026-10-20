@@ -98,7 +98,10 @@ class Edit(Tool):
         "fenced code block).\n"
         "- The file paths within the diff (e.g. '--- a/filename' "
         "'+++ b/filename') must be appropriate for the `path`.\n\n"
-        'To simply insert text at some line, use the "Insert" tool instead.'
+        "To insert text at a specific point, use string-replacement mode: "
+        "match a unique nearby line as `old_str` and include it plus the new "
+        "text in `new_str`.  To add content to a brand-new or empty file, use "
+        'the "Write" tool instead.'
     )
     parameters = {
         "type": "object",

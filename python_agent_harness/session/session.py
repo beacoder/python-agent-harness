@@ -370,7 +370,7 @@ class Session:
         # write_file/create_directory), so plan mode stays read-only
         # by refusing every mcp__ tool.
         if self.plan_mode.is_plan and (
-            name in ("Write", "Edit", "Insert", "Mkdir", "Bash") or name.startswith("mcp__")
+            name in ("Write", "Edit", "Bash") or name.startswith("mcp__")
         ):
             blocked = self._plan_blocked(name, args)
             if blocked:
@@ -467,16 +467,8 @@ class Session:
                 ),
                 self.project_dir,
             )
-        if name in ("Edit", "Insert"):
+        if name == "Edit":
             return resolve_path(str(args.get("path", "")), self.project_dir)
-        if name == "Mkdir":
-            # Mirrors Mkdir.run: only the parent is ~-expanded.
-            return os.path.realpath(
-                os.path.join(
-                    resolve_path(str(args.get("parent", "")), self.project_dir),
-                    str(args.get("name", "")),
-                )
-            )
         return None
 
     # ------------------------------------------------------------------

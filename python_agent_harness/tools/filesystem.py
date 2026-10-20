@@ -5,7 +5,7 @@ tools — atomic file replacement (``atomic_write_text``), spooling
 oversized tool results to temp files (`gptel-agent--truncate-buffer`
 parity), git-root detection, and the ``natnump`` predicate — and
 re-exports the tool classes that live in per-tool modules (`read.py`,
-`glob.py`, `grep.py`, `edit.py`, `write.py`, `insert.py`, `mkdir.py`),
+`glob.py`, `grep.py`, `edit.py`, `write.py`),
 so existing imports such as ``from .tools.filesystem import Read``
 keep working.
 
@@ -19,7 +19,7 @@ NOTE: these filesystem tools are intentionally SYNCHRONOUS.  Only Bash
 and Agent are `:async t` in gptel-agent; sync tools run one at a time in
 the model-emitted order.  Do NOT be tempted to port every tool to async
 for parallelism: tools can depend on one another's side effects within a
-single round (e.g. Write/Mkdir then Read/Edit the same path, or Edit then
+single round (e.g. Write then Read/Edit the same path, or Edit then
 Grep the just-changed file).  Running them concurrently would introduce
 read-after-write races and non-deterministic results.  Keep filesystem
 tools synchronous so ordering — and therefore correctness — is preserved.
@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import re
 import shutil  # noqa: F401  (mock target for tests)
 import stat
 import subprocess  # noqa: F401  (mock target for tests)
@@ -42,7 +41,6 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TypeGuard
 
@@ -138,90 +136,6 @@ def _natnump(n: object) -> TypeGuard[int]:
     return isinstance(n, int) and not isinstance(n, bool) and n >= 0
 
 
-def _glob_to_regex(pattern: str) -> str:
-    """Translate a pathlib-style glob pattern into a :mod:`re` pattern.
-
-    Follows :mod:`fnmatch` conventions with two deliberate deviations:
-    ``*`` does not cross path separators (unlike :func:`fnmatch.fnmatch`)
-    and ``**`` matches any number of directories (including none).  A
-    pattern without any glob metacharacters is escaped, so plain names
-    match exactly.
-    """
-    i, n = 0, len(pattern)
-    out: list[str] = []
-    while i < n:
-        c = pattern[i]
-        if c == "*":
-            if pattern[i : i + 2] == "**":
-                i += 2
-                if pattern[i : i + 1] == "/":
-                    i += 1
-                out.append("(?:.*/)?")
-                continue
-            out.append("[^/]*")
-            i += 1
-        elif c == "?":
-            out.append("[^/]")
-            i += 1
-        elif c == "[":
-            end = _find_glob_class_end(pattern, i)
-            if end is None:
-                out.append(re.escape(c))
-                i += 1
-            else:
-                # The class body is regex-compatible as-is (\], \\, ranges,
-                # and member brackets mean the same thing in both dialects);
-                # only the negation sigil differs (! -> ^).
-                body = pattern[i + 1 : end]
-                if body.startswith("!"):
-                    body = "^" + body[1:]
-                out.append("[" + body + "]")
-                i = end + 1
-        else:
-            out.append(re.escape(c))
-            i += 1
-    return "".join(out)
-
-
-def _find_glob_class_end(pattern: str, start: int) -> int | None:
-    """Index of the ``]`` closing the char class opened at ``start``.
-
-    Mirrors glob semantics: a ``]`` immediately after ``[`` (or ``[!``)
-    is a literal bracket, and backslash escapes are honoured.
-    """
-    i = start + 1
-    if i < len(pattern) and pattern[i] == "!":
-        i += 1
-    if i < len(pattern) and pattern[i] == "]":
-        i += 1
-    while i < len(pattern):
-        if pattern[i] == "\\" and i + 1 < len(pattern):
-            i += 2
-        elif pattern[i] == "]":
-            return i
-        else:
-            i += 1
-    return None
-
-
-def _walk_files(root: Path, onerror: Callable[[OSError], object] | None = None) -> Iterator[Path]:
-    """Depth-first file iterator that never raises on traversal errors.
-
-    Wraps :func:`os.walk` with ``onerror`` so unreadable directories are
-    reported instead of silently swallowed, and wraps the whole iteration
-    in a try/except so a scan that dies mid-flight still yields the
-    entries collected so far (mirroring the 3.13+ ``pathlib`` scan
-    behaviour on every supported version).
-    """
-    try:
-        for dirpath, _dirnames, filenames in os.walk(root, onerror=onerror, followlinks=False):
-            for name in filenames:
-                yield Path(dirpath) / name
-    except OSError as e:
-        if onerror is not None:
-            onerror(e)
-
-
 def _git_root(path: str) -> str | None:
     d = Path(path).resolve()
     for parent in [d, *d.parents]:
@@ -236,11 +150,11 @@ def atomic_write_text(path: str, content: str) -> None:
     """Replace PATH's contents with CONTENT atomically.
 
     THE single write path for every tool that rewrites a file (``Edit``,
-    ``Insert``, ``Write``, and the pure-Python diff applier), so the four
+    ``Write``, and the pure-Python diff applier), so the three
     callers cannot drift apart.  It lives in this module with the other
-    shared helpers, and the four callers import it LAZILY (inside the
+    shared helpers, and the three callers import it LAZILY (inside the
     method that writes) rather than at module level, because this module
-    re-imports ``edit``/``write``/``insert``/``diffapply`` at its bottom
+    re-imports ``edit``/``write``/``diffapply`` at its bottom
     for the compatibility re-exports: a module-level import here would
     close the cycle on a half-initialised module (``tools/__init__``
     loads ``edit`` first, whose import of this module would then ask the
@@ -286,7 +200,7 @@ def atomic_write_text(path: str, content: str) -> None:
     - PATH must already be symlink-resolved.  ``os.replace`` onto a
       symlink overwrites the LINK with a regular file, where an in-place
       write would have followed it.  Every caller resolves the real path
-      first (``Edit``/``Insert``/``Write`` via ``os.path.realpath`` on
+      first (``Edit``/``Write`` via ``os.path.realpath`` on
       entry, ``_apply_section`` on its resolved target).
     - Hard links are broken: the new content lands on a new inode, so
       other links to the old inode keep the old content.
@@ -332,8 +246,6 @@ from .glob import GlobTool, _git_glob_results  # noqa: E402
 from .glob_mac import GlobMac  # noqa: E402
 from .grep import Grep, _grep_out  # noqa: E402
 from .grep_mac import GrepMac  # noqa: E402
-from .insert import Insert  # noqa: E402
-from .mkdir import Mkdir  # noqa: E402
 from .read import Read  # noqa: E402
 from .write import Write  # noqa: E402
 # isort: on
@@ -344,8 +256,6 @@ __all__ = [
     "GlobTool",
     "Grep",
     "GrepMac",
-    "Insert",
-    "Mkdir",
     "Read",
     "Write",
     "MAX_OUTPUT",

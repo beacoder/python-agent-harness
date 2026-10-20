@@ -167,16 +167,6 @@ class TestPlanModeGuard(unittest.TestCase):
         self.assertIn("a", result1)
         self.assertIn("b.py", result1)
 
-        result2 = session._tool_path("Insert", {"path": "/a/c.py"})
-        self.assertIsNotNone(result2)
-        self.assertIn("a", result2)
-        self.assertIn("c.py", result2)
-
-        result3 = session._tool_path("Mkdir", {"parent": "/a", "name": "d"})
-        self.assertIsNotNone(result3)
-        self.assertIn("a", result3)
-        self.assertIn("d", result3)
-
         self.assertIsNone(session._tool_path("Read", {"path": "/x"}))
 
 

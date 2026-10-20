@@ -3,9 +3,7 @@ name: reviewer
 exclude_tools:
   - Bash
   - Edit
-  - Insert
   - Write
-  - Mkdir
 ---
 
 # Role and Behavior
