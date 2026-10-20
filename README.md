@@ -177,7 +177,7 @@ Most of [opencode](https://github.com/anomalyco/opencode)'s prompts and core beh
 | `shell.txt` | `Bash` tool + `agent.md` Git/GitHub guidance |
 | `plan-enter.txt` / `plan-exit.txt` | `PlanExit` tool |
 | `initialize.txt` / `review.txt` / `explain` | `initialize.md` / `review.md` / `commands/explain.md` |
-| compaction / summary / title | `compact.md` / `summary.md` / `title.md` |
+| `compaction` / `summary` / `title` | `compact.md` / `summary.md` / `title.md` |
 | `AGENTS.md` handling | `prompts.py` (`find_agents_md_files`, `load_context_files`) |
 
 ## Development
