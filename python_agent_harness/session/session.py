@@ -195,6 +195,10 @@ class Session:
         self.todos: list[dict] = []
         self.pending_user_prompts: list[str] = []
         self._save_error: str | None = None
+        # auto_save debounce state (see config.AUTO_SAVE_*): the last
+        # successful save's wall time and conversation length
+        self._last_save_at: float | None = None
+        self._last_save_len: int = 0
         self.last_messages: list = []
         self.cancel_event = threading.Event()
         # Named LLM profiles for runtime switching via /model command
@@ -680,6 +684,39 @@ class Session:
     def auto_save(self, messages: list, system: str | None) -> None:
         if not config.AUTO_SAVE_SESSION:
             return
+        # Debounce the full-conversation rewrite: auto_save runs after
+        # every round, but the file only needs refreshing when enough
+        # time has passed AND the conversation grew.  The growth check
+        # is on the message count (cheap) before the expensive
+        # _conversation_text serialization.
+        now = time.monotonic()
+        # getattr: test doubles built via __new__ skip __init__ and never
+        # set the debounce state; treat a missing state as "never saved".
+        last = getattr(self, "_last_save_at", None)
+        if last is not None:
+            elapsed = now - last
+            grew = (
+                len(messages) - getattr(self, "_last_save_len", 0)
+                >= config.AUTO_SAVE_MIN_GROWTH_MSGS
+            )
+            # skip while inside the min interval and the conversation has
+            # not grown enough; a big round (grew) or the interval
+            # elapsing forces a save
+            if elapsed < config.AUTO_SAVE_MIN_INTERVAL and not grew:
+                return
+        self._do_save(messages)
+
+    def flush_auto_save(self, messages: list) -> None:
+        """Save immediately, bypassing the auto_save debounce.
+
+        Called at run end / cancel / compaction, where the conversation
+        must reach the session file regardless of the debounce window.
+        """
+        if not config.AUTO_SAVE_SESSION:
+            return
+        self._do_save(messages)
+
+    def _do_save(self, messages: list) -> None:
         text = self._conversation_text(messages)
         # retry once: transient failures (NFS hiccup, brief lock) clear
         # on the second attempt; permanent ones (disk full, read-only)
@@ -689,6 +726,8 @@ class Session:
             try:
                 self.store.save(text)
                 self._save_error = None
+                self._last_save_at = time.monotonic()
+                self._last_save_len = len(messages)
                 return
             except (OSError, UnicodeError) as e:
                 # UnicodeError too: a save failure must never escape into
@@ -983,7 +1022,7 @@ class Session:
             # preserved verbatim after the frame, so the model keeps
             # the actual requests.
             self.last_messages = compacted_messages(summary, user_prompt_texts(messages))
-            self.auto_save(self.last_messages, self.system_prompt)
+            self.flush_auto_save(self.last_messages)
             self.notify("compact")
             return True, "Session compacted successfully."
         except Exception as e:  # noqa: BLE001 - compaction failure is non-fatal
@@ -1019,7 +1058,7 @@ class Session:
         if not summary:
             return "Summary failed: empty response."
         self.last_messages.append(Msg(role="assistant", content=summary))
-        self.auto_save(self.last_messages, self.system_prompt)
+        self.flush_auto_save(self.last_messages)
         return "Summary appended."
 
 

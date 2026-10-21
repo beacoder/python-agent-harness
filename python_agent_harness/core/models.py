@@ -69,6 +69,16 @@ class ImagePart:
     path: str | None = None
     url: str | None = None
 
+    def __post_init__(self) -> None:
+        # to_api() runs on every round (token estimation + API payload),
+        # so the base64 data URL is encoded once, not per call.
+        self._data_url: str | None = None
+        if self.data is not None:
+            self._data_url = (
+                f"data:{self.media_type};base64,"
+                f"{base64.b64encode(self.data).decode('ascii')}"
+            )
+
     @classmethod
     def from_url(cls, url: str) -> ImagePart:
         return cls(url=url)
@@ -76,13 +86,9 @@ class ImagePart:
     def to_api(self) -> dict[str, Any]:
         if self.url:
             return {"type": "image_url", "image_url": {"url": self.url}}
-        if self.data is None:
+        if self._data_url is None:
             raise ValueError("ImagePart requires either data or url")
-        b64 = base64.b64encode(self.data).decode("ascii")
-        return {
-            "type": "image_url",
-            "image_url": {"url": f"data:{self.media_type};base64,{b64}"},
-        }
+        return {"type": "image_url", "image_url": {"url": self._data_url}}
 
 
 # Type alias for the individual parts a Message.content list may contain.
@@ -155,6 +161,11 @@ class Message:
     injected: bool = False  # harness-injected (nudge/plan/build-switch), not user input
 
     def to_api(self) -> dict[str, Any]:
+        # Not cached: the per-message dict is cheap to rebuild and
+        # caching it (returning the same object each call) would make a
+        # mutation by any caller corrupt later rounds and token
+        # estimation.  The one expensive step — base64-encoding an image
+        # — is cached on ``ImagePart`` instead (see ImagePart.__post_init__).
         d: dict[str, Any] = {"role": self.role}
         if self.content is not None:
             content = self._api_content()

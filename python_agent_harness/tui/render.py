@@ -75,6 +75,17 @@ def sanitize_terminal(text: str) -> str:
     return _TERMINAL_CONTROL.sub("", api_safe(text))
 
 
+# Characters sanitize_terminal would change: any C0/C1 control except
+# tab/newline, or a lone surrogate.  A cheap pre-check lets callers skip
+# the full regex pass on the common (clean) case.
+_NEEDS_SANITIZE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ud800-\udfff]")
+
+
+def needs_sanitize(text: str) -> bool:
+    """Whether sanitize_terminal would change TEXT (cheap pre-check)."""
+    return _NEEDS_SANITIZE.search(text) is not None
+
+
 def safe_markup(value: object) -> str:
     """VALUE made safe to embed in a Rich markup string.
 
@@ -355,12 +366,24 @@ class RenderMixin:
         """Live stream row (cheap Text, tail-capped)."""
         with self.lock:
             stream = self.stream_text
-        stream = _strip_final_check(sanitize_terminal(stream))
-        if not stream:
-            return None
         cap = self._visible_row_cap()
         width = getattr(self.console, "width", None) or 80
         lines = max(3, cap - 3)
+        # Sanitize BEFORE stripping: a control sequence inside the
+        # [FINAL CHECK] header ("[FINAL\x1b[0m CHECK]") would otherwise
+        # defeat the header match and leak the block.  The full-buffer
+        # sanitize is skipped when the text is already clean (the common
+        # case), so the expensive regex pass only runs when needed.
+        if needs_sanitize(stream):
+            stream = sanitize_terminal(stream)
+        # Strip on the FULL buffer: the header can sit arbitrarily far
+        # before the tail, so windowing first would leak the block.
+        stream = _strip_final_check(stream)
+        window = max(lines * max(1, width) * 2, 8192)
+        if len(stream) > window:
+            stream = stream[-window:]
+        if not stream:
+            return None
         preview = _tail_lines(stream, lines)
         preview = _tail_chars(preview, lines * max(1, width))
         row = Text(f"assistant: {preview}", style=ASSISTANT_STYLE)

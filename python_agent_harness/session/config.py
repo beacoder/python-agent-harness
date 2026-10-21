@@ -53,6 +53,14 @@ CALIBRATION_MAX = 3.0
 SESSION_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 SESSION_SUBDIR = "python-agent-harness/sessions"
 AUTO_SAVE_SESSION = True
+# auto_save is called after every round; the full-conversation rewrite is
+# debounced so a long run does not rewrite the whole file each round.
+# A save is skipped while fewer than AUTO_SAVE_MIN_INTERVAL seconds have
+# passed since the last one AND the message count has not grown by
+# AUTO_SAVE_MIN_GROWTH_MSGS.  flush_auto_save() bypasses the debounce
+# (run end, cancel, compaction).
+AUTO_SAVE_MIN_INTERVAL = 2.0
+AUTO_SAVE_MIN_GROWTH_MSGS = 8
 
 # ---- LLM interaction logs ---------------------------------------------------
 LLM_LOG_ENABLED = False

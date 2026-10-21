@@ -428,6 +428,42 @@ class TestTuiRender(unittest.TestCase):
         row = tui._stream_row()
         self.assertIsNone(row)
 
+    def test_stream_final_check_longer_than_window_hidden(self):
+        """A [FINAL CHECK] block whose header sits further back than the
+        sanitize window must still be stripped: the strip runs on the
+        full buffer, only the sanitize is windowed.  Windowing first
+        leaked the block's content (the header fell outside the window)."""
+        tui, _ = make_tui()
+        block = (
+            "[FINAL CHECK]\n"
+            + ("- Goal: " + "x" * 100 + "\n") * 200
+            + "- Status: SUCCESS\n- Evidence: y"
+        )
+        tui.stream_text = "answer text\n\n" + block
+        row = tui._stream_row()
+        self.assertIsNotNone(row)
+        self.assertIn("answer text", row.plain)
+        self.assertNotIn("FINAL CHECK", row.plain)
+        self.assertNotIn("Status: SUCCESS", row.plain)
+        self.assertNotIn("Evidence:", row.plain)
+
+    def test_stream_final_check_with_escape_in_header_hidden(self):
+        """A control sequence inside the [FINAL CHECK] header must not
+        defeat the strip: sanitize runs BEFORE the strip, so the header
+        matches.  Stripping first leaked the block (the escape broke the
+        header regex)."""
+        tui, _ = make_tui()
+        tui.stream_text = (
+            "answer text\n\n[FINAL\x1b[0m CHECK]\n"
+            "- Goal: x\n- Status: SUCCESS\n- Evidence: y"
+        )
+        row = tui._stream_row()
+        self.assertIsNotNone(row)
+        self.assertIn("answer text", row.plain)
+        self.assertNotIn("FINAL CHECK", row.plain)
+        self.assertNotIn("Status: SUCCESS", row.plain)
+        self.assertNotIn("Evidence:", row.plain)
+
     def test_reasoning_streams_normally(self):
         """While streaming, reasoning content shows up live like any
         other text — the collapse only happens in the final history."""

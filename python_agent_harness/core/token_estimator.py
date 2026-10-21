@@ -45,7 +45,10 @@ def estimate_tokens(text: str) -> int:
     """Estimate tokens in TEXT: Latin ~4 chars/token, CJK ~2 chars/token."""
     if not text:
         return 0
-    cjk = len(_CJK_RE.findall(text))
+    # subn counts CJK chars in one C-speed pass without allocating the
+    # per-match list findall would build (this runs on the full payload
+    # every round).
+    cjk = _CJK_RE.subn("", text)[1]
     latin = len(text) - cjk
     return round(latin / 4.0 + cjk / 2.0)
 

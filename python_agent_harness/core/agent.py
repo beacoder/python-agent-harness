@@ -471,8 +471,9 @@ class AgentLoop:
                     # after successful responses, so without this the
                     # interrupted turn would never reach the session
                     # file — the next turn's save would overwrite it
-                    # without ever containing it.
-                    session.auto_save(salvaged, self.system)
+                    # without ever containing it.  flush bypasses the
+                    # debounce so the partial turn is not lost.
+                    session.flush_auto_save(salvaged)
                     # The title is generated on the first save, not
                     # only on clean completion — an interrupted session
                     # still gets a meaningful name (one-shot; no-op when
@@ -484,6 +485,9 @@ class AgentLoop:
                     # no-op when the title already exists or generation
                     # is in flight)
                     session.generate_session_title()
+                    # The per-round auto_save is debounced; flush at run
+                    # end so the final state always reaches the file.
+                    session.flush_auto_save(salvaged)
         return self.result
 
     def _next_state(self) -> str:
