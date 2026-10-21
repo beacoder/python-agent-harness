@@ -75,8 +75,7 @@ class ImagePart:
         self._data_url: str | None = None
         if self.data is not None:
             self._data_url = (
-                f"data:{self.media_type};base64,"
-                f"{base64.b64encode(self.data).decode('ascii')}"
+                f"data:{self.media_type};base64,{base64.b64encode(self.data).decode('ascii')}"
             )
 
     @classmethod

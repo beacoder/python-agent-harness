@@ -454,8 +454,7 @@ class TestTuiRender(unittest.TestCase):
         header regex)."""
         tui, _ = make_tui()
         tui.stream_text = (
-            "answer text\n\n[FINAL\x1b[0m CHECK]\n"
-            "- Goal: x\n- Status: SUCCESS\n- Evidence: y"
+            "answer text\n\n[FINAL\x1b[0m CHECK]\n- Goal: x\n- Status: SUCCESS\n- Evidence: y"
         )
         row = tui._stream_row()
         self.assertIsNotNone(row)
