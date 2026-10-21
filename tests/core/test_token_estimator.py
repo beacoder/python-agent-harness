@@ -39,6 +39,40 @@ class TestTokenizer(unittest.TestCase):
         # mixed: 8 latin (2 tok) + 2 cjk (1 tok)
         self.assertEqual(estimate_tokens("abcdefgh中文"), 3)
 
+    def test_estimate_tokens_matches_findall_reference(self):
+        """The subn() fast path must be a pure optimization: every sample
+        keeps the estimate the findall() implementation it replaced
+        produced (mixed scripts, emoji, whitespace, astral ideographs)."""
+        from python_agent_harness.core.token_estimator import _CJK_RE
+
+        def reference(text: str) -> int:
+            if not text:
+                return 0
+            cjk = len(_CJK_RE.findall(text))
+            return round((len(text) - cjk) / 4.0 + cjk / 2.0)
+
+        samples = [
+            "",
+            "hello world",
+            "中文",
+            "abcdefgh中文",
+            "日本語 🎉 café",
+            "中" * 1000,
+            "hello" * 1000 + "中文" * 1000,
+            "  \n\t中 文\n",
+            "\uff21\uff22",  # full-width forms
+            "\U00020000",  # extension-B ideograph (surrogate pair)
+        ]
+        for text in samples:
+            with self.subTest(text=text[:16]):
+                self.assertEqual(estimate_tokens(text), reference(text))
+
+    def test_estimate_tokens_counts_every_cjk_char(self):
+        """The count is not just "contains CJK": each of the 100
+        ideographs is billed as a CJK char, not dropped or counted once."""
+        self.assertEqual(estimate_tokens("中" * 100), 50)
+        self.assertEqual(estimate_tokens("a" * 100 + "中" * 100), 75)
+
     def test_context_window_matching(self):
         self.assertEqual(context_window_for("deepseek-v4"), 1_000_000)
         self.assertEqual(context_window_for("deepseek-v4-flash"), 1_000_000)

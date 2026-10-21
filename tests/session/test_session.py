@@ -304,6 +304,113 @@ class TestAutoSaveDisabled(unittest.TestCase):
             session.auto_save([Message(role="user", content="hi")], None)
         save.assert_not_called()
 
+    def test_flush_skipped_when_disabled(self):
+        """flush_auto_save obeys the master switch too: with auto-save
+        off, run end / cancel must not start writing sessions."""
+        session = RecordingSession()
+        with (
+            mock.patch.object(config, "AUTO_SAVE_SESSION", False),
+            mock.patch.object(session.store, "save") as save,
+        ):
+            session.flush_auto_save([Message(role="user", content="hi")])
+        save.assert_not_called()
+
+
+class TestAutoSaveDebounce(unittest.TestCase):
+    """auto_save rewrites the whole conversation file after every round,
+    so it is debounced (min interval AND min growth); flush_auto_save
+    bypasses the debounce so run end / cancel / compaction always reach
+    disk.  The clock is faked (time.monotonic) — no sleeping in tests."""
+
+    def setUp(self):
+        self.session = RecordingSession()
+        self.clock = 1000.0
+        clock = mock.patch(
+            "python_agent_harness.session.session.time.monotonic",
+            side_effect=lambda: self.clock,
+        )
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    @staticmethod
+    def _msgs(n):
+        return [Message(role="user", content=f"m{i}") for i in range(n)]
+
+    def test_first_save_always_writes(self):
+        """No debounce state yet (first round): the save must happen."""
+        with mock.patch.object(self.session.store, "save") as save:
+            self.session.auto_save(self._msgs(2), None)
+        self.assertEqual(save.call_count, 1)
+        self.assertEqual(self.session._last_save_len, 2)
+
+    def test_same_conversation_inside_interval_skipped(self):
+        """Nothing new and no time passed: the rewrite is skipped."""
+        msgs = self._msgs(4)
+        with mock.patch.object(self.session.store, "save") as save:
+            self.session.auto_save(msgs, None)
+            self.clock += config.AUTO_SAVE_MIN_INTERVAL / 2
+            self.session.auto_save(msgs, None)
+        self.assertEqual(save.call_count, 1)
+
+    def test_save_once_interval_elapsed(self):
+        """The elapsed interval alone forces a save (time-based refresh)."""
+        msgs = self._msgs(4)
+        with mock.patch.object(self.session.store, "save") as save:
+            self.session.auto_save(msgs, None)
+            self.clock += config.AUTO_SAVE_MIN_INTERVAL
+            self.session.auto_save(msgs, None)
+        self.assertEqual(save.call_count, 2)
+
+    def test_growth_forces_save_inside_interval(self):
+        """A big round saves even inside the interval, so a long run
+        cannot lose many messages to the debounce."""
+        msgs = self._msgs(4)
+        with mock.patch.object(self.session.store, "save") as save:
+            self.session.auto_save(msgs, None)
+            self.clock += 0.1
+            self.session.auto_save(msgs + self._msgs(config.AUTO_SAVE_MIN_GROWTH_MSGS), None)
+        self.assertEqual(save.call_count, 2)
+        self.assertEqual(self.session._last_save_len, 4 + config.AUTO_SAVE_MIN_GROWTH_MSGS)
+
+    def test_growth_below_threshold_skipped(self):
+        """Growth just under the threshold does not force a rewrite."""
+        msgs = self._msgs(4)
+        with mock.patch.object(self.session.store, "save") as save:
+            self.session.auto_save(msgs, None)
+            self.clock += 0.1
+            self.session.auto_save(msgs + self._msgs(config.AUTO_SAVE_MIN_GROWTH_MSGS - 1), None)
+        self.assertEqual(save.call_count, 1)
+
+    def test_flush_bypasses_debounce(self):
+        """Run end / cancel: the partial turn must reach the file now."""
+        msgs = self._msgs(4)
+        with mock.patch.object(self.session.store, "save") as save:
+            self.session.auto_save(msgs, None)
+            self.clock += 0.1  # well inside the interval, no growth
+            self.session.flush_auto_save(msgs)
+        self.assertEqual(save.call_count, 2)
+        self.assertEqual(self.session._last_save_len, len(msgs))
+
+    def test_failed_save_does_not_arm_the_debounce(self):
+        """A failed write must not start the interval: the very next
+        round retries instead of being skipped for AUTO_SAVE_MIN_INTERVAL
+        (which is how a whole run used to end up unsaved)."""
+        msgs = self._msgs(4)
+        with (
+            mock.patch("python_agent_harness.session.session.time.sleep"),
+            mock.patch.object(self.session.store, "save", side_effect=OSError("disk full")),
+        ):
+            self.session.auto_save(msgs, None)
+        self.assertIsNone(self.session._last_save_at)
+        self.assertEqual(self.session._last_save_len, 0)
+        self.assertEqual(self.session._save_error, "disk full")
+        # same fake clock, same conversation: the retry still writes
+        with mock.patch.object(self.session.store, "save") as save:
+            self.session.auto_save(msgs, None)
+        self.assertEqual(save.call_count, 1)
+        self.assertIsNone(self.session._save_error)
+        self.assertEqual(self.session._last_save_at, self.clock)
+
 
 class TestTitleGeneration(unittest.TestCase):
     """Session-title generation: reasoning preamble stripped (even when
@@ -707,6 +814,24 @@ class TestCompactConversation(unittest.TestCase):
             ],
         )
 
+    def test_success_flushes_past_the_debounce(self):
+        """Compaction rewrites the whole conversation, so the save must
+        bypass the auto_save debounce — otherwise the compacted history
+        stays only in memory until the interval elapses."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.last_messages = [Message(role="user", content="first")]
+        session.store.title = "T"
+        with mock.patch("python_agent_harness.session.session.time.monotonic", return_value=1000.0):
+            # arm the debounce: a save at t=1000, then no time passes
+            session.auto_save(session.last_messages, None)
+            ok, _ = session.compact_conversation()
+            self.assertTrue(ok)
+        self.assertTrue(session.last_messages[0].text().startswith("**[Compacted Summary]**"))
+        with open(session.store.file_path, encoding="utf-8") as f:
+            saved = f.read()
+        self.assertIn("Compacted Summary", saved)
+
 
 class TestSummarizeConversation(unittest.TestCase):
     """Manual /summary failure paths: empty history, client exceptions,
@@ -739,6 +864,27 @@ class TestSummarizeConversation(unittest.TestCase):
         session.client.chat_sync = chat_sync
         session.last_messages = [Message(role="user", content="hi")]
         self.assertEqual(session.summarize_conversation(), "Summary failed: empty response.")
+
+    def test_success_flushes_past_the_debounce(self):
+        """The appended summary must reach the session file now, not on
+        the next debounce window: /summary is an explicit user request
+        and the run may end right after it."""
+
+        def chat_sync(
+            messages, system=None, temperature=None, max_tokens=None, reasoning_effort=None
+        ):
+            return Message(role="assistant", content="a concise summary"), Usage()
+
+        session = RecordingSession()
+        session.client = FakeClient([])
+        session.client.chat_sync = chat_sync
+        session.last_messages = [Message(role="user", content="hi")]
+        session.store.title = "T"
+        with mock.patch("python_agent_harness.session.session.time.monotonic", return_value=1000.0):
+            session.auto_save(session.last_messages, None)  # arm the debounce
+            self.assertEqual(session.summarize_conversation(), "Summary appended.")
+        with open(session.store.file_path, encoding="utf-8") as f:
+            self.assertIn("a concise summary", f.read())
 
 
 class TestTodos(unittest.TestCase):

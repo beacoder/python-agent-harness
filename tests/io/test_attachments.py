@@ -1,8 +1,10 @@
 """Tests for multimodal content parts, @file parsing, and image serialization."""
 
+import base64
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from python_agent_harness.core.models import ImagePart, Message, TextPart
 from python_agent_harness.io.attachments import parse_at_references
@@ -23,6 +25,32 @@ class TestImagePart(unittest.TestCase):
         self.assertIn("image_url", api)
         url = api["image_url"]["url"]
         self.assertTrue(url.startswith("data:image/png;base64,"))
+
+    def test_image_part_data_url_exact_bytes(self):
+        """The data URL is the prefix and the standard base64 payload
+        joined into one string — nothing (newline, space) in between."""
+        data = b"\x89PNG fake"
+        p = ImagePart(data=data, media_type="image/png")
+        expected = "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+        self.assertEqual(p.to_api()["image_url"]["url"], expected)
+
+    def test_image_part_media_type_reaches_the_url(self):
+        """The part's own media_type is used, not a hardcoded image/png."""
+        p = ImagePart(data=b"\xff\xd8", media_type="image/jpeg")
+        self.assertTrue(p.to_api()["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+
+    def test_image_part_encodes_once_across_to_api_calls(self):
+        """to_api() runs every round (API payload + token estimation), so
+        the base64 encoding happens once at construction and later calls
+        return the cached string verbatim instead of re-encoding."""
+        data = b"\x89PNG" + b"\x00" * 10_000
+        with mock.patch.object(base64, "b64encode", wraps=base64.b64encode) as enc:
+            p = ImagePart(data=data, media_type="image/png")
+            first = p.to_api()["image_url"]["url"]
+            second = p.to_api()["image_url"]["url"]
+        self.assertEqual(enc.call_count, 1)  # once, not per to_api() call
+        self.assertIs(first, second)  # the same cached string object
+        self.assertEqual(first, "data:image/png;base64," + base64.b64encode(data).decode("ascii"))
 
     def test_image_part_default_media_type(self):
         p = ImagePart(data=b"x")

@@ -211,6 +211,31 @@ class TestScenarioSimple(unittest.TestCase):
         self.assertEqual(loop.history, [AgentLoop.WAIT, AgentLoop.SUPERVISE])
 
 
+class TestScenarioRunEndFlush(unittest.TestCase):
+    """The per-round auto_save is debounced (min interval AND min growth),
+    so the run end has to flush: otherwise a fast run never persists its
+    last turn — the next turn's save would overwrite the file without it.
+    The clock is frozen, so only the run-end flush can write."""
+
+    def test_final_turn_reaches_the_session_file(self):
+        session = ScenarioSession()
+        session.tools_enabled = False
+        session.store.title = "Flush"  # skip the LLM title request
+        session.client.script = ["the final answer"]
+        loop = AgentLoop(session, messages=[Message(role="user", content="do the thing")])
+        with mock.patch("python_agent_harness.session.session.time.monotonic", return_value=1000.0):
+            # arm the debounce: the first auto_save writes at t=1000 and
+            # records only the prompt, so every later round is skipped
+            session.auto_save(loop.messages, None)
+            self.assertEqual(loop.run(), "the final answer")
+        path = session.store.file_path
+        self.assertTrue(path)
+        with open(path, encoding="utf-8", errors="surrogateescape") as f:
+            saved = f.read()
+        self.assertIn("do the thing", saved)
+        self.assertIn("the final answer", saved)
+
+
 class TestScenarioToolFailure(unittest.TestCase):
     def test_tool_failure_then_recovery(self):
         """tool failure -> recovery: a crashing tool becomes an error
@@ -283,6 +308,39 @@ class TestScenarioNudging(unittest.TestCase):
 
 
 class TestScenarioCancellation(unittest.TestCase):
+    def test_cancelled_turn_is_flushed_to_the_session_file(self):
+        """A cancelled run must persist its salvaged partial turn NOW:
+        auto-save only runs after successful responses, and it is
+        debounced, so without the flush the interrupted turn never
+        reaches the file and the next turn's save overwrites it without
+        ever containing it.  The clock is frozen inside the debounce
+        window, so only the cancel-path flush can produce a second
+        write."""
+        session = ScenarioSession()
+        session.tools_enabled = False
+        session.store.title = "Cancel"
+        writes = []
+        real_save = session.store.save
+        session.store.save = lambda text: writes.append(text) or real_save(text)
+        blocker = BlockingClient()
+        session.client = blocker
+        loop = AgentLoop(session, messages=[Message(role="user", content="interrupted work")])
+        with mock.patch("python_agent_harness.session.session.time.monotonic", return_value=1000.0):
+            # arm the debounce: the first auto_save writes at t=1000, so
+            # every later round inside the window is skipped
+            session.auto_save(loop.messages, None)
+            self.assertEqual(len(writes), 1)
+            t, _ = run_in_thread(loop)
+            self.assertTrue(blocker.started.wait(timeout=5))
+            time.sleep(0.2)
+            session.cancel()
+            t.join(timeout=5)
+            self.assertFalse(t.is_alive())
+        self.assertEqual(len(writes), 2, "the cancelled turn never reached the session file")
+        self.assertIn("interrupted work", writes[-1])
+        with open(session.store.file_path, encoding="utf-8") as f:
+            self.assertIn("interrupted work", f.read())
+
     def test_ctrl_c_during_llm_request(self):
         """Ctrl-C during the LLM request: the run stops cleanly (None,
         not an error), the client is aborted, and the partial history

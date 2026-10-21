@@ -463,6 +463,67 @@ class TestTuiRender(unittest.TestCase):
         self.assertNotIn("Status: SUCCESS", row.plain)
         self.assertNotIn("Evidence:", row.plain)
 
+    def test_needs_sanitize_precheck_agrees_with_sanitizer(self):
+        """_stream_row skips the full sanitize pass when needs_sanitize
+        says the text is clean.  If the two ever disagree in the unsafe
+        direction (False, yet the sanitizer would change the text), a
+        control sequence or lone surrogate reaches the terminal — the
+        bug class that killed the TUI (see the surrogate test below)."""
+        from python_agent_harness.tui.render import needs_sanitize, sanitize_terminal
+
+        for cp in list(range(0x00, 0x300)) + [0x7F, 0x9B, 0x200B, 0x2FFF, 0x1F389, 0x20000]:
+            ch = chr(cp)
+            with self.subTest(cp=f"U+{cp:04X}"):
+                self.assertEqual(
+                    needs_sanitize(ch),
+                    sanitize_terminal(ch) != ch,
+                    f"pre-check disagrees with the sanitizer for U+{cp:04X}",
+                )
+
+    def test_needs_sanitize_handles_escape_sequences_and_surrogates(self):
+        """Whole sequences (not just single chars) and lone surrogates are
+        flagged; plain prose, tabs and newlines are not."""
+        from python_agent_harness.tui.render import needs_sanitize
+
+        for text in (
+            "\x1b[0m",
+            "\x1b]0;title\x07",
+            "\x1b]52;c;ZGF0YQ==\x1b\\",
+            "\x9b0m",
+            "cr\rhere",
+            "caf\udce9",
+        ):
+            with self.subTest(text=repr(text)):
+                self.assertTrue(needs_sanitize(text))
+        for text in ("plain answer", "tab\there", "line\nbreak", "日本語 🎉", ""):
+            with self.subTest(text=repr(text)):
+                self.assertFalse(needs_sanitize(text))
+
+    def test_stream_row_skips_sanitize_only_for_clean_text(self):
+        """The pre-check must actually gate the pass: clean text never runs
+        the sanitizer, dirty text always does."""
+        from unittest import mock
+
+        from python_agent_harness.tui.render import sanitize_terminal
+
+        tui, _ = make_tui()
+        tui.stream_text = "clean answer text"
+        with mock.patch(
+            "python_agent_harness.tui.render.sanitize_terminal", wraps=sanitize_terminal
+        ) as san:
+            row = tui._stream_row()
+        self.assertEqual(san.call_count, 0)
+        self.assertIn("clean answer text", row.plain)
+
+        tui.stream_text = "dirty\x1b[31manswer"
+        with mock.patch(
+            "python_agent_harness.tui.render.sanitize_terminal", wraps=sanitize_terminal
+        ) as san:
+            row = tui._stream_row()
+        self.assertEqual(san.call_count, 1)
+        self.assertNotIn("\x1b[31m", row.plain)
+        self.assertIn("dirtyanswer", row.plain)
+
     def test_reasoning_streams_normally(self):
         """While streaming, reasoning content shows up live like any
         other text — the collapse only happens in the final history."""
