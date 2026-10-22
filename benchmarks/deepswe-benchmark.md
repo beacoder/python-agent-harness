@@ -47,11 +47,12 @@ The file [`deepswe_adapter.py`](./deepswe_adapter.py) implements the `BaseAgent`
 ```python
 from pier.agents.installed.base import BaseInstalledAgent
 
+
 class PythonAgentHarness(BaseInstalledAgent):
     async def setup(self, environment):
         # Install python-agent-harness and configure LLM
         pass
-    
+
     async def run(self, instruction, environment, context):
         # Run headless mode and capture output
         pass
