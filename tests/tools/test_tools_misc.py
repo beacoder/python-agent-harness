@@ -705,8 +705,11 @@ class TestBashEnvScrubbing(unittest.TestCase):
             with mock.patch.dict(os.environ, {**self.SECRETS, "SAFE_VAR": "visible"}):
                 out = Bash().run({"command": "env"}, ToolContext(sess)).wait()
         self.assertIn("SAFE_VAR=visible", out)
+        # compare names line-wise: a substring check would false-positive
+        # on e.g. GITHUB_PATH when GITHUB_PAT is the secret
+        names = {line.split("=", 1)[0] for line in out.splitlines() if "=" in line}
         for name, value in self.SECRETS.items():
-            self.assertNotIn(name, out)
+            self.assertNotIn(name, names)
             self.assertNotIn(value, out)
         # the harness's own environment is untouched
         self.assertNotIn("SAFE_VAR", os.environ)
