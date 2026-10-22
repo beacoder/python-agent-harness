@@ -4,38 +4,150 @@ on:
   workflow_dispatch:
     inputs:
       n_tasks:
-        description: "Number of tasks to run (0 = full suite of 113 tasks)"
+        description: "Number of tasks to run (0 = full suite of 113 tasks; 1-2 for a meaningful full-budget score)"
         required: true
         default: "10"
         type: choice
         options:
+          - "1"
+          - "2"
           - "10"
           - "25"
           - "50"
           - "0"
       model:
-        description: "Model to use for evaluation (e.g., Qwen/Qwen3.5-35B-A3B)"
+        description: "Model to evaluate (provider/model)"
         required: true
-        default: "Qwen/Qwen3.5-35B-A3B"
+        default: "deepseek-flash"
         type: string
       max_rounds:
-        description: "Maximum LLM rounds per task (0 = unlimited)"
+        description: "Max LLM rounds per task (0 = unlimited)"
         required: false
         default: "0"
-        type: number
-      timeout_minutes:
-        description: "Maximum execution time per task in minutes"
+        type: string
+      task_timeout_minutes:
+        description: "Agent budget per task in minutes (auto-scaled down to fit the 6h job cap; 180 = DeepSWE default)"
         required: false
         default: "180"
-        type: number
+        type: string
+      concurrency:
+        description: "Concurrent trials (1 is right for a GitHub-hosted runner; see docs)"
+        required: false
+        default: "1"
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  benchmark:
+  # GitHub Actions expressions have no arithmetic operators, so the run budget
+  # is computed in bash and handed to the benchmark job as outputs.
+  #
+  # DeepSWE allows 3 h of agent time per task and a GitHub-hosted job cannot
+  # exceed 360 min, so N tasks at concurrency C cannot all use that budget. This
+  # job derives both the job timeout and the per-task agent budget so that the
+  # requested number of tasks actually gets to finish.
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '180') * 2 }}
+    outputs:
+      job_timeout: ${{ steps.budget.outputs.minutes }}
+      timeout_multiplier: ${{ steps.budget.outputs.multiplier }}
+      per_task_minutes: ${{ steps.budget.outputs.per_task }}
+    steps:
+      - name: Compute run budget
+        id: budget
+        env:
+          NTASKS: ${{ inputs.n_tasks }}
+          PER_TASK: ${{ inputs.task_timeout_minutes }}
+          CONC: ${{ inputs.concurrency }}
+        run: |
+          set -euo pipefail
+          n="${NTASKS:-10}"; per="${PER_TASK:-180}"; conc="${CONC:-1}"
+          [ "$n" = "0" ] && n=113            # 0 = the full suite
+          [ "$conc" -lt 1 ] && conc=1
+
+          # 360 min is the hard maximum for GitHub-hosted runners; keep a slice
+          # for checkouts, install, wheel build, summary and artifact upload.
+          job_cap=360; job_overhead=15
+          # Per task, OUTSIDE any Pier timeout: pulling the task's prebuilt
+          # image (each task has its own tag, and Pier deletes images with
+          # `down --rmi all` after every trial, so every trial pays a cold
+          # pull) plus building the agent child image and starting the
+          # container. Measured generously; underestimating here is what gets
+          # the job killed with trials missing.
+          pull_setup=8
+
+          # DeepSWE declares, for all 113 tasks: agent 10800 s, verifier run
+          # 1800 s, and 1800 s environment build (the agent child image). Pier's
+          # --timeout-multiplier scales all three, so the enforced worst case
+          # per task is 240 min at multiplier 1. (The verifier's own
+          # environment reuses the prebuilt image and is never built.)
+          agent_sec=10800; verifier_sec=1800
+          full_task_min=$(( (agent_sec + 2 * verifier_sec) / 60 ))
+
+          rounds=$(( (n + conc - 1) / conc ))
+          # Largest multiplier whose worst case still fits the job cap, never
+          # above what the user asked for.
+          m=$(awk -v cap="$job_cap" -v jo="$job_overhead" -v r="$rounds" \
+                 -v ps="$pull_setup" -v full="$full_task_min" \
+                 -v want="$per" -v asec="$agent_sec" 'BEGIN {
+                head = cap - jo - r * ps
+                cap_m = head / (r * full)             # cap-driven ceiling
+                req_m = want * 60 / asec              # what was requested
+                m = (cap_m < req_m) ? cap_m : req_m
+                if (m > 1) m = 1
+                # Floor so a task still gets a usable slice; never raises the
+                # budget above the request.
+                if (m < 0.05 && req_m > 0.05) m = 0.05
+                if (m < 0.01) m = 0.01
+                printf "%.4f", m
+              }')
+
+          per_eff=$(awk -v m="$m" -v asec="$agent_sec" 'BEGIN { printf "%d", (m*asec)/60 + 0.5 }')
+          needed=$(awk -v m="$m" -v r="$rounds" -v jo="$job_overhead" -v ps="$pull_setup" \
+                      -v full="$full_task_min" 'BEGIN { printf "%d", r*(m*full + ps) + jo }')
+          [ "$needed" -gt "$job_cap" ] && needed=$job_cap
+          [ "$needed" -lt 10 ] && needed=10
+
+          # The multiplier is derived from the cap, so every requested task fits
+          # -- unless the floor was hit, in which case report the shortfall.
+          fitted=$(awk -v cap="$job_cap" -v jo="$job_overhead" -v conc="$conc" \
+                       -v m="$m" -v ps="$pull_setup" -v full="$full_task_min" \
+                       -v n="$n" 'BEGIN {
+                     if (m > 0.0501) { printf "%d", n; exit }
+                     rounds = int((cap - jo) / (m*full + ps))
+                     tasks = rounds * conc
+                     printf "%d", (tasks < n ? tasks : n)
+                   }')
+
+          note=""
+          if [ "$per_eff" -lt "$per" ]; then
+            note="agent budget ${per} -> ${per_eff} min/task so that ${n} task(s) fit the ${job_cap} min job cap"
+          fi
+          if [ "$fitted" -lt "$n" ]; then
+            note="${note:+$note; }about ${fitted} of ${n} tasks fit - raise concurrency on a bigger runner or split the suite"
+          fi
+
+          echo "tasks=${n} concurrency=${conc} rounds=${rounds} per_task=${per_eff}m multiplier=${m} job_timeout=${needed}m"
+          [ -n "$note" ] && echo "::warning::${note}"
+          {
+            echo "minutes=${needed}"
+            echo "multiplier=${m}"
+            echo "per_task=${per_eff}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Run budget"
+            echo ""
+            echo "- tasks: ${n}, concurrency: ${conc}"
+            echo "- agent budget: ${per_eff} min/task (multiplier ${m})"
+            echo "- job timeout: ${needed} min"
+            [ -n "$note" ] && echo "- note: ${note}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  benchmark:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.prepare.outputs.job_timeout) }}
 
     steps:
       - name: Checkout python-agent-harness
@@ -52,20 +164,13 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
 
-      - name: Create virtual environment
+      - name: Check API key
+        env:
+          API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          cd python-agent-harness
-          uv venv .venv --python 3.11
-
-      - name: Install python-agent-harness
-        run: |
-          source python-agent-harness/.venv/bin/activate
-          uv pip install -e ".[dev]"
-
-      - name: Install Pier and dependencies
-        run: |
-          source python-agent-harness/.venv/bin/activate
-          uv pip install datacurve-pier
+          if [ -z "$API_KEY" ]; then
+            echo "::error::OPENAI_API_KEY secret is not set"; exit 1
+          fi
 
       - name: Check Docker
         run: |
@@ -73,54 +178,144 @@ jobs:
           docker info
           docker run --rm hello-world
 
+      - name: Install python-agent-harness and Pier
+        run: |
+          set -euo pipefail
+          uv venv .venv --python 3.11
+          uv pip install --python .venv/bin/python -e ./python-agent-harness
+          # DeepSWE v1.1 requires Pier newer than 0.3.0 (per-task verifier env).
+          uv pip install --python .venv/bin/python "datacurve-pier>=0.3.1"
+          .venv/bin/pier --version
+          # The harness CLI has no --version; import the package so a broken
+          # install fails here instead of inside every trial container.
+          .venv/bin/python -c "import python_agent_harness; print('harness import OK')"
+          .venv/bin/python -m python_agent_harness headless --help >/dev/null
+
+      - name: Build harness wheel
+        run: |
+          set -euo pipefail
+          cd python-agent-harness
+          uv build --wheel --out-dir dist
+          ls -l dist
+
       - name: Run DeepSWE benchmark
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL || 'https://api-inference.modelscope.cn/v1' }}
-          OPENAI_MODEL: ${{ inputs.model }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          MODEL: ${{ inputs.model }}
+          N_TASKS: ${{ inputs.n_tasks }}
+          MAX_ROUNDS: ${{ inputs.max_rounds }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+          TIMEOUT_MULTIPLIER: ${{ needs.prepare.outputs.timeout_multiplier }}
         run: |
-          source python-agent-harness/.venv/bin/activate
-          
-          N_TASKS=${{ inputs.n_tasks }}
-          if [ "$N_TASKS" -eq 0 ]; then
-            N_TASKS_FLAG=""
-          else
-            N_TASKS_FLAG="--n-tasks $N_TASKS"
-          fi
-          
-          MAX_ROUNDS_FLAG=""
-          if [ "${{ inputs.max_rounds }}" -gt 0 ]; then
-            MAX_ROUNDS_FLAG="--max-rounds ${{ inputs.max_rounds }}"
-          fi
-          
+          set -euo pipefail
+          source .venv/bin/activate
+
           # Pier resolves --agent-import-path via importlib.import_module(),
           # whose sys.path does NOT include the cwd for console scripts.
-          # Put the adapter dir on PYTHONPATH so the bare module path resolves.
           cp python-agent-harness/benchmarks/deepswe_adapter.py ./deepswe_adapter.py
-          
-          PYTHONPATH=. pier run \
-            -p deep-swe/tasks \
-            --agent-import-path deepswe_adapter:PythonAgentHarness \
-            --model ${{ inputs.model }} \
-            $N_TASKS_FLAG \
-            $MAX_ROUNDS_FLAG \
-            --env docker \
+
+          wheel=$(ls -1 python-agent-harness/dist/python_agent_harness-*.whl | head -n 1)
+
+          args=(
+            run
+            -p deep-swe/tasks
+            --agent-import-path deepswe_adapter:PythonAgentHarness
+            --model "$MODEL"
+            --env docker
             --jobs-dir pier-results
+            --n-concurrent "$CONCURRENCY"
+            --yes
+            --ak "wheel=$PWD/$wheel"
+          )
+
+          # Scales every declared task timeout (agent 3 h, verifier 30 min,
+          # environment build 30 min) down to the budget the prepare job fitted
+          # into the 6 h job cap. --timeout-multiplier rather than the
+          # agent-only flag: the budget accounting above assumes all three
+          # phases scale together.
+          if [ -n "${TIMEOUT_MULTIPLIER:-}" ]; then
+            args+=(--timeout-multiplier "$TIMEOUT_MULTIPLIER")
+          fi
+
+          if [ "$N_TASKS" != "0" ]; then
+            args+=(--n-tasks "$N_TASKS" --sample-seed 0)
+          fi
+
+          if [ "$MAX_ROUNDS" != "0" ]; then
+            args+=(--ak "max_rounds=$MAX_ROUNDS")
+          fi
+
+          PYTHONPATH=. pier "${args[@]}"
+
+      - name: Summarize results
+        if: always()
+        env:
+          PER_TASK_MINUTES: ${{ needs.prepare.outputs.per_task_minutes }}
+          TIMEOUT_MULTIPLIER: ${{ needs.prepare.outputs.timeout_multiplier }}
+        run: |
+          set +e
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+          import pathlib
+
+          root = pathlib.Path("pier-results")
+          rows = []
+          tokens_in = tokens_out = 0
+
+          for path in sorted(root.rglob("result.json")):
+              try:
+                  data = json.loads(path.read_text(encoding="utf-8"))
+              except (OSError, ValueError):
+                  continue
+              task = data.get("task_name")
+              if not task:
+                  # the job-level result.json carries no task_name
+                  continue
+              rewards = (data.get("verifier_result") or {}).get("rewards") or {}
+              values = [v for v in rewards.values() if isinstance(v, (int, float))]
+              score = min(values) if values else None
+              exception = (data.get("exception_info") or {}).get("exception_type") or ""
+              rows.append((task, score, rewards, exception))
+              agent = data.get("agent_result") or {}
+              tokens_in += agent.get("n_input_tokens") or 0
+              tokens_out += agent.get("n_output_tokens") or 0
+
+          print("## DeepSWE results\n")
+          # The budget the scores were produced under: a pass rate at a 9 min
+          # budget is not comparable to one at the full 180 min, so it belongs
+          # next to the number, not buried in another job's log.
+          budget = os.environ.get("PER_TASK_MINUTES", "").strip()
+          mult = os.environ.get("TIMEOUT_MULTIPLIER", "").strip()
+          if budget:
+              print(
+                  f"Agent budget: **{budget} min/task** "
+                  f"(timeout multiplier {mult or 'n/a'})\n"
+              )
+          if not rows:
+              print("No trials completed - check the job logs.")
+          else:
+              print("| Task | Score | Rewards | Exception |")
+              print("| --- | --- | --- | --- |")
+              for task, score, rewards, exception in rows:
+                  print(f"| {task} | {score} | `{json.dumps(rewards)}` | {exception} |")
+              passed = sum(1 for _, score, _, _ in rows if score == 1)
+              print(
+                  f"\n**Pass rate: {passed}/{len(rows)} "
+                  f"({100 * passed / len(rows):.0f}%)**"
+              )
+              print(f"**Tokens: {tokens_in:,} in / {tokens_out:,} out**")
+          PY
+          exit 0
 
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: deepswe-results-${{ github.run_id }}
-          path: pier-results/
+          path: |
+            pier-results/
+            python-agent-harness/dist/
           retention-days: 30
           if-no-files-found: warn
-
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: deepswe-logs-${{ github.run_id }}
-          path: /home/runner/.local/share/pier/logs/
-          retention-days: 7
-          if-no-files-found: ignore
