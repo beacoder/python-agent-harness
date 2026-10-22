@@ -1,0 +1,126 @@
+name: DeepSWE Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      n_tasks:
+        description: "Number of tasks to run (0 = full suite of 113 tasks)"
+        required: true
+        default: "10"
+        type: choice
+        options:
+          - "10"
+          - "25"
+          - "50"
+          - "0"
+      model:
+        description: "Model to use for evaluation (e.g., Qwen/Qwen3.5-35B-A3B)"
+        required: true
+        default: "Qwen/Qwen3.5-35B-A3B"
+        type: string
+      max_rounds:
+        description: "Maximum LLM rounds per task (0 = unlimited)"
+        required: false
+        default: "0"
+        type: number
+      timeout_minutes:
+        description: "Maximum execution time per task in minutes"
+        required: false
+        default: "180"
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '180') * 2 }}
+
+    steps:
+      - name: Checkout python-agent-harness
+        uses: actions/checkout@v4
+        with:
+          path: python-agent-harness
+
+      - name: Checkout DeepSWE tasks
+        uses: actions/checkout@v4
+        with:
+          repository: datacurve-ai/deep-swe
+          path: deep-swe
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Create virtual environment
+        run: |
+          cd python-agent-harness
+          uv venv .venv --python 3.11
+
+      - name: Install python-agent-harness
+        run: |
+          source python-agent-harness/.venv/bin/activate
+          uv pip install -e ".[dev]"
+
+      - name: Install Pier and dependencies
+        run: |
+          source python-agent-harness/.venv/bin/activate
+          uv pip install datacurve-pier
+
+      - name: Check Docker
+        run: |
+          docker version
+          docker info
+          docker run --rm hello-world
+
+      - name: Run DeepSWE benchmark
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL || 'https://api-inference.modelscope.cn/v1' }}
+          OPENAI_MODEL: ${{ inputs.model }}
+        run: |
+          source python-agent-harness/.venv/bin/activate
+          
+          N_TASKS=${{ inputs.n_tasks }}
+          if [ "$N_TASKS" -eq 0 ]; then
+            N_TASKS_FLAG=""
+          else
+            N_TASKS_FLAG="--n-tasks $N_TASKS"
+          fi
+          
+          MAX_ROUNDS_FLAG=""
+          if [ "${{ inputs.max_rounds }}" -gt 0 ]; then
+            MAX_ROUNDS_FLAG="--max-rounds ${{ inputs.max_rounds }}"
+          fi
+          
+          # Pier resolves --agent-import-path via importlib.import_module(),
+          # whose sys.path does NOT include the cwd for console scripts.
+          # Put the adapter dir on PYTHONPATH so the bare module path resolves.
+          cp python-agent-harness/benchmarks/deepswe_adapter.py ./deepswe_adapter.py
+          
+          PYTHONPATH=. pier run \
+            -p deep-swe/tasks \
+            --agent-import-path deepswe_adapter:PythonAgentHarness \
+            --model ${{ inputs.model }} \
+            $N_TASKS_FLAG \
+            $MAX_ROUNDS_FLAG \
+            --env docker \
+            --jobs-dir pier-results
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepswe-results-${{ github.run_id }}
+          path: pier-results/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepswe-logs-${{ github.run_id }}
+          path: /home/runner/.local/share/pier/logs/
+          retention-days: 7
+          if-no-files-found: ignore
