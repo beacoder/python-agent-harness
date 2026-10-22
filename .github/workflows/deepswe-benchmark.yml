@@ -67,14 +67,14 @@ jobs:
           if [ "$conc" -lt 1 ]; then conc=1; fi
 
           # 360 min is the hard maximum for GitHub-hosted runners; keep a slice
-          # for checkouts, install, wheel build, summary and artifact upload.
+          # for checkouts, install, wheel build, image pre-pull, summary and
+          # artifact upload.
           job_cap=360; job_overhead=15
-          # Per task, OUTSIDE any Pier timeout: pulling the task's prebuilt
-          # image (each task has its own tag, and Pier deletes images with
-          # `down --rmi all` after every trial, so every trial pays a cold
-          # pull) plus building the agent child image and starting the
-          # container. Measured generously; underestimating here is what gets
-          # the job killed with trials missing.
+          # Per task, OUTSIDE any Pier timeout: building the agent child image,
+          # starting the container, and whatever the pre-pull step did not
+          # fetch. Pier deletes each trial's image afterwards (`down --rmi
+          # all`), so the child-image build is paid per task even though the
+          # pre-pulled base images stay cached.
           pull_setup=8
 
           # DeepSWE declares, for all 113 tasks: agent 10800 s, verifier run
@@ -206,6 +206,135 @@ jobs:
           cd python-agent-harness
           uv build --wheel --out-dir dist
           ls -l dist
+
+      # The DeepSWE task images live in public.ecr.aws, which throttles
+      # *anonymous* pulls per source IP: 500 GB/month, an allowance routinely
+      # exhausted because a GitHub-hosted runner's egress address is shared
+      # with many other jobs:
+      #   429 Too Many Requests - toomanyrequests: Data limit exceeded
+      # Any AWS account fixes it: ECR Public accepts its token and meters the
+      # pulls against that account instead. Without credentials the run still
+      # works, but only while the runner's IP is under quota.
+      - name: Log in to ECR Public
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "::notice::No AWS credentials - pulling task images anonymously."
+            echo "Anonymous ECR Public pulls are throttled per source IP and GitHub runners share theirs."
+            exit 0
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "::error::AWS credentials are set but the aws CLI is missing"; exit 1
+          fi
+          # ECR Public only exists in us-east-1; the token is valid for 12 h,
+          # long enough for the whole job. A failed login is not fatal: the
+          # pre-pull step then falls back to anonymous pulls and reports
+          # whatever actually goes wrong there.
+          if ! aws ecr-public get-login-password --region us-east-1 \
+               | docker login --username AWS --password-stdin public.ecr.aws; then
+            echo "::warning::ECR Public login failed - the credentials are invalid or lack ecr-public:GetAuthorizationToken. Falling back to anonymous pulls, which are rate limited per source IP."
+          fi
+
+      # Pull every task image before Pier starts, for two reasons:
+      #   * a throttled pull then fails the run in minutes with a readable
+      #     message instead of surfacing as a docker-compose stack trace in
+      #     the middle of the benchmark;
+      #   * the retry loop below actually gets to run - Pier reports a failed
+      #     image pull as a failed trial and does not retry it.
+      # The set of images is resolved through Pier's own DatasetConfig, so it
+      # is exactly what `pier run --n-tasks ... --sample-seed ...` will use.
+      - name: Pre-pull task images
+        env:
+          N_TASKS: ${{ inputs.n_tasks }}
+        run: |
+          set -euo pipefail
+          # workflow_dispatch supplies the default, but a dispatch via the API
+          # can omit inputs entirely; never call the resolver with an empty arg.
+          n_tasks="${N_TASKS:-10}"
+          # Assign first: a command substitution's exit status inside a process
+          # substitution is discarded, and a resolver failure would then show up
+          # as the much less useful "no task image resolved".
+          if ! resolved=$(
+            .venv/bin/python python-agent-harness/benchmarks/deepswe_images.py \
+              --path deep-swe/tasks --n-tasks "$n_tasks" --sample-seed 0
+          ); then
+            echo "::error::Could not resolve the task images for n_tasks=${n_tasks} (see the traceback above)"; exit 1
+          fi
+          if [ -z "$resolved" ]; then
+            echo "::error::No task image resolved from deep-swe/tasks"; exit 1
+          fi
+          mapfile -t rows <<< "$resolved"
+          echo "Resolved ${#rows[@]} task(s) for n_tasks=${n_tasks}"
+
+          pull() {
+            local image="$1" attempt=1 delay=15
+            until docker pull --quiet "$image"; do
+              if [ "$attempt" -ge 5 ]; then
+                echo "::warning::docker pull ${image} failed after ${attempt} attempts"
+                return 1
+              fi
+              echo "::warning::docker pull ${image} failed (attempt ${attempt}); retrying in ${delay}s"
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
+          declare -A seen
+          pulled=0
+          total=${#rows[@]}
+          failed=0
+          # Room kept free for the trials themselves (each builds a child image
+          # and writes logs and verifier artifacts).
+          reserve_mb=4096
+          for row in "${rows[@]}"; do
+            image="${row#*$'\t'}"
+            if [ -n "${seen[$image]:-}" ]; then continue; fi
+            seen[$image]=1
+
+            # Different tasks' images share most layers, so N tasks cost far
+            # less than N x an image: the 10-task sample is 3.2 GB compressed
+            # (~7 GB unpacked) and the runner has ~14 GB. Stop here rather than
+            # letting a trial die on `no space left on device`.
+            avail=$(df -Pm / | awk 'NR==2 {print $4}')
+            if [ "$avail" -lt "$reserve_mb" ]; then
+              echo "::error::Only ${avail} MiB of disk left after ${pulled}/${total} image(s): this runner cannot hold the images plus the trials. Request fewer tasks (1-2 give a meaningful score) or use a larger runner."
+              exit 1
+            fi
+
+            if ! pull "$image"; then
+              failed=$((failed + 1))
+              # The anonymous quota does not recover inside one job, so stop
+              # rather than spending four more minutes on every other image.
+              break
+            fi
+            pulled=$((pulled + 1))
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::${failed} task image(s) could not be pulled from public.ecr.aws."
+            echo "Most likely ECR Public throttled the anonymous pull: it meters per source IP and GitHub runners share theirs."
+            echo "Fix: add AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY secrets (any AWS account with ecr-public:GetAuthorizationToken and sts:GetServiceBearerToken) so pulls are authenticated, or re-run this job so it lands on another runner."
+            echo "If the log shows 'no space left on device', the runner's disk is the limit: request fewer tasks."
+            exit 1
+          fi
+          echo "All task images are present locally."
+
+          # The egress-proxy container builds FROM ubuntu:24.04 (Docker Hub),
+          # which is rate limited too, though far less aggressively.
+          # Best effort: a failure here is not fatal.
+          docker pull --quiet ubuntu:24.04 \
+            || echo "::warning::Could not pre-pull ubuntu:24.04"
+
+          # Space left for the trials themselves.
+          df -h / | tail -n 1
+          avail=$(df -Pm / | awk 'NR==2 {print $4}')
+          if [ "$avail" -lt "$reserve_mb" ]; then
+            echo "::warning::Only ${avail} MiB free after pre-pulling. Trials may fail with 'no space left on device'; use fewer tasks or a larger runner."
+          fi
 
       - name: Run DeepSWE benchmark
         env:

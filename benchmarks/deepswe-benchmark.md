@@ -24,6 +24,19 @@ providers set it explicitly:
 - **Anthropic**: `https://api.anthropic.com/v1`
 - **ModelScope**: `https://api-inference.modelscope.cn/v1`
 
+Optionally, add AWS credentials:
+
+```
+AWS_ACCESS_KEY_ID = ...
+AWS_SECRET_ACCESS_KEY = ...
+```
+
+These are used **only** to authenticate to ECR Public, where the prebuilt task
+images live. ECR Public meters anonymous pulls per source IP and GitHub runners
+share theirs, so without credentials the job can fail with
+`429 ... Data limit exceeded` even though the model API key is fine. See
+[ECR Public throttles the task image pulls](#ecr-public-throttles-the-task-image-pulls-429).
+
 The request body carries `reasoning_effort: "max"` and a fixed `temperature: 0.0`
 (see `DEFAULT_REASONING_EFFORT` in the adapter). Both are overridable without
 editing code:
@@ -172,6 +185,8 @@ Checkout python-agent-harness + DeepSWE tasks
     ↓
 Install harness (editable) + Pier >= 0.3.1 into a Python 3.12 venv, build wheel
     ↓
+Log in to ECR Public (if AWS secrets are set), pre-pull the task images
+    ↓
 pier run -p deep-swe/tasks --agent-import-path ...
     ↓
 Per task: build an image FROM the task's prebuilt image,
@@ -243,6 +258,43 @@ The workflow creates its venv with `uv venv .venv --python 3.12`. Only the
 host-side Pier driver runs on 3.12; inside the task container the harness runs
 on the image's own interpreter (`python3`, 3.11+).
 
+### ECR Public throttles the task image pulls (429)
+
+DeepSWE's prebuilt images come from `public.ecr.aws/d3j8x8q7/swe-bench-202605`
+(0.8–1.6 GB compressed each). ECR Public meters **anonymous** pulls per source
+IP, and GitHub-hosted runners share their egress addresses, so a lazy pull fails
+like this partway through a run:
+
+```
+#6 [main internal] load metadata for public.ecr.aws/d3j8x8q7/swe-bench-202605:...:
+#6 ERROR: failed to copy: httpReadSeeker: failed open: unexpected status code
+   https://public.ecr.aws/v2/...: 429 Too Many Requests
+   - Server message: toomanyrequests: Data limit exceeded
+```
+
+The workflow handles this in two steps before Pier starts:
+
+1. `Log in to ECR Public` — if `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+   secrets exist, it runs `aws ecr-public get-login-password` and
+   `docker login public.ecr.aws`. Authenticated pulls are metered against your
+   AWS account (10 pulls/s per region) instead of the 500 GB/month anonymous
+   allowance that is shared with everyone behind the runner's IP. Any AWS
+   account works; the IAM user needs only `ecr-public:GetAuthorizationToken`
+   and `sts:GetServiceBearerToken`.
+2. `Pre-pull task images` — resolves the exact image set for the selected
+   `n_tasks`/`sample_seed` through Pier's own `DatasetConfig` (so it matches
+   the run), pulls each with exponential backoff (15 s → 120 s, five attempts),
+   and stops early with an actionable message if the quota is exhausted or the
+   runner's disk fills up (see
+   [Resource limits](#resource-limits-why-concurrency-defaults-to-1)).
+
+Without AWS credentials the failure is now a two-minute error instead of a
+docker-compose stack trace an hour in. Re-running the job may help on its own,
+because a new run usually gets a different egress IP — but the quota is monthly
+and the address pool is shared, so credentials are the only reliable fix.
+
+Pre-pulling does not change the scores: images are only fetched earlier.
+
 ### Docker Issues
 
 GitHub-hosted `ubuntu-latest` **includes Docker Engine** by default. The
@@ -267,8 +319,17 @@ resource policy is `auto` → enforced as a hard Docker **limit**
 process, and the egress-proxy container are counted. Hence `concurrency: 1`
 by default (2 vCPU / 8 GB in use, leaving headroom).
 
-Disk is bounded because Pier deletes each trial's container *and image*
-(`down --rmi all`) after it finishes, so prebuilt images do not accumulate.
+Disk stays bounded: Pier stops each environment with
+`down --rmi all --volumes`, which removes the trial's container and the child
+image it built, so per-trial layers do not accumulate. The prebuilt task images
+themselves are not compose service images and therefore stay cached for the rest
+of the job — but tasks' images share most of their layers, so Docker dedups
+them. Measured compressed layer unions: 0.9 GB for 1 task, 1.0 GB for 2,
+3.2 GB for the 10-task sample, 7 GB for 25 (a single image alone is ~0.8 GB).
+Unpacked, expect roughly 2×. Against the ~14 GB a GitHub-hosted runner has, a
+handful of tasks is fine and a large run is not; the `Pre-pull task images` step
+checks free space as it goes and fails with an actionable message instead of
+letting a trial die on `no space left on device`.
 
 Do not "fix" a memory error with `--ignore` resource modes: Pier warns that
 running a task outside its declared resources can disqualify the result. If you
@@ -285,7 +346,7 @@ The `prepare` job therefore derives both values from your inputs and passes
 timeouts together):
 
 - `agent budget = min(task_timeout_minutes, cap-driven ceiling)`
-- `job timeout = rounds × (scaled per-task worst case + cold pull/build) + overhead`,
+- `job timeout = rounds × (scaled per-task worst case + per-task setup) + overhead`,
   capped at 360
 
 What that means in practice (`task_timeout_minutes: 180`, i.e. DeepSWE's own
@@ -297,11 +358,14 @@ budget):
 | 2       | 1           | 123 min              | 359 min     | yes            |
 | 10      | 1           | 20 min               | 359 min     | yes            |
 | 10      | 2           | 46 min               | 360 min     | yes (if the runner can host 2×8 GB) |
-| 25      | 1           | 9 min (floor)        | 360 min     | ~24 of 25     |
-| 0 (113) | 1           | 9 min (floor)        | 360 min     | ~24 of 113    |
+| 25      | 1           | 9 min (floor)        | 360 min     | ~17 of 25     |
+| 0 (113) | 1           | 9 min (floor)        | 360 min     | ~17 of 113    |
 
-(8 min per task is reserved outside any Pier timeout for the cold image pull and
-the agent child-image build, because Pier deletes images after every trial.)
+(8 min per task is reserved outside any Pier timeout for building the agent
+child image, starting the container and unpacking whatever the pre-pull step
+did not download. Pier deletes each trial's image afterwards, so this cost is
+paid per task even though the base images stay cached — see
+[Resource limits](#resource-limits-why-concurrency-defaults-to-1).)
 
 The derived budget is echoed to the run summary and a `::warning::` is emitted
 whenever it differs from what you asked for.
@@ -353,6 +417,13 @@ prepends that directory via `PYTHONPATH`, which is unaffected.
 - Lower `concurrency`
 - Use a different model endpoint
 - Re-run the job (`pier job resume`) once the limit clears
+
+### `429 Too Many Requests` while pulling task images
+
+That is the ECR Public quota, not your model API key — see
+[ECR Public throttles the task image pulls](#ecr-public-throttles-the-task-image-pulls-429).
+The workflow now pulls the images up front, retries, and reports which image
+failed; add the AWS secrets so the pulls are authenticated.
 
 ## Advanced Configuration
 
