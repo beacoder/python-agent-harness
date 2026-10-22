@@ -181,7 +181,16 @@ jobs:
       - name: Install python-agent-harness and Pier
         run: |
           set -euo pipefail
-          uv venv .venv --python 3.11
+          # Pier 0.3.x requires Python >= 3.12, so the driver venv must be 3.12+
+          # even though the harness itself supports 3.11. (The task containers
+          # run the harness on their own interpreter; this venv only hosts Pier
+          # and the adapter module.)
+          uv venv .venv --python 3.12
+          # Fail here, with a readable message, if the venv is not 3.12+: Pier's
+          # resolver error ("No solution found when resolving dependencies") does
+          # not say which interpreter was too old.
+          .venv/bin/python -V
+          .venv/bin/python -c "import sys; assert sys.version_info >= (3, 12), sys.version"
           uv pip install --python .venv/bin/python -e ./python-agent-harness
           # DeepSWE v1.1 requires Pier newer than 0.3.0 (per-task verifier env).
           uv pip install --python .venv/bin/python "datacurve-pier>=0.3.1"

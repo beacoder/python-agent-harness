@@ -21,6 +21,14 @@ tasks fits the 6 h job cap; the derived values are written to the run summary.
 For a meaningful score, run 1–2 tasks at the full 180 min instead of many tasks
 at a truncated budget.
 
+### Requirements
+
+GitHub-hosted `ubuntu-latest` is enough: it ships Docker Engine (the `Check
+Docker` step asserts it) and Python 3.12, which Pier 0.3.x requires
+(`requires-python >= 3.12`). The driver venv is therefore created with
+`uv venv --python 3.12`; inside the task containers the harness runs on the
+image's own interpreter.
+
 ### Artifacts
 
 - `deepswe-results-{run_id}`: `pier-results/` (per-task `result.json`, verifier

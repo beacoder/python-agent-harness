@@ -170,7 +170,7 @@ GitHub Actions Runner
     ↓
 Checkout python-agent-harness + DeepSWE tasks
     ↓
-Install harness (editable) + Pier >= 0.3.1, build wheel
+Install harness (editable) + Pier >= 0.3.1 into a Python 3.12 venv, build wheel
     ↓
 pier run -p deep-swe/tasks --agent-import-path ...
     ↓
@@ -227,6 +227,21 @@ Recommendations:
 GitHub Actions expressions have **no arithmetic operators** (`+ - * / %`).
 Compute such values in a shell step and pass them through `outputs`; the
 workflow's `prepare` job does exactly this for the job timeout.
+
+### `No solution found when resolving dependencies` (Pier needs Python 3.12)
+
+`datacurve-pier` 0.3.x declares `requires-python >= 3.12`, so the driver venv
+must be 3.12 or newer even though the harness itself still supports 3.11:
+
+```
+error: Because the current Python version (3.11.17) does not satisfy Python>=3.12
+and datacurve-pier==0.3.1 depends on Python>=3.12, we can conclude that
+datacurve-pier==0.3.1 cannot be used.
+```
+
+The workflow creates its venv with `uv venv .venv --python 3.12`. Only the
+host-side Pier driver runs on 3.12; inside the task container the harness runs
+on the image's own interpreter (`python3`, 3.11+).
 
 ### Docker Issues
 
