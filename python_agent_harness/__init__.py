@@ -7,7 +7,7 @@ from .mcp.config import MCPConfig, MCPServerConfig
 from .mcp.manager import MCPManager
 from .session.session import Session
 
-__version__ = "1.5.6.4"
+__version__ = "1.5.6.5"
 
 __all__ = [
     "Client",
