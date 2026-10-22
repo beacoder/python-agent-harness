@@ -63,8 +63,8 @@ jobs:
         run: |
           set -euo pipefail
           n="${NTASKS:-10}"; per="${PER_TASK:-180}"; conc="${CONC:-1}"
-          [ "$n" = "0" ] && n=113            # 0 = the full suite
-          [ "$conc" -lt 1 ] && conc=1
+          if [ "$n" = "0" ]; then n=113; fi  # 0 = the full suite
+          if [ "$conc" -lt 1 ]; then conc=1; fi
 
           # 360 min is the hard maximum for GitHub-hosted runners; keep a slice
           # for checkouts, install, wheel build, summary and artifact upload.
@@ -106,8 +106,8 @@ jobs:
           per_eff=$(awk -v m="$m" -v asec="$agent_sec" 'BEGIN { printf "%d", (m*asec)/60 + 0.5 }')
           needed=$(awk -v m="$m" -v r="$rounds" -v jo="$job_overhead" -v ps="$pull_setup" \
                       -v full="$full_task_min" 'BEGIN { printf "%d", r*(m*full + ps) + jo }')
-          [ "$needed" -gt "$job_cap" ] && needed=$job_cap
-          [ "$needed" -lt 10 ] && needed=10
+          if [ "$needed" -gt "$job_cap" ]; then needed=$job_cap; fi
+          if [ "$needed" -lt 10 ]; then needed=10; fi
 
           # The multiplier is derived from the cap, so every requested task fits
           # -- unless the floor was hit, in which case report the shortfall.
@@ -129,7 +129,7 @@ jobs:
           fi
 
           echo "tasks=${n} concurrency=${conc} rounds=${rounds} per_task=${per_eff}m multiplier=${m} job_timeout=${needed}m"
-          [ -n "$note" ] && echo "::warning::${note}"
+          if [ -n "$note" ]; then echo "::warning::${note}"; fi
           {
             echo "minutes=${needed}"
             echo "multiplier=${m}"
@@ -141,7 +141,7 @@ jobs:
             echo "- tasks: ${n}, concurrency: ${conc}"
             echo "- agent budget: ${per_eff} min/task (multiplier ${m})"
             echo "- job timeout: ${needed} min"
-            [ -n "$note" ] && echo "- note: ${note}"
+            if [ -n "$note" ]; then echo "- note: ${note}"; fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   benchmark:
