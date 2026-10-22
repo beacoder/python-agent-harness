@@ -21,11 +21,15 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+
+import tests  # noqa: F401,E402  (side-effect: hermetic config, see tests/__init__.py)
 from python_agent_harness.prompts import (
     assemble_agent_prompt,
     find_agents_md_files,

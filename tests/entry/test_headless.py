@@ -11,6 +11,7 @@ import threading
 import unittest
 import unittest.mock as mock
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
@@ -25,6 +26,7 @@ from python_agent_harness.entry.headless import (
     run_headless,
     run_headless_jsonl,
     signal_canceller,
+    usage_snapshot,
 )
 from python_agent_harness.entry.view import FilteredDeltaStream
 from python_agent_harness.io.text_filter import strip_final_check
@@ -508,8 +510,74 @@ class TestRestoreSession(unittest.TestCase):
             rc = run_headless(session, "hi", restore="nope")
         self.assertEqual(rc, 1)
 
+    def test_restore_sets_the_history_the_next_run_sends(self):
+        """restore_session must replace ``conversation_history`` (what
+        Controller.submit sends), not only ``last_messages`` (what views
+        render).  Setting only the latter made --restore runs send just
+        the new prompt, and the follow-up save overwrote the restored
+        session file with that single turn."""
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write_session(d)
+            ctrl = self._fake_controller()
+            ok = restore_session(ctrl, path, io.StringIO())
+        self.assertTrue(ok)
+        self.assertEqual([m.text() for m in ctrl.conversation_history], ["hello", "hi there"])
 
-class TestJsonlView(unittest.TestCase):
+    def test_headless_restore_sends_saved_history_to_the_model(self):
+        """End to end: a real Controller + Session; the first request
+        after --restore carries the saved turns before the new prompt."""
+        from tests.support.agent_test_utils import FakeClient, RecordingSession
+
+        with tempfile.TemporaryDirectory() as d:
+            session = RecordingSession(project_dir=d)
+            path = self._write_session(d)
+            client = FakeClient([("answer", None), ("title", None)])
+            session.client = client
+            rc = run_headless(
+                session, "follow-up", out=io.StringIO(), err=io.StringIO(), restore=path
+            )
+        self.assertEqual(rc, 0)
+        sent = [(m["role"], m["content"]) for m in client.calls[0]]
+        self.assertEqual(
+            sent,
+            [("user", "hello"), ("assistant", "hi there"), ("user", "follow-up")],
+        )
+
+    def test_unreadable_session_file_fails_cleanly(self):
+        """An OSError reading the session file is reported, not raised."""
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write_session(d)
+            err = io.StringIO()
+            with mock.patch(
+                "python_agent_harness.entry.restore.open",
+                side_effect=OSError("denied"),
+                create=True,
+            ):
+                ok = restore_session(self._fake_controller(), path, err)
+        self.assertFalse(ok)
+        self.assertIn("cannot read", err.getvalue())
+
+
+class TestUsageSnapshot(unittest.TestCase):
+    """headless.usage_snapshot: shared by the headless and serve result lines."""
+
+    def test_no_totals_is_none(self):
+        self.assertIsNone(usage_snapshot(SimpleNamespace()))
+        self.assertIsNone(usage_snapshot(SimpleNamespace(usage_totals=None)))
+
+    def test_copies_numeric_totals_and_ignores_the_rest(self):
+        totals = {"input": 12, "output": 3.0, "rounds": True, "_lock": threading.Lock()}
+        self.assertEqual(
+            usage_snapshot(SimpleNamespace(usage_totals=totals)),
+            {"input": 12, "output": 3, "rounds": 0},
+        )
+
+    def test_missing_lock_and_keys_default_to_zero(self):
+        self.assertEqual(
+            usage_snapshot(SimpleNamespace(usage_totals={})),
+            {"input": 0, "output": 0, "rounds": 0},
+        )
+
     def _lines(self, out: io.StringIO) -> list[dict]:
         import json
 

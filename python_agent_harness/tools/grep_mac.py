@@ -32,9 +32,8 @@ Features with no POSIX equivalent (lookaheads, backreferences) are
 left as-is — they will cause a syntax error, which is better than
 silently matching wrong content.
 
-The fallback chain skips the parent's ``git grep -P`` attempt (guaranteed
-to fail on macOS) and goes directly to ``rg`` / ``grep`` via the shared
-:meth:`Grep._fallback_rg_grep` method.
+When ``git grep -E`` fails, the inherited ``rg`` / ``grep`` fallback
+runs with the original (untranslated) regex.
 
 Only the ``git grep`` regex flag differs; the tool name and result
 format are inherited so callers, the tool registry, and the plan-mode
@@ -43,13 +42,9 @@ write guard are platform-independent.
 
 from __future__ import annotations
 
-import os
 import re
-import subprocess
 
-from .base import ToolContext, resolve_path
-from .filesystem import _git_root
-from .grep import Grep, _grep_out
+from .grep import Grep
 
 _PCRE_CLASS_MAP: dict[str, str] = {
     r"\d": "[0-9]",
@@ -154,56 +149,13 @@ def _pcre_to_ere(regex: str) -> str:
 
 
 class GrepMac(Grep):
-    """Grep with ``git grep -E`` for macOS (no PCRE dependency)."""
+    """Grep with ``git grep -E`` for macOS (no PCRE dependency).
 
-    def run(self, args: dict, ctx: ToolContext) -> str:
-        regex = args["regex"]
-        path = resolve_path(args["path"], ctx.cwd)
-        if not os.path.isdir(path) and not os.path.isfile(path):
-            return f"Error: path {args['path']} is not readable"
-        glob = args.get("glob")
-        context = args.get("context_lines")
-        if context is not None:
-            context = max(0, min(15, int(context)))
+    Only the git grep dialect differs; path handling, the git command
+    and the rg/grep fallback are inherited from :class:`Grep`.
+    """
 
-        git_root = _git_root(path)
-        if git_root:
-            rel = os.path.relpath(path, git_root)
-            pathspec = rel
-            if glob and os.path.isdir(path):
-                pathspec = os.path.join(rel, glob).replace(os.sep, "/")
-            ere_regex = _pcre_to_ere(regex)
-            cmd = [
-                "git",
-                "grep",
-                "--line-number",
-                "--no-color",
-                "--max-count=1000",
-                "--untracked",
-                "-E",
-                "-e",
-                ere_regex,
-                "--",
-                pathspec,
-            ]
-            if context:
-                cmd = cmd[:3] + [f"-C{context}"] + cmd[3:]
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    cwd=git_root,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=60,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                proc = None
-            if proc is not None and proc.returncode in (0, 1):
-                return _grep_out(proc, "git")
+    git_regex_flag = "-E"
 
-        # Non-git or git grep -E failed: skip the parent's git grep -P
-        # attempt (guaranteed to fail on macOS) and go directly to the
-        # shared rg/grep fallback chain.
-        return self._fallback_rg_grep(regex, path, glob, context)
+    def _git_regex(self, regex: str) -> str:
+        return _pcre_to_ere(regex)

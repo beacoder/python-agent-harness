@@ -272,12 +272,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_config(args: argparse.Namespace) -> int:
     path = config._config_path(args.path)
     if args.init:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
+        # 0o700 dir / 0o600 file: the config holds the API key, so it must
+        # not be group/world-readable (mode applies to a NEW leaf dir only;
+        # an existing directory keeps its permissions).
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        template = config.CONFIG_TEMPLATE.format(path=str(path).replace("\\", "\\\\"))
+        try:
+            # O_EXCL: create-only, atomically -- no exists()/write race, and
+            # a pre-planted symlink at PATH is refused instead of followed.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
             print(f"config already exists: {path} (delete it first to overwrite)")
             return 1
-        template = config.CONFIG_TEMPLATE.format(path=str(path).replace("\\", "\\\\"))
-        path.write_text(template, encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(template)
         print(f"wrote config template: {path}")
         return 0
     settings = config.load_llm_config(args.path)

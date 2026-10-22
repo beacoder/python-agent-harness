@@ -1,8 +1,13 @@
 """Data-model unit tests: Message text extraction / serialization."""
 
 import json
+import sys
 import unittest
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+
+import tests  # noqa: F401,E402  (side-effect: hermetic config, see tests/__init__.py)
 from python_agent_harness.core.models import (
     Message,
     TextPart,

@@ -14,6 +14,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+
+import tests  # noqa: F401,E402  (side-effect: hermetic config, see tests/__init__.py)
 from python_agent_harness.tools.base import ToolContext, ToolRuntime
 from python_agent_harness.tools.diffapply import apply_unified_diff, diff_targets
 from python_agent_harness.tools.edit_mac import EditMac
@@ -1837,7 +1840,7 @@ class TestGrepMac(unittest.TestCase):
             f.write("hello\n")
         subprocess.run(["git", "add", "."], cwd=repo, check=True)
         with mock.patch(
-            "python_agent_harness.tools.grep_mac.subprocess.run",
+            "python_agent_harness.tools.grep.subprocess.run",
             wraps=subprocess.run,
         ) as spy:
             GrepMac().run({"regex": "hello", "path": repo}, self.ctx)
@@ -1910,7 +1913,7 @@ class TestGrepMac(unittest.TestCase):
         subprocess.run(["git", "add", "."], cwd=repo, check=True)
         with (
             mock.patch(
-                "python_agent_harness.tools.grep_mac.subprocess.run",
+                "python_agent_harness.tools.grep.subprocess.run",
                 side_effect=OSError("git broke"),
             ),
             mock.patch("shutil.which", return_value=None),

@@ -5,11 +5,16 @@ guards of _run_worker."""
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+
+import tests  # noqa: F401,E402  (side-effect: hermetic config, see tests/__init__.py)
 from python_agent_harness.core.models import Message, TextPart
 from python_agent_harness.entry.controller import Controller
 

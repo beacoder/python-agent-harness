@@ -19,13 +19,19 @@ from rich.live import Live
 from rich.text import Text
 
 from ..core.models import ImagePart, Message, TextPart
+from ..entry.restore import (
+    AGENT_KEY,
+    MODEL_KEY,
+    PROJECT_KEY,
+    apply_saved_session,
+    load_saved_session,
+    resolve_session_path,
+)
 from ..io.attachments import image_placeholder, parse_at_references
 from ..io.persistence import (
     SessionPersistence,
     escape_role_headers,
-    find_session_by_title,
     parse_saved_body,
-    title_from_filename,
 )
 from ..prompts import RESERVED_AGENT_NAME, discover_agents
 from ..session import config
@@ -653,15 +659,7 @@ class CommandMixin:
         it is matched as a substring against session filenames/titles
         (case-insensitive).
         """
-        path: str | None = None
-        if not arg or arg in ("--latest", "latest"):
-            path = SessionPersistence.latest_session()
-        elif os.path.isfile(os.path.expanduser(arg)):
-            path = os.path.expanduser(arg)
-        else:
-            # Try title-based matching: find sessions whose filename
-            # contains the argument as a case-insensitive substring
-            path = find_session_by_title(arg)
+        path = resolve_session_path(arg)
         if not path:
             self.console.print(
                 "[yellow]no session found "
@@ -673,111 +671,33 @@ class CommandMixin:
             self.console.print(f"[red]file not found: {safe_markup(path)}[/red]")
             return
         try:
-            # surrogateescape mirrors SessionPersistence.save (see there)
-            with open(path, encoding="utf-8", errors="surrogateescape") as fh:
-                text = fh.read()
+            saved = load_saved_session(path)
         except OSError as e:
             self.console.print(f"[red]cannot read {safe_markup(path)}: {safe_markup(e)}[/red]")
             return
-        meta = SessionPersistence.parse_metadata(text)
-        body = SessionPersistence.strip_metadata(text)
-        # Rebuild conversation history from the saved markdown format
-        messages = parse_saved_body(body)
-        # Round timestamps are persisted in the metadata block; restore
-        # them so the dump separators keep their HH:MM:SS times.
-        round_times = meta.get("python-agent-harness--round-times")
-        if round_times:
-            try:
-                self._round_times = [float(x) for x in round_times.split()]
-            except ValueError:
-                self._round_times = []
-        else:
-            self._round_times = []
-        self._controller.store.round_times = list(self._round_times)
-        # Update the session store to point at the restored file
-        self._controller.store.file_path = path
-        title = title_from_filename(path)
-        if title:
-            self._controller.store.title = title
-        # Restore agent if saved
-        agent = meta.get("python-agent-harness--agent")
-        if agent:
-            try:
-                success, msg = self._controller.switch_agent(agent)
-                if success:
-                    self.console.print(f"[green]{safe_markup(msg)}[/green]")
-                else:
-                    # Agent no longer exists: reset to default to avoid
-                    # stale exclusions from the previously active agent
-                    self._controller.switch_agent("default")
-                    self.console.print(f"[yellow]warning: {safe_markup(msg)}[/yellow]")
-            except Exception as e:
-                self.console.print(
-                    f"[yellow]warning: could not restore agent: {safe_markup(e)}[/yellow]"
-                )
-        # Restore model if saved: /model's profile switching is the
-        # canonical path — it also fixes base_url/api_key/temperature
-        # and other settings that a bare model-name change would leave
-        # pointing at the wrong endpoint.  The metadata stores the raw
-        # model name, so first try it as a profile name, then fall back
-        # to a profile whose model matches; without a matching profile
-        # the current model stays active (profile names are not saved).
-        model = meta.get("python-agent-harness--model")
-        if model:
-            try:
-                if model == self._controller.model:
-                    # Already the active model: nothing to do, no noise.
-                    pass
-                elif model == self._controller.llm_settings.get("model"):
-                    # The saved model is the session-start default: the
-                    # "default" pseudo-profile restores exactly those
-                    # original llm settings (profile names were not saved,
-                    # so there is no better match).
-                    success, msg = self._controller.switch_model("default")
-                    self.console.print(f"[green]{safe_markup(msg)}[/green]")
-                else:
-                    success, msg = self._controller.switch_model(model)
-                    if not success:
-                        profile = next(
-                            (
-                                name
-                                for name, p in self._controller.model_profiles.items()
-                                if p.get("model") == model
-                            ),
-                            None,
-                        )
-                        if profile:
-                            success, msg = self._controller.switch_model(profile)
-                    if success:
-                        self.console.print(f"[green]{safe_markup(msg)}[/green]")
-                    else:
-                        self.console.print(
-                            f"[yellow]warning: model {safe_markup(repr(model))} has no matching profile, "
-                            f"keeping current model[/yellow]"
-                        )
-            except Exception as e:
-                self.console.print(
-                    f"[yellow]warning: could not restore model: {safe_markup(e)}[/yellow]"
-                )
-        # Replace conversation history: a new generation.  Invalidate any
-        # worker still winding down from a cancelled run so its salvaged
-        # history can't clobber the restored session.
-        self._controller.run_generation += 1
-        self.conversation_history = messages
-        self._controller.last_messages = list(messages)
-        self._controller.clear_todos()
+
+        def report(level: str, msg: str) -> None:
+            if level == "ok":
+                self.console.print(f"[green]{safe_markup(msg)}[/green]")
+            else:
+                self.console.print(f"[yellow]warning: {safe_markup(msg)}[/yellow]")
+
+        apply_saved_session(self._controller, saved, report)
+        # Round timestamps keep the dump separators' HH:MM:SS times.
+        self._round_times = list(saved.round_times)
         self._history_dirty = True
         # The restored session belongs to the saved project: switch the
         # input history (Up/Down recall) to that project's file too, so
         # the recalled prompts match the restored conversation.
-        saved_project = meta.get("python-agent-harness--project-dir")
+        saved_project = saved.meta.get(PROJECT_KEY)
         if saved_project:
             self._switch_input_history(saved_project)
-        project = meta.get("python-agent-harness--project-dir", "?")
-        agent_display = meta.get("python-agent-harness--agent", "default")
+        model = saved.meta.get(MODEL_KEY)
+        agent_display = saved.meta.get(AGENT_KEY, "default")
         self.console.print(
             f"[green]restored:[/green] {safe_markup(os.path.basename(path))} "
-            f"(model={safe_markup(model)}, agent={safe_markup(agent_display)}, project={safe_markup(project)}, {len(messages)} messages)"
+            f"(model={safe_markup(model)}, agent={safe_markup(agent_display)}, "
+            f"project={safe_markup(saved_project or '?')}, {len(saved.messages)} messages)"
         )
 
     def _switch_input_history(self, project_dir: str) -> None:

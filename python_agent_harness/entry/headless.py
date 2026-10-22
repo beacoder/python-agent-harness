@@ -137,6 +137,25 @@ def _cancelled_now(session: Any) -> bool:
     return event is not None and event.is_set() is True
 
 
+def usage_snapshot(session: Any) -> dict[str, Any] | None:
+    """Cumulative input/output tokens and rounds of the current run.
+
+    Reads the CURRENT ``usage_totals`` (``Controller.submit`` swaps in a
+    fresh dict per run, so a reference captured before submit would
+    always snapshot zeros).  None when the session keeps no totals.
+    """
+    totals = getattr(session, "usage_totals", None)
+    if not isinstance(totals, dict):
+        return None
+    usage: dict[str, Any] = {"input": 0, "output": 0, "rounds": 0}
+    with totals.get("_lock", threading.Lock()):
+        for key in ("input", "output", "rounds"):
+            value = totals.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                usage[key] = int(value)
+    return usage
+
+
 def final_answer_text(session: Session) -> str:
     """The run's final assistant answer, TUI-filtered.
 
@@ -285,69 +304,25 @@ def restore_session(controller: Controller, spec: str, err: TextIO) -> bool:
     file, and restores the saved agent/model.  Returns False (with a
     message on *err*) when no matching session exists.
     """
-    from ..io.persistence import (
-        SessionPersistence,
-        find_session_by_title,
-        parse_saved_body,
-        title_from_filename,
-    )
+    from .restore import apply_saved_session, load_saved_session, resolve_session_path
 
-    if not spec or spec in ("--latest", "latest"):
-        path = SessionPersistence.latest_session()
-    elif os.path.isfile(os.path.expanduser(spec)):
-        path = os.path.expanduser(spec)
-    else:
-        path = find_session_by_title(spec)
+    path = resolve_session_path(spec)
     if not path or not os.path.isfile(path):
         err.write(f"no session found: {spec or 'latest'}\n")
         return False
-    # surrogateescape must mirror SessionPersistence.save: the saved body
-    # may carry lone surrogates (the tools read non-UTF-8 files that way),
-    # and a strict decode raised UnicodeDecodeError here.
-    with open(path, encoding="utf-8", errors="surrogateescape") as fh:
-        text = fh.read()
-    meta = SessionPersistence.parse_metadata(text)
-    body = SessionPersistence.strip_metadata(text)
-    messages = parse_saved_body(body)
-    controller.store.file_path = path
-    title = title_from_filename(path)
-    if title:
-        controller.store.title = title
-    agent = meta.get("python-agent-harness--agent")
-    if agent:
-        success, msg = controller.switch_agent(agent)
-        if not success:
-            controller.switch_agent("default")
+    try:
+        saved = load_saved_session(path)
+    except OSError as e:
+        err.write(f"cannot read {path}: {e}\n")
+        return False
+
+    def report(level: str, msg: str) -> None:
+        # headless output is quiet on success: only problems reach stderr
+        if level == "warning":
             err.write(f"warning: {msg}\n")
-    model = meta.get("python-agent-harness--model")
-    if model and model != controller.model:
-        if model == controller.llm_settings.get("model"):
-            # The saved model is the session-start default: the
-            # "default" pseudo-profile restores exactly those settings.
-            controller.switch_model("default")
-        else:
-            success, _ = controller.switch_model(model)
-            if not success:
-                profile = next(
-                    (
-                        name
-                        for name, p in controller.model_profiles.items()
-                        if p.get("model") == model
-                    ),
-                    None,
-                )
-                if profile:
-                    success, _ = controller.switch_model(profile)
-            if not success:
-                err.write(
-                    f"warning: model {model!r} has no matching profile, keeping current model\n"
-                )
-    # Replace conversation history: a new generation, so a stale worker
-    # from a previous run can't clobber the restored session.
-    controller.run_generation += 1
-    controller.last_messages = messages
-    controller.clear_todos()
-    err.write(f"restored: {os.path.basename(path)} ({len(messages)} messages)\n")
+
+    apply_saved_session(controller, saved, report)
+    err.write(f"restored: {os.path.basename(path)} ({len(saved.messages)} messages)\n")
     return True
 
 
@@ -679,20 +654,12 @@ def run_headless_jsonl(
         """The terminal result line: snapshots usage and model so every
         result line — including early failures — carries the same
         fields for the driving process."""
-        usage: dict[str, Any] | None = None
-        # Read the CURRENT usage_totals, not a reference captured before
-        # submit(): Controller.submit swaps in a fresh dict per run, so
-        # a pre-submit reference would always snapshot zeros.
-        totals = getattr(session, "usage_totals", None)
-        if isinstance(totals, dict):
-            usage = {"input": 0, "output": 0, "rounds": 0}
-            with totals.get("_lock", threading.Lock()):
-                for key in ("input", "output", "rounds"):
-                    value = totals.get(key)
-                    if isinstance(value, (int, float)) and not isinstance(value, bool):
-                        usage[key] = int(value)
         view.emit_result(
-            answer, errors=errors, usage=usage, model=session.model, cancelled=cancelled
+            answer,
+            errors=errors,
+            usage=usage_snapshot(session),
+            model=session.model,
+            cancelled=cancelled,
         )
 
     if restore is not None and not restore_session(controller, restore, view.err):

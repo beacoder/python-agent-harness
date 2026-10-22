@@ -2,10 +2,14 @@
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+
+import tests  # noqa: F401,E402  (side-effect: hermetic config, see tests/__init__.py)
 from python_agent_harness.session import config
 
 ENV_KEYS = [
@@ -602,6 +606,49 @@ class TestConfigCli(unittest.TestCase):
                 rc = main(["config", "--init", "--path", str(p)])
             self.assertEqual(rc, 1)
             self.assertIn("delete it first", buf.getvalue())
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits")
+    def test_config_init_is_private(self):
+        """The template holds the API key: file 0o600, new dir 0o700,
+        regardless of a permissive umask."""
+        import io
+        import stat
+        from contextlib import redirect_stdout
+
+        from python_agent_harness.entry.cli import main
+
+        old_umask = os.umask(0o022)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                p = Path(d) / "newdir" / "config.json"
+                with redirect_stdout(io.StringIO()):
+                    rc = main(["config", "--init", "--path", str(p)])
+                self.assertEqual(rc, 0)
+                self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(p.parent.stat().st_mode), 0o700)
+                self.assertIn('"api_key"', p.read_text(encoding="utf-8"))
+        finally:
+            os.umask(old_umask)
+
+    @unittest.skipIf(os.name == "nt", "symlinks need privileges on Windows")
+    def test_config_init_refuses_symlink(self):
+        """A (dangling) symlink at the config path is refused, never
+        followed: the template must not land in the link's target."""
+        import io
+        from contextlib import redirect_stdout
+
+        from python_agent_harness.entry.cli import main
+
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "elsewhere.json"
+            p = Path(d) / "config.json"
+            p.symlink_to(target)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = main(["config", "--init", "--path", str(p)])
+            self.assertEqual(rc, 1)
+            self.assertIn("delete it first", buf.getvalue())
+            self.assertFalse(target.exists())
 
     def test_config_show_missing_file_message(self):
         """config with a nonexistent path prints a hint, falls back to

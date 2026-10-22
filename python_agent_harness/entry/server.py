@@ -130,7 +130,14 @@ from typing import Any, TextIO
 from ..core.models import api_safe
 from ..session.session import Session
 from .controller import Controller
-from .headless import PROTOCOL_VERSION, JsonlView, _restorable_handler, final_answer_text
+from .headless import (
+    PROTOCOL_VERSION,
+    JsonlView,
+    _cancelled_now,
+    _restorable_handler,
+    final_answer_text,
+    usage_snapshot,
+)
 
 DEFAULT_ANSWER_TIMEOUT = 0.0  # wait forever for a host answer
 
@@ -581,8 +588,7 @@ class AgentServer:
     # -- run execution ------------------------------------------------------------
 
     def _cancelled_now(self) -> bool:
-        event = getattr(self.session, "cancel_event", None)
-        return event is not None and event.is_set() is True
+        return _cancelled_now(self.session)
 
     def _final_answer(self) -> str:
         """The run's final assistant answer, TUI-filtered (headless shape).
@@ -595,16 +601,7 @@ class AgentServer:
 
     def _usage_snapshot(self) -> dict[str, Any] | None:
         """Cumulative input/output tokens and rounds of the current run."""
-        totals = getattr(self.session, "usage_totals", None)
-        if not isinstance(totals, dict):
-            return None
-        usage: dict[str, Any] = {"input": 0, "output": 0, "rounds": 0}
-        with totals.get("_lock", threading.Lock()):
-            for key in ("input", "output", "rounds"):
-                value = totals.get(key)
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    usage[key] = int(value)
-        return usage
+        return usage_snapshot(self.session)
 
     def _execute_run(self, prompt: str, run_id: str) -> None:
         """Run one prompt to completion, streaming lines as they happen.

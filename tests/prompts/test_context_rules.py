@@ -4,11 +4,15 @@ for the main agent, session commands, and the TUI slash path.  Sub-agents
 are excluded by design: their system prompt is subagent.md ONLY.
 """
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+
+import tests  # noqa: F401,E402  (side-effect: hermetic config, see tests/__init__.py)
 from python_agent_harness.prompts import (
     assemble_agent_prompt,
     load_task_completion_rules,

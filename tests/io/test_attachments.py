@@ -2,10 +2,15 @@
 
 import base64
 import os
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+
+import tests  # noqa: F401,E402  (side-effect: hermetic config, see tests/__init__.py)
 from python_agent_harness.core.models import ImagePart, Message, TextPart
 from python_agent_harness.io.attachments import parse_at_references
 from python_agent_harness.session.config import DEFAULT_LLM, load_llm_config

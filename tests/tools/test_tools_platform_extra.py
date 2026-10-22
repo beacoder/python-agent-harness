@@ -11,11 +11,16 @@ CI of every OS — none of these tests depend on the host platform.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
+
+import tests  # noqa: F401,E402  (side-effect: hermetic config, see tests/__init__.py)
 from python_agent_harness.tools.base import ToolContext
 from python_agent_harness.tools.grep_mac import (
     GrepMac,
@@ -108,9 +113,9 @@ class TestGrepMacRun(unittest.TestCase):
         through to the shared rg/grep chain."""
         with (
             tempfile.TemporaryDirectory() as d,
-            mock.patch("python_agent_harness.tools.grep_mac._git_root", return_value=d),
+            mock.patch("python_agent_harness.tools.grep._git_root", return_value=d),
             mock.patch(
-                "python_agent_harness.tools.grep_mac.subprocess.run",
+                "python_agent_harness.tools.grep.subprocess.run",
                 side_effect=OSError("git exploded"),
             ),
             mock.patch.object(GrepMac, "_fallback_rg_grep", return_value="fallback output") as fb,
@@ -118,6 +123,40 @@ class TestGrepMacRun(unittest.TestCase):
             out = GrepMac().run({"regex": "x", "path": d}, _ctx())
         self.assertEqual(out, "fallback output")
         self.assertEqual(fb.call_args.args[0], r"x")
+
+    def test_git_gets_translated_regex_fallback_gets_original(self):
+        """Only the git grep attempt uses the -E dialect: git sees the
+        ERE translation, the rg/grep fallback the model's original regex."""
+        failed = SimpleNamespace(returncode=128, stdout="", stderr="")
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch("python_agent_harness.tools.grep._git_root", return_value=d),
+            mock.patch(
+                "python_agent_harness.tools.grep.subprocess.run", return_value=failed
+            ) as run,
+            mock.patch.object(GrepMac, "_fallback_rg_grep", return_value="fb") as fb,
+        ):
+            GrepMac().run({"regex": r"\d+", "path": d}, _ctx())
+        cmd = run.call_args.args[0]
+        self.assertIn("-E", cmd)
+        self.assertNotIn("-P", cmd)
+        self.assertEqual(cmd[cmd.index("-e") + 1], "[0-9]+")
+        self.assertEqual(fb.call_args.args[0], r"\d+")
+
+    def test_linux_grep_keeps_pcre_and_untranslated_regex(self):
+        from python_agent_harness.tools.grep import Grep
+
+        ok = SimpleNamespace(returncode=0, stdout="a.py:1:42\n", stderr="")
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch("python_agent_harness.tools.grep._git_root", return_value=d),
+            mock.patch("python_agent_harness.tools.grep.subprocess.run", return_value=ok) as run,
+        ):
+            out = Grep().run({"regex": r"\d+", "path": d}, _ctx())
+        cmd = run.call_args.args[0]
+        self.assertIn("-P", cmd)
+        self.assertEqual(cmd[cmd.index("-e") + 1], r"\d+")
+        self.assertEqual(out, "a.py:1:42\n")
 
 
 class TestGlobMacFallback(unittest.TestCase):

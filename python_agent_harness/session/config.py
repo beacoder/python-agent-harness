@@ -119,6 +119,36 @@ BASH_TIMEOUT_SILENCE: float | None = 120.0
 # than this regardless of output.  None disables the cap (default).
 BASH_TIMEOUT_MAX: float | None = None
 
+# Environment variables removed from every Bash command's environment
+# (case-insensitive fnmatch patterns over the variable NAME).  The child
+# would otherwise inherit the harness's whole environment, and a single
+# `printenv` would put API keys and cloud credentials into the model's
+# context (and the provider's logs).  Names listed in the config file's
+# ``bash.env_passthrough`` are kept regardless, and so are variables whose
+# value is an existing absolute path (a pointer to a credentials file, e.g.
+# GOOGLE_APPLICATION_CREDENTIALS, is not itself a secret) or a trivial
+# flag (0/1/true/false/...).  A denylist, not an allowlist: commands keep
+# PATH, toolchain, proxy and SSH-agent settings.
+BASH_ENV_SECRET_PATTERNS: tuple[str, ...] = (
+    "*API_KEY*",
+    "*APIKEY*",
+    "*_KEY",
+    "*PRIVATE_KEY*",
+    "*SECRET*",
+    "*TOKEN",
+    "*PASSWORD*",
+    "*PASSWD*",
+    "*_PASS",
+    "*_PWD",
+    "*_PAT",
+    "*CREDENTIAL*",
+    "*COOKIE*",
+)
+
+# Names that match a secret pattern above but never hold a secret
+# (public keys are public by definition); checked first.
+BASH_ENV_NOT_SECRET_PATTERNS: tuple[str, ...] = ("*PUBLIC_KEY*", "*PUBKEY*")
+
 # ---- LLM client ----------------------------------------------------------------
 DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
@@ -260,6 +290,10 @@ CONFIG_TEMPLATE = """\
     "timeout": null
   }},
   "default_agent": null,
+  "bash": {{
+    "_comment": "Secret-looking environment variables (names matching *API_KEY*, *SECRET*, *TOKEN, *PASSWORD*, ... see BASH_ENV_SECRET_PATTERNS in config.py) are removed from Bash commands' environment so `printenv` cannot leak them to the model (variables holding an existing file path are kept). List variable names here to pass specific ones through anyway, e.g. [\\"GH_TOKEN\\"] for `gh`.",
+    "env_passthrough": []
+  }},
   "paths": {{
     "_comment": "Optional overrides for context and skill directories. Absolute paths or ~ expansion supported.",
     "context_path": null,
@@ -503,6 +537,27 @@ def load_paths_config(path: str | os.PathLike | None = None) -> dict:
         if isinstance(val, str) and val.strip():
             settings[key] = os.path.abspath(os.path.expanduser(val.strip()))
     return settings
+
+
+def load_bash_env_passthrough(path: str | os.PathLike | None = None) -> frozenset[str]:
+    """Names from ``bash.env_passthrough``: secret-looking environment
+    variables the user explicitly lets Bash commands see (e.g. GH_TOKEN
+    for `gh`).
+
+    Fails closed: a missing/broken file or a malformed section yields
+    an empty set, so secrets stay stripped.
+    """
+    try:
+        data = _read_config(path)
+    except ValueError:
+        return frozenset()
+    section = data.get("bash")
+    if not isinstance(section, dict):
+        return frozenset()
+    names = section.get("env_passthrough")
+    if not isinstance(names, list):
+        return frozenset()
+    return frozenset(n.strip().upper() for n in names if isinstance(n, str) and n.strip())
 
 
 def load_mcp_config(path: str | os.PathLike | None = None) -> MCPConfig:

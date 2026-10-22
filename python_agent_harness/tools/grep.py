@@ -60,6 +60,14 @@ class Grep(Tool):
         "required": ["regex", "path"],
     }
 
+    # git grep regex dialect: PCRE here; GrepMac overrides both hooks
+    # (Apple's git is built without PCRE, see grep_mac.py).
+    git_regex_flag = "-P"
+
+    def _git_regex(self, regex: str) -> str:
+        """REGEX as passed to ``git grep`` (translated for its dialect)."""
+        return regex
+
     def run(self, args: dict, ctx: ToolContext) -> str:
         regex = args["regex"]
         path = resolve_path(args["path"], ctx.cwd)
@@ -83,9 +91,9 @@ class Grep(Tool):
                 "--no-color",
                 "--max-count=1000",
                 "--untracked",
-                "-P",
+                self.git_regex_flag,
                 "-e",
-                regex,
+                self._git_regex(regex),
                 "--",
                 pathspec,
             ]
@@ -105,6 +113,8 @@ class Grep(Tool):
                 proc = None
             if proc is not None and proc.returncode in (0, 1):
                 return _grep_out(proc, "git")
+        # git grep unavailable or failed: rg, then plain grep, with the
+        # ORIGINAL regex (rg speaks PCRE-like syntax natively)
         return self._fallback_rg_grep(regex, path, glob, context)
 
     def _fallback_rg_grep(
@@ -112,10 +122,8 @@ class Grep(Tool):
     ) -> str:
         """rg → grep fallback chain (no git grep).
 
-        Shared by :class:`Grep` (after git grep -P fails) and
-        :class:`GrepMac` (after git grep -E fails).  Extracted here so
-        the Mac variant can skip the parent's ``git grep -P`` attempt
-        without duplicating the rg/grep logic.
+        Runs after the git grep attempt fails or when PATH is not in a
+        git repository (both platforms).
         """
         if shutil.which("rg"):
             cmd = [

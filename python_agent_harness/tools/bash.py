@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import codecs
 import contextlib
+import fnmatch
 import os
 import select
 import signal
@@ -33,7 +34,9 @@ import subprocess
 import threading
 import time
 from collections import deque
+from collections.abc import Iterable, Mapping
 
+from ..session import config as _config
 from ..session.config import BASH_TIMEOUT_MAX, BASH_TIMEOUT_SILENCE
 from ..session.config import MAX_OUTPUT_CHARS as _MAX_OUTPUT
 from .base import PendingToolResult, Tool, ToolContext
@@ -44,6 +47,102 @@ _TAIL_LINES = 50  # lines kept from the tail after truncation
 _READ_CHUNK = 64 * 1024  # bytes read from the pipe per iteration
 _POLL_INTERVAL = 0.02  # seconds between cancel/exit checks
 _DRAIN_GRACE = 0.25  # seconds to keep reading after the process exits
+
+
+def is_secret_env_name(name: str, patterns: Iterable[str] | None = None) -> bool:
+    """Whether env var NAME looks like a credential (case-insensitive).
+
+    Names matching ``BASH_ENV_NOT_SECRET_PATTERNS`` (e.g. public keys)
+    never count, whatever the secret patterns say.
+    """
+    upper = name.upper()
+    if any(fnmatch.fnmatchcase(upper, p.upper()) for p in _config.BASH_ENV_NOT_SECRET_PATTERNS):
+        return False
+    pats = _config.BASH_ENV_SECRET_PATTERNS if patterns is None else patterns
+    return any(fnmatch.fnmatchcase(upper, p.upper()) for p in pats)
+
+
+# Values that cannot carry a secret (boolean/flag settings such as
+# HF_HUB_DISABLE_TOKEN=1): kept even under a secret-looking name.
+_TRIVIAL_VALUES = frozenset({"", "0", "1", "true", "false", "yes", "no", "on", "off"})
+
+# Total budget for checking which secret-named values are existing paths.
+# A stat on a hung network mount (NFS/AFS) can block indefinitely; past
+# the budget the unresolved values are treated as not-a-path (stripped).
+_PATH_CHECK_TIMEOUT = 0.5
+
+
+def _existing_paths(values: Iterable[str], timeout: float = _PATH_CHECK_TIMEOUT) -> set[str]:
+    """The subset of VALUES that are absolute paths existing on disk.
+
+    Such a value is a *pointer* to credentials (e.g.
+    GOOGLE_APPLICATION_CREDENTIALS, AWS_SHARED_CREDENTIALS_FILE), not a
+    secret itself: the file stays readable either way, so stripping the
+    variable would only break the tools that rely on it.  ``~`` is
+    expanded first (tools expand it themselves).
+
+    The stats run on a daemon thread bounded by TIMEOUT so a hung mount
+    cannot stall the command; anything unconfirmed by then is reported
+    as not-a-path, i.e. stripped (fail closed).  ``os.path.exists``
+    returns False (never raises) for overlong or NUL-containing values.
+    """
+    candidates = [v for v in dict.fromkeys(values) if os.path.isabs(os.path.expanduser(v))]
+    if not candidates:
+        return set()
+    found: set[str] = set()
+    lock = threading.Lock()
+
+    def check() -> None:
+        for value in candidates:
+            if os.path.exists(os.path.expanduser(value)):
+                with lock:
+                    found.add(value)
+
+    worker = threading.Thread(target=check, name="bash-env-path-check", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    with lock:
+        return set(found)
+
+
+def scrubbed_env(
+    environ: Mapping[str, str] | None = None,
+    passthrough: Iterable[str] = (),
+) -> dict[str, str]:
+    """ENVIRON (default ``os.environ``) minus secret-looking variables.
+
+    Kept despite a secret-looking name: names in PASSTHROUGH
+    (case-insensitive; the user's explicit opt-in), trivial flag values
+    (``_TRIVIAL_VALUES``), and values that are existing absolute paths
+    (``_existing_paths``).  The original variable order is preserved.
+
+    ENVIRON is snapshotted once: classification and the result are
+    built from the same copy, so a variable added concurrently (to the
+    live ``os.environ``) can never skip classification and leak.
+    """
+    env = dict(os.environ if environ is None else environ)
+    keep = {n.upper() for n in passthrough}
+    suspects: dict[str, str] = {}
+    for k, v in env.items():
+        if k.upper() in keep or not is_secret_env_name(k):
+            continue
+        if v.strip().lower() in _TRIVIAL_VALUES:
+            continue
+        suspects[k] = v
+    paths = _existing_paths(suspects.values())
+    return {k: v for k, v in env.items() if k not in suspects or v in paths}
+
+
+def _env_passthrough(ctx: ToolContext) -> frozenset[str]:
+    """The user's ``bash.env_passthrough`` names; empty on ANY failure.
+
+    Fails closed: an unreadable config must neither break the command
+    nor re-enable secrets.
+    """
+    try:
+        return _config.load_bash_env_passthrough(ctx.config_path)
+    except Exception:  # noqa: BLE001 - see docstring
+        return frozenset()
 
 
 def _kill_pgid(pgid: int) -> None:
@@ -255,7 +354,9 @@ class Bash(Tool):
         "Execute a shell command. Returns stdout followed by 'Exit code: N' "
         "(N is the command's exit status; negative means killed by a signal). "
         + _timeout_note
-        + "A session cancel (Ctrl-C) kills the process."
+        + "A session cancel (Ctrl-C) kills the process. "
+        "Secret-looking environment variables (API keys, tokens, passwords) "
+        "are removed from the command's environment."
     )
     parameters = {
         "type": "object",
@@ -275,6 +376,10 @@ class Bash(Tool):
             # Ctrl-C already pending: do not spawn a process that would
             # be killed moments later.
             return "Error: Bash command cancelled."
+        # The child never inherits credentials: a `printenv` (or any
+        # tool that echoes its environment) would put them into the
+        # model's context.  Re-read per call so config edits apply live.
+        env = scrubbed_env(passthrough=_env_passthrough(ctx))
         try:
             proc = subprocess.Popen(
                 command,
@@ -284,6 +389,7 @@ class Bash(Tool):
                 stderr=subprocess.STDOUT,
                 bufsize=0,
                 cwd=ctx.cwd,
+                env=env,
                 start_new_session=True,
             )
         except OSError as e:

@@ -524,6 +524,252 @@ class TestBashInternals(unittest.TestCase):
         self.assertTrue(out.endswith("Exit code: 7"))
 
 
+class TestBashEnvScrubbing(unittest.TestCase):
+    """Bash commands must not inherit credentials from the harness env."""
+
+    # values are unique markers so a leak is unambiguous in `env` output
+    SECRETS = {
+        "OPENAI_API_KEY": "leak-marker-00",
+        "OPENAI_SUBAGENT_API_KEY": "leak-marker-01",
+        "AWS_SECRET_ACCESS_KEY": "leak-marker-02",
+        "AWS_SESSION_TOKEN": "leak-marker-03",
+        "GH_TOKEN": "leak-marker-04",
+        "DB_PASSWORD": "leak-marker-05",
+        "MY_SERVICE_PASS": "leak-marker-06",
+        "GITHUB_PAT": "leak-marker-07",
+        "STRIPE_SECRET": "leak-marker-08",
+        "SIGNING_PRIVATE_KEY": "leak-marker-09",
+        "GOOGLE_APPLICATION_CREDENTIALS": "leak-marker-10",
+        "lowercase_api_key": "leak-marker-11",
+    }
+    KEPT = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": "/home/u",
+        "PWD": "/proj",
+        "OLDPWD": "/",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock",
+        "XAUTHORITY": "/home/u/.Xauthority",
+        "TOKENIZERS_PARALLELISM": "false",
+        "AWS_REGION": "eu-north-1",
+        "VIRTUAL_ENV": "/proj/venv",
+    }
+
+    def test_secret_names_removed_others_kept(self):
+        from python_agent_harness.tools.bash import scrubbed_env
+
+        env = scrubbed_env({**self.SECRETS, **self.KEPT})
+        self.assertEqual(env, self.KEPT)
+
+    def test_passthrough_is_case_insensitive_opt_in(self):
+        from python_agent_harness.tools.bash import scrubbed_env
+
+        env = scrubbed_env({**self.SECRETS, **self.KEPT}, passthrough={"gh_token"})
+        self.assertEqual(env["GH_TOKEN"], self.SECRETS["GH_TOKEN"])
+        self.assertNotIn("OPENAI_API_KEY", env)
+
+    def test_existing_path_values_are_kept(self):
+        """A secret-looking NAME holding an existing absolute path is a
+        pointer to a credentials file (which stays readable anyway), so
+        it is kept; tools like gcloud/aws keep finding their creds."""
+        from python_agent_harness.tools.bash import scrubbed_env
+
+        with tempfile.TemporaryDirectory() as d:
+            creds = os.path.join(d, "sa.json")
+            with open(creds, "w") as f:
+                f.write("{}")
+            env = scrubbed_env(
+                {
+                    "GOOGLE_APPLICATION_CREDENTIALS": creds,
+                    "AWS_SHARED_CREDENTIALS_FILE": creds,
+                    "PASSWORD_STORE_DIR": d,
+                    # not kept: relative, missing, or not a path at all
+                    "RELATIVE_SECRET": "sa.json",
+                    "MISSING_CREDENTIALS": os.path.join(d, "nope.json"),
+                    "PATH_LIKE_TOKEN": "/x" + "a" * 5000,  # overlong: exists() is False
+                    "NUL_TOKEN": "/tmp\x00x",
+                }
+            )
+        self.assertEqual(
+            set(env),
+            {"GOOGLE_APPLICATION_CREDENTIALS", "AWS_SHARED_CREDENTIALS_FILE", "PASSWORD_STORE_DIR"},
+        )
+
+    def test_home_relative_path_values_are_kept(self):
+        from python_agent_harness.tools.bash import scrubbed_env
+
+        with tempfile.TemporaryDirectory() as home:
+            os.makedirs(os.path.join(home, ".aws"))
+            with open(os.path.join(home, ".aws", "credentials"), "w") as f:
+                f.write("")
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                env = scrubbed_env(
+                    {
+                        "AWS_SHARED_CREDENTIALS_FILE": "~/.aws/credentials",
+                        "MISSING_CREDENTIALS": "~/.aws/nope",
+                    }
+                )
+        self.assertEqual(env, {"AWS_SHARED_CREDENTIALS_FILE": "~/.aws/credentials"})
+
+    def test_hung_path_check_does_not_stall_and_strips(self):
+        """A stat that never returns (hung NFS/AFS mount) is abandoned
+        after the budget; the unconfirmed value is stripped."""
+        from python_agent_harness.tools import bash as bash_mod
+
+        release = threading.Event()
+        real_exists = os.path.exists
+
+        def hanging_exists(path):
+            if str(path).startswith("/hung/"):
+                release.wait(10)
+                return True
+            return real_exists(path)
+
+        try:
+            with mock.patch.object(bash_mod.os.path, "exists", hanging_exists):
+                start = time.monotonic()
+                env = bash_mod.scrubbed_env(
+                    {"NFS_CREDENTIALS": "/hung/creds", "PLAIN": "x"}, passthrough=()
+                )
+                elapsed = time.monotonic() - start
+        finally:
+            release.set()  # let the abandoned daemon thread finish
+        self.assertLess(elapsed, bash_mod._PATH_CHECK_TIMEOUT + 1.0)
+        self.assertEqual(env, {"PLAIN": "x"})
+
+    def test_public_keys_and_flag_values_are_not_secrets(self):
+        from python_agent_harness.tools.bash import is_secret_env_name, scrubbed_env
+
+        self.assertFalse(is_secret_env_name("JWT_PUBLIC_KEY"))
+        self.assertFalse(is_secret_env_name("deploy_pubkey"))
+        self.assertTrue(is_secret_env_name("SIGNING_PRIVATE_KEY"))
+        env = scrubbed_env(
+            {
+                "JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----",
+                "HF_HUB_DISABLE_TOKEN": "1",
+                "USE_SECRET_STORE": " True ",
+                "EMPTY_TOKEN": "",
+                "GH_TOKEN": "leak-marker-real",
+            }
+        )
+        self.assertEqual(
+            set(env), {"JWT_PUBLIC_KEY", "HF_HUB_DISABLE_TOKEN", "USE_SECRET_STORE", "EMPTY_TOKEN"}
+        )
+
+    def test_original_variable_order_is_kept(self):
+        from python_agent_harness.tools.bash import scrubbed_env
+
+        with tempfile.TemporaryDirectory() as d:
+            env = scrubbed_env({"A": "1", "X_CREDENTIALS": d, "B_TOKEN": "s", "C": "3"})
+        self.assertEqual(list(env), ["A", "X_CREDENTIALS", "C"])
+
+    def test_variable_added_concurrently_cannot_skip_classification(self):
+        """The environment is read exactly once: a secret that appears
+        after the first read (another thread writing os.environ) must
+        not reach the result unfiltered."""
+        from collections.abc import Mapping
+
+        from python_agent_harness.tools.bash import scrubbed_env
+
+        class GrowingEnv(Mapping):
+            """Gains a secret as soon as one full iteration has finished."""
+
+            def __init__(self):
+                self.data = {"PLAIN": "x"}
+                self.reads = 0
+
+            def __getitem__(self, key):
+                return self.data[key]
+
+            def __len__(self):
+                return len(self.data)
+
+            def __iter__(self):
+                yield from list(self.data)
+                self.reads += 1
+                self.data["LATE_TOKEN"] = "leak-marker-late"
+
+        live = GrowingEnv()
+        env = scrubbed_env(live)
+        self.assertEqual(env, {"PLAIN": "x"})
+        self.assertEqual(live.reads, 1)
+
+    def test_printenv_does_not_reveal_secrets(self):
+        """End to end through the real tool: the spawned shell sees
+        neither the secret names nor their values."""
+        from python_agent_harness.tools.bash import Bash
+
+        with tempfile.TemporaryDirectory() as d:
+            sess = FakeSession()
+            sess.project_dir = d
+            sess.config_path = os.path.join(d, "missing-config.json")
+            with mock.patch.dict(os.environ, {**self.SECRETS, "SAFE_VAR": "visible"}):
+                out = Bash().run({"command": "env"}, ToolContext(sess)).wait()
+        self.assertIn("SAFE_VAR=visible", out)
+        for name, value in self.SECRETS.items():
+            self.assertNotIn(name, out)
+            self.assertNotIn(value, out)
+        # the harness's own environment is untouched
+        self.assertNotIn("SAFE_VAR", os.environ)
+
+    def test_config_passthrough_reaches_the_command(self):
+        from python_agent_harness.tools.bash import Bash
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "config.json")
+            with open(cfg, "w", encoding="utf-8") as f:
+                json.dump({"bash": {"env_passthrough": ["GH_TOKEN"]}}, f)
+            sess = FakeSession()
+            sess.project_dir = d
+            sess.config_path = cfg
+            with mock.patch.dict(os.environ, {"GH_TOKEN": "gh-token", "NPM_TOKEN": "npm"}):
+                out = Bash().run({"command": "env"}, ToolContext(sess)).wait()
+        self.assertIn("GH_TOKEN=gh-token", out)
+        self.assertNotIn("NPM_TOKEN", out)
+
+    def test_passthrough_config_fails_closed(self):
+        """A broken file or malformed section never re-enables secrets."""
+        from python_agent_harness.session.config import load_bash_env_passthrough
+
+        with tempfile.TemporaryDirectory() as d:
+            cases = {
+                "broken.json": "{not json",
+                "not-object.json": '{"bash": ["GH_TOKEN"]}',
+                "not-list.json": '{"bash": {"env_passthrough": "GH_TOKEN"}}',
+            }
+            for name, text in cases.items():
+                p = os.path.join(d, name)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(text)
+                self.assertEqual(load_bash_env_passthrough(p), frozenset(), name)
+            p = os.path.join(d, "ok.json")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write('{"bash": {"env_passthrough": [" gh_token ", 3, ""]}}')
+            self.assertEqual(load_bash_env_passthrough(p), frozenset({"GH_TOKEN"}))
+
+    def test_unexpected_config_error_still_runs_and_strips(self):
+        """Any failure resolving the passthrough list (here: a bogus
+        config_path type) runs the command with secrets stripped."""
+        from python_agent_harness.tools.bash import Bash
+
+        with tempfile.TemporaryDirectory() as d:
+            sess = FakeSession()
+            sess.project_dir = d
+            sess.config_path = object()  # type: ignore[assignment]
+            with mock.patch.dict(os.environ, {"GH_TOKEN": "leak-marker-gh"}):
+                out = Bash().run({"command": "env"}, ToolContext(sess)).wait()
+        self.assertTrue(out.endswith("Exit code: 0"))
+        self.assertNotIn("leak-marker-gh", out)
+
+    def test_suite_never_resolves_the_real_config(self):
+        """tests/__init__ points config resolution at a missing file, so
+        a session-less Bash call cannot read the developer's config."""
+        from python_agent_harness.session import config as cfg
+
+        resolved = cfg._config_path(None)
+        self.assertNotEqual(resolved, cfg.CONFIG_FILE)
+        self.assertFalse(resolved.exists())
+
+
 class TestStandaloneToolWithFakeRuntime(unittest.TestCase):
     """A tool can be driven with a minimal ToolRuntime double and NO
     full Session — the payoff of typing ToolContext against ToolRuntime.
