@@ -58,6 +58,15 @@ Without those secrets, re-running the job may help on its own — a new run
 usually gets a different egress IP — but the quota is monthly and the address
 pool is shared, so credentials are the only reliable fix.
 
+### Running the same benchmark locally
+
+The workflow is the cloud path. When it is blocked by something environmental
+(lately the ECR Public anonymous quota behind a runner's shared egress IP),
+`benchmarks/run-deepswe-local.sh` runs the identical pipeline on a machine with
+Docker: same adapter, same image resolver, same summary renderer, own network.
+The workflow is not affected by it. See
+[Running Locally](../../benchmarks/deepswe-benchmark.md#running-locally).
+
 ### Artifacts
 
 - `deepswe-results-{run_id}`: `pier-results/` (per-task `result.json`, verifier

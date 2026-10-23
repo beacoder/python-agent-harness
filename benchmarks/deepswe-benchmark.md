@@ -1,6 +1,6 @@
 # DeepSWE Benchmark Integration
 
-This document explains how to run the [python-agent-harness](https://github.com/beacoder/python-agent-harness) on the [DeepSWE v1.1](https://github.com/datacurve-ai/deep-swe) benchmark using GitHub Actions.
+This document explains how to run the [python-agent-harness](https://github.com/beacoder/python-agent-harness) on the [DeepSWE v1.1](https://github.com/datacurve-ai/deep-swe) benchmark, either in GitHub Actions (the default) or locally with `run-deepswe-local.sh` (see [Running Locally](#running-locally)).
 
 ## Overview
 
@@ -100,6 +100,118 @@ pier-results/<job>/<trial>/
 
 See [Where the benchmark runs](#where-the-benchmark-runs) for the pass-rate
 one-liner and `pier view`.
+
+## Running Locally
+
+`run-deepswe-local.sh` is the local equivalent of the workflow. It exists
+because the cloud path can be blocked by things that have nothing to do with the
+harness — most often the ECR Public anonymous quota behind a GitHub runner's
+shared egress IP (see [ECR Public throttles the task image
+pulls](#ecr-public-throttles-the-task-image-pulls-429)). Running here uses your
+own network and your own Docker daemon, and leaves the workflow untouched:
+
+```bash
+export OPENAI_API_KEY=sk-...            # or let it read the harness config
+benchmarks/run-deepswe-local.sh         # 1 task, full 180 min agent budget
+N_TASKS=2 benchmarks/run-deepswe-local.sh
+N_TASKS=0 benchmarks/run-deepswe-local.sh   # all 113 tasks
+```
+
+Results land in `pier-results/`, with the markdown summary in
+`pier-results/summary.md` (the same renderer the workflow appends to its run
+summary, so local and cloud reports are comparable).
+
+Requirements:
+
+- **Docker Engine with the compose v2 plugin** (`docker compose version` must
+  work — Pier shells out to it). On Ubuntu: `sudo apt-get install -y docker.io
+  docker-compose-v2 && sudo usermod -aG docker $USER`. No logout is needed
+  after that: when the membership is recorded but the current shell predates
+  it, the script re-executes itself through `sg docker`. (Running it under
+  `sudo` is not a substitute — the harness config and the API key live in your
+  own home.)
+- **~12 GB of free RAM** for one trial (each task declares 2 vCPU / 8 GB). See
+  [Resource limits](#resource-limits-why-concurrency-defaults-to-1) — on WSL2
+  this is the `.wslconfig` budget, not the Windows machine's RAM.
+- **Python 3.12+** for the driver venv (Pier 0.3.x). The script picks
+  `python3.13`/`python3.12` automatically, creating `<repo>/.venv-deepswe` with
+  `uv` when available and `venv` otherwise.
+- Disk for the task images: ~1 GB for 1 task, ~3 GB for the 10-task sample
+  (compressed layer unions), plus the same order of magnitude again once they
+  are unpacked. A whole-suite run is not practical on a laptop.
+- The tasks checkout. The script clones `datacurve-ai/deep-swe` into
+  `benchmarks/deep-swe/` (gitignored) on first run.
+- Network access to `public.ecr.aws` (task images) and, during each trial's
+  image build, to PyPI. On a host whose only egress is a proxy, Docker needs to
+  be told about it on three levels — see [Docker behind a
+  proxy](#docker-behind-a-proxy-local-runs-on-wsl2); otherwise the run stalls
+  with `EnvironmentStartTimeoutError`.
+
+The script does exactly what the workflow's `benchmark` job does, minus the
+cloud-only parts:
+
+1. `docker info` and `docker compose version` (fails early, with a readable
+   message, instead of mid-trial);
+2. create/update the driver venv, install `datacurve-pier>=0.3.1` and the
+   harness, then build a wheel from the checkout;
+3. resolve the exact image set for `N_TASKS`/`SAMPLE_SEED` through Pier's own
+   `DatasetConfig` (`deepswe_images.py`) and pre-pull it with exponential
+   backoff, behind a free-disk guard — a throttled pull fails in minutes
+   instead of surfacing as a docker-compose stack trace an hour in;
+4. `pier run -p benchmarks/deep-swe/tasks --agent-import-path
+   deepswe_adapter:PythonAgentHarness --env docker ...`;
+5. render `deepswe_summary.py` output for whatever finished, even when Pier
+   exits non-zero, and exit with Pier's status.
+
+Differences from the cloud run:
+
+- **No 6 h job cap**, so the agent budget defaults to DeepSWE's own 180 min/task.
+  `TASK_TIMEOUT_MINUTES=60` sets a smaller budget; the script passes it as
+  Pier's `--agent-timeout-multiplier`, so only the agent timeout shrinks and
+  the environment build keeps its declared 1800 s. (Scaling everything with
+  `--timeout-multiplier` leaves a 15 min budget only 150 s to build the task's
+  agent image, which a cold build cannot do — the trial then fails with
+  `EnvironmentStartTimeoutError` before the agent ever starts.)
+- `CONCURRENCY` is not forced to 1, but every task declares 2 vCPU / 8 GB, so
+  more than one concurrent trial needs a machine with headroom over 16 GB.
+- If the anonymous ECR quota is what blocked the cloud run, log in locally
+  first: `aws ecr-public get-login-password --region us-east-1 | docker login
+  --username AWS --password-stdin public.ecr.aws`.
+
+Memory is the requirement most likely to be missed on a laptop or WSL. Every
+task declares `memory_mb = 8192` and Pier applies it as a hard limit, so a
+machine with less free RAM gets the container OOM-killed mid-task, which reads
+like a harness bug. The script warns when the host reports under 12 GB:
+
+```
+warning: this machine has 7937 MiB of RAM but DeepSWE tasks request 8192 MiB each;
+warning: expect OOM kills. On WSL raise the limit with memory=16GB in %USERPROFILE%\.wslconfig,
+warning: or pass EXTRA_ARGS='--override-memory-mb <mb>' (changes the declared resources).
+```
+
+On WSL2 the RAM is whatever `.wslconfig` grants, not the size of the Windows
+machine, so raise it there and restart WSL (`wsl --shutdown`) before a run:
+
+```ini
+[wsl2]
+memory=14GB
+swap=8GB
+```
+
+`--override-memory-mb` also works (`EXTRA_ARGS='--override-memory-mb 4096'`) but
+changes the resources the task declares — Pier warns that running a task
+outside its declared resources can disqualify the result, so treat it as a way
+to debug a pipeline, not to produce a score.
+
+Environment variables: `N_TASKS` (1), `MODEL` (`deepseek-flash`),
+`SAMPLE_SEED` (0), `TASK_TIMEOUT_MINUTES` (180), `CONCURRENCY` (1),
+`MAX_ROUNDS` (0 = unlimited), `OPENAI_API_KEY`, `OPENAI_BASE_URL`,
+`DEEP_SWE_DIR`, `VENV_DIR`, `JOBS_DIR`, `DISK_RESERVE_MB` (20480), `SKIP_PULL`
+(0), `SKIP_BUILD` (0), `EXTRA_ARGS` (empty; appended verbatim to the `pier run`
+command line, e.g. `EXTRA_ARGS='--include-task-name prometheus-*'`). Without
+`OPENAI_API_KEY` in the environment the script reuses the profile matching
+`MODEL` from `~/.config/python-agent-harness/config.json` (override with
+`PYTHON_AGENT_HARNESS_CONFIG`); the key is exported, never printed.
 
 ## Architecture
 
@@ -309,6 +421,97 @@ docker run --rm hello-world
 If that step passes but a task container fails, the cause is usually resources,
 image pulls, or the task itself — not the Docker daemon.
 
+### Docker behind a proxy (local runs on WSL2)
+
+Three separate network problems break a local run on a machine whose only
+egress is a proxy bound to `127.0.0.1` (typical for WSL2 + a Windows-side
+proxy). They are worth checking in this order, because each one hides the next:
+
+1. **The daemon cannot pull.** `docker pull` fails with `dial tcp …: i/o
+   timeout` even though `curl https://registry-1.docker.io/v2/` answers `401`
+   in your shell — the daemon does not inherit your shell's proxy. Configure it
+   and restart:
+
+   ```bash
+   sudo mkdir -p /etc/systemd/system/docker.service.d
+   sudo tee /etc/systemd/system/docker.service.d/http-proxy.conf >/dev/null <<'EOF'
+   [Service]
+   Environment="HTTP_PROXY=http://127.0.0.1:1080" "HTTPS_PROXY=http://127.0.0.1:1080" "NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+   EOF
+   sudo systemctl daemon-reload && sudo systemctl restart docker
+   ```
+
+   If the pull now times out on an **IPv6** address, the WSL distro has no
+   working IPv6 route and Docker picks AAAA first. Disable it:
+   `printf 'net.ipv6.conf.all.disable_ipv6=1\n' | sudo tee /etc/sysctl.d/99-disable-ipv6.conf && sudo sysctl -p /etc/sysctl.d/99-disable-ipv6.conf && sudo systemctl restart docker`.
+
+2. **Container egress is broken even though the host works.** The symptom is
+   confusing: DNS resolves, `ping 8.8.8.8` succeeds from a container, plain
+   HTTP works, but HTTPS hangs or the build stalls. On Ubuntu, `docker.io`
+   pulls in `ubuntu-fan`, whose `ip rule` entries hijack traffic arriving from
+   `eth0`. Remove it and restart Docker:
+
+   ```bash
+   sudo apt-get remove -y ubuntu-fan && sudo systemctl restart docker
+   docker run --rm curlimages/curl -s -o /dev/null -w '%{http_code}\n' https://api.deepseek.com/
+   ```
+
+   `401` from `api.deepseek.com` is the success case — it means egress works and
+   the request was simply unauthenticated. Do not use `busybox wget` for this
+   check: it reports a 401 as a failure.
+
+3. **Build steps and containers cannot reach `127.0.0.1`.** Inside a container
+   that address is the container itself, so a loopback-only proxy is
+   unreachable; a `pip install` during the agent-image build then hangs until
+   the environment build times out (`EnvironmentStartTimeoutError`, "No
+   container found for service main"). Expose the proxy on the Docker bridge
+   gateway and let the Docker CLI inject it:
+
+   ```bash
+   # one-time: a TCP bridge 172.17.0.1:3128 -> 127.0.0.1:1080 on the WSL host.
+   # benchmarks/docker-proxy-bridge.py does exactly this; run it as a service:
+   sudo install -m 0755 benchmarks/docker-proxy-bridge.py /usr/local/bin/docker-proxy-bridge
+   sudo tee /etc/systemd/system/docker-proxy-bridge.service >/dev/null <<'EOF'
+   [Unit]
+   Description=TCP bridge exposing the loopback HTTP proxy to Docker containers
+   After=network-online.target docker.service
+
+   [Service]
+   ExecStart=/usr/bin/python3 /usr/local/bin/docker-proxy-bridge
+   Restart=always
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+   sudo systemctl daemon-reload && sudo systemctl enable --now docker-proxy-bridge
+
+   # verify it from a container:
+   docker run --rm curlimages/curl -s -o /dev/null -w '%{http_code}\n' \
+     -x http://172.17.0.1:3128 https://pypi.org/simple/    # expect 200
+   ```
+
+   It is a plain TCP relay (`172.17.0.1` is `docker0`'s address; override with
+   `BRIDGE_LISTEN_HOST`/`BRIDGE_LISTEN_PORT`/`BRIDGE_TARGET_HOST`/
+   `BRIDGE_TARGET_PORT`).
+
+   `~/.docker/config.json` then gives both `docker build` and `docker run` the
+   proxy (`NO_PROXY` keeps the task containers' internal traffic off it):
+
+   ```json
+   {
+     "proxies": {
+       "default": {
+         "httpProxy": "http://172.17.0.1:3128",
+         "httpsProxy": "http://172.17.0.1:3128",
+         "noProxy": "localhost,127.0.0.1,::1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,.ecr.aws"
+       }
+     }
+   }
+   ```
+
+   A cold `pip install rich httpx certifi prompt_toolkit` in the build takes
+   ~30 s through the proxy and never finishes without it.
+
 ### Resource limits (why concurrency defaults to 1)
 
 Every DeepSWE task requests `cpus = 2`, `memory_mb = 8192`, and Pier's default
@@ -442,10 +645,13 @@ secret when switching providers.
 
 ### Where the benchmark runs
 
-**GitHub Actions only.** The workflow is the single supported way to produce a
-score; nothing needs to be installed or executed on a local machine. The
-workflow checks out both repositories, builds the harness wheel, runs Pier with
-`--env docker`, and publishes the results as artifacts.
+**Two paths, same code.** GitHub Actions is the way to get a score without a
+local Docker install: the workflow checks out both repositories, builds the
+harness wheel, runs Pier with `--env docker`, and publishes the results as
+artifacts. `benchmarks/run-deepswe-local.sh` runs the identical pipeline on your
+own machine (same adapter, image resolver and summary) — use it when the cloud
+run is blocked by something environmental, such as the shared ECR Public quota
+described above.
 
 Reading an artifact locally is fine and does not run any task — it is just
 files:

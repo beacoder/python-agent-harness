@@ -164,6 +164,25 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
 
+      # The workflow drives Pier with two scripts from the checked-out repo
+      # (adapter and image resolver). An uncommitted one would otherwise only
+      # surface after the benchmark has already run out its budget, so fail in
+      # seconds instead. benchmarks/deepswe_summary.py is optional: the
+      # Summarize step falls back to an equivalent inline renderer.
+      - name: Check benchmark scripts
+        run: |
+          set -euo pipefail
+          for script in deepswe_adapter.py deepswe_images.py; do
+            if [ ! -f "python-agent-harness/benchmarks/${script}" ]; then
+              echo "::error::python-agent-harness/benchmarks/${script} is missing from this commit - the workflow needs it; commit it and re-run."
+              exit 1
+            fi
+          done
+          if [ ! -f python-agent-harness/benchmarks/deepswe_summary.py ]; then
+            echo "::notice::benchmarks/deepswe_summary.py is not in this commit; the run summary uses the built-in fallback renderer."
+          fi
+          echo "All required benchmark scripts are present."
+
       - name: Check API key
         env:
           API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -393,6 +412,22 @@ jobs:
           TIMEOUT_MULTIPLIER: ${{ needs.prepare.outputs.timeout_multiplier }}
         run: |
           set +e
+          # Prefer the shared renderer, so a cloud run and a local run
+          # (benchmarks/run-deepswe-local.sh) report scores identically. The
+          # inline block below is the same logic and keeps this workflow
+          # self-contained for a checkout that predates the shared file.
+          # On any failure (missing file, missing pier-results, unexpected
+          # exception) fall through to the inline renderer instead of ending
+          # the run with an empty summary.
+          if [ -f python-agent-harness/benchmarks/deepswe_summary.py ] \
+            && .venv/bin/python python-agent-harness/benchmarks/deepswe_summary.py \
+              --jobs-dir pier-results \
+              --budget-minutes "${PER_TASK_MINUTES:-}" \
+              --timeout-multiplier "${TIMEOUT_MULTIPLIER:-}" \
+              >> "$GITHUB_STEP_SUMMARY"; then
+            exit 0
+          fi
+          echo "::notice::Shared summary renderer unavailable; falling back to the built-in one."
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           import os
@@ -423,7 +458,7 @@ jobs:
           print("## DeepSWE results\n")
           # The budget the scores were produced under: a pass rate at a 9 min
           # budget is not comparable to one at the full 180 min, so it belongs
-          # next to the number, not buried in another job's log.
+          # next to the number.
           budget = os.environ.get("PER_TASK_MINUTES", "").strip()
           mult = os.environ.get("TIMEOUT_MULTIPLIER", "").strip()
           if budget:
