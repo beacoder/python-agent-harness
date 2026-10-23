@@ -39,7 +39,7 @@ from pier.models.agent.network import NetworkAllowlist
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_MODEL = "deepseek-flash"
 # Passed through to the API as-is (the provider decides what it honours).
-DEFAULT_REASONING_EFFORT = "max"
+DEFAULT_REASONING_EFFORT = "high"
 
 # The harness is installed into this directory (at image build time for the
 # dependencies, at run time for the wheel) and reached through PYTHONPATH.
