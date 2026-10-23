@@ -18,6 +18,7 @@ from python_agent_harness.prompts import (
     _parse_skill_frontmatter,
     agent_exclude_tools,
     assemble_tool_instructions,
+    compacted_messages,
     discover_agents,
     discover_skills,
     index_skills,
@@ -406,6 +407,17 @@ class TestUserPromptTexts(unittest.TestCase):
         ]
         self.assertEqual(user_prompt_texts(msgs), ["approve the plan", notice])
 
+    def test_excludes_resume_message(self):
+        """The resume message appended by the automatic compaction is
+        harness-injected: replaying it as a prompt would stack one copy
+        per compaction and never carry task content."""
+        msgs = [
+            Message(role="user", content="real question"),
+            Message(role="assistant", content="ok"),
+            Message(role="user", content=config.RESUME_MESSAGE, injected=True),
+        ]
+        self.assertEqual(user_prompt_texts(msgs), ["real question"])
+
     def test_excludes_previous_summary_frames(self):
         frame = config.COMPACT_HEADER + "old summary" + config.COMPACT_SEPARATOR
         msgs = [
@@ -493,6 +505,34 @@ class TestUserPromptTexts(unittest.TestCase):
     def test_no_image_part_no_note(self):
         msgs = [Message(role="user", content=[TextPart(text="plain text")])]
         self.assertEqual(user_prompt_texts(msgs), ["plain text"])
+
+
+class TestCompactedMessages(unittest.TestCase):
+    """The post-compaction history: summary frame, preserved prompts and
+    (automatic path only) a trailing resume message."""
+
+    def test_frame_then_prompts(self):
+        msgs = compacted_messages("sum", ["one", "two"])
+        self.assertEqual([m.role for m in msgs], ["user", "user", "user"])
+        self.assertTrue(msgs[0].text().startswith(config.COMPACT_HEADER))
+        self.assertIn("sum", msgs[0].text())
+        self.assertTrue(msgs[0].text().endswith(config.COMPACT_SEPARATOR.strip()))
+        self.assertEqual([m.text() for m in msgs[1:]], ["one", "two"])
+        self.assertFalse(any(m.injected for m in msgs))
+
+    def test_resume_message_appended_last(self):
+        """Without the resume message the history ends on a bare user
+        request, which invites redoing work the summary records."""
+        msgs = compacted_messages("sum", ["one"], resume=True)
+        self.assertEqual([m.text() for m in msgs[1:]], ["one", config.RESUME_MESSAGE])
+        self.assertTrue(msgs[-1].injected)
+        self.assertTrue(msgs[-1].role == "user")
+
+    def test_resume_message_dropped_by_prompt_filter(self):
+        """A second compaction must not carry the resume message over as
+        a user prompt."""
+        msgs = compacted_messages("sum", ["one"], resume=True)
+        self.assertEqual(user_prompt_texts(msgs), ["one"])
 
 
 class TestAssembleToolInstructions(unittest.TestCase):

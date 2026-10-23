@@ -670,14 +670,16 @@ class Session:
     def remember_user_text(self, messages: list) -> None:
         """Remember the last real user message for session-title generation.
 
-        Skips harness-injected messages (nudges, plan/build-switch
-        reminders, queued mode prompts — flagged ``injected``) so a
-        title is never generated from "Review the original user request
-        and the Task Completion Rules…" or a mode-switch reminder.
+        Skips harness-injected messages (nudges, the post-compaction
+        resume message, plan/build-switch reminders, queued mode prompts
+        — flagged ``injected``; the content check also covers restored
+        sessions, where the flag is lost) so a title is never generated
+        from "Review the original user request and the Task Completion
+        Rules…" or a mode-switch reminder.
         """
-        nudge = config.NUDGE_MESSAGE
+        injected = {config.NUDGE_MESSAGE, config.RESUME_MESSAGE}
         for m in reversed(messages):
-            if m.role == "user" and not m.injected and m.text() != nudge:
+            if m.role == "user" and not m.injected and m.text() not in injected:
                 self.store.remember_first_user_message(m.text())
                 break
 

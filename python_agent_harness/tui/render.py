@@ -144,11 +144,12 @@ def _is_injected_user_text(text: str) -> bool:
 
     Live sessions flag injected messages directly; these content checks
     cover restored sessions, where the flag is lost in the markdown
-    round-trip: the completion nudge, the <system-reminder>-wrapped
-    plan/build-switch prompts (plan.md, plan-mode.md, build-switch.md
-    all start with the reminder tag), and the plan-exit approval notice.
+    round-trip: the completion nudge, the post-compaction resume message,
+    the <system-reminder>-wrapped plan/build-switch prompts (plan.md,
+    plan-mode.md, build-switch.md all start with the reminder tag), and
+    the plan-exit approval notice.
     """
-    if text == config.NUDGE_MESSAGE:
+    if text == config.NUDGE_MESSAGE or text == config.RESUME_MESSAGE:
         return True
     return _is_mode_reminder_text(text)
 

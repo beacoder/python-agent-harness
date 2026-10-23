@@ -44,6 +44,18 @@ NUDGE_MESSAGE = (
 # ---- compaction -----------------------------------------------------------
 COMPACT_HEADER = "**[Compacted Summary]**\n\n"
 COMPACT_SEPARATOR = "\n\n---\n\n**[Context compacted]**\n\n---\n\n"
+# Appended after the summary frame + preserved prompts on the AUTOMATIC
+# path only (AgentLoop -> ContextManager.compact).  The rebuilt history
+# ends with the original user request, and a bare request reads as "start
+# here", so the model tends to redo work the summary already records.  The
+# manual /compact command does NOT inject it: it replaces the history and
+# waits for the next user message.
+RESUME_MESSAGE = (
+    "Compaction just finished; the summary above records the work already done. "
+    "Do not repeat completed steps or re-run finished tool calls. "
+    "Review which parts of the request above are already done "
+    "and continue with the unfinished ones."
+)
 
 # ---- token calibration ----------------------------------------------------
 CALIBRATION_MIN = 0.5

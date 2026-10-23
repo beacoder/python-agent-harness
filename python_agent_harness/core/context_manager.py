@@ -65,10 +65,11 @@ class ContextManager:
     def compact(self) -> bool:
         """Compact the conversation; return True on success.
 
-        On success the history is replaced by the summary frame followed
-        by every real user prompt (nudges and other harness-injected
-        messages excluded), so the model keeps the actual requests; the
-        last prompt is the resume request for the next round.
+        On success the history is replaced by the summary frame, every
+        real user prompt (nudges and other harness-injected messages
+        excluded), and a trailing resume message telling the model what
+        is already done — the summary and the prompts alone end on a
+        bare user request, which invites redoing finished work.
         """
         loop = self.loop
         prompts = user_prompt_texts(loop.messages)
@@ -87,8 +88,10 @@ class ContextManager:
             # stays untouched): it is part of the user turn, never a
             # system message.  Every real user prompt (nudges and other
             # harness-injected messages excluded) is preserved verbatim
-            # after the frame, so the model keeps the actual requests.
-            loop.messages = compacted_messages(summary, prompts)
+            # after the frame, so the model keeps the actual requests,
+            # and the trailing resume message states that the summarised
+            # work is done (injected flag: TUI and filters skip it).
+            loop.messages = compacted_messages(summary, prompts, resume=True)
             # The shared conversation now is the compacted one: mirror it
             # onto session.last_messages so the TUI (renders from it) and
             # a later manual /compact start from the summary, not the old

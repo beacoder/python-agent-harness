@@ -943,14 +943,18 @@ class TestAgentLoop(unittest.TestCase):
                 )
                 result = loop.run()
         self.assertEqual(result, "answer after compaction")
-        # the history is [summary frame, task one, task two, final
-        # answer]: the old assistant turn is gone, every real prompt
-        # survives, and the second compaction (the fake ratio stays
-        # high for two rounds) did not stack another frame
-        self.assertEqual(len(loop.messages), 4)
+        # the history is [summary frame, task one, task two, resume
+        # message, final answer]: the old assistant turn is gone, every
+        # real prompt survives, and the automatic compaction appended
+        # the resume message that stops the model redoing the work
+        self.assertEqual(len(loop.messages), 5)
         self.assertTrue(loop.messages[0].text().startswith("**[Compacted Summary]**"))
         self.assertEqual([m.text() for m in loop.messages[1:3]], ["task one", "task two"])
-        self.assertEqual(loop.messages[3].text(), "answer after compaction")
+        self.assertEqual(loop.messages[3].text(), config.RESUME_MESSAGE)
+        self.assertTrue(loop.messages[3].injected)
+        self.assertEqual(loop.messages[4].text(), "answer after compaction")
+        # exactly one resume message (a second compaction would stack it)
+        self.assertEqual(sum(1 for m in loop.messages if m.text() == config.RESUME_MESSAGE), 1)
         # the shared history mirrors the compacted conversation
         self.assertEqual(
             [m.text() for m in session.last_messages], [m.text() for m in loop.messages]
@@ -1593,12 +1597,14 @@ class TestAgentLoop(unittest.TestCase):
             ],
         )
         self.assertTrue(loop.compact())
-        self.assertEqual([m.role for m in loop.messages], ["user", "user", "user", "user"])
+        self.assertEqual([m.role for m in loop.messages], ["user"] * 5)
         self.assertTrue(loop.messages[0].text().startswith("**[Compacted Summary]**"))
         self.assertEqual(
-            [m.text() for m in loop.messages[1:]],
+            [m.text() for m in loop.messages[1:4]],
             ["first", "second", plan_notice],
         )
+        # the automatic path closes with the resume message
+        self.assertEqual(loop.messages[4].text(), config.RESUME_MESSAGE)
 
     def test_compact_empty_summary_returns_false(self):
         """A compaction response with no text must not replace the

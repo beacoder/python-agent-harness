@@ -500,7 +500,11 @@ def user_prompt_texts(messages: list) -> list[str]:
     (``remember_user_text`` excludes reminders for title generation —
     a different purpose, so the filters differ.)
     """
-    nudge = config.NUDGE_MESSAGE
+    # Harness-injected one-liners replayed verbatim on every compaction
+    # would accumulate: the completion nudge, and the resume message the
+    # automatic compaction appends (a bare "keep going" carries no task
+    # content — the summary already covers the progress it refers to).
+    injected = {config.NUDGE_MESSAGE, config.RESUME_MESSAGE}
     is_reminder: list[bool] = []
     last_reminder = -1
     for msg in messages:
@@ -523,7 +527,7 @@ def user_prompt_texts(messages: list) -> list[str]:
         if _message_role(msg) != "user":
             continue
         text = _message_text(msg)
-        if not text or text == nudge:
+        if not text or text in injected:
             continue
         if text.startswith(config.COMPACT_HEADER):
             continue
@@ -587,19 +591,29 @@ def compact_summary(
     return summary or None
 
 
-def compacted_messages(summary: str, prompts: list[str]) -> list[Message]:
+def compacted_messages(summary: str, prompts: list[str], resume: bool = False) -> list[Message]:
     """The post-compaction history: the summary frame as a user message
     followed by every preserved user prompt, oldest first.
 
     The summary lives in the user turn (the system prompt is passed
     separately and stays untouched); *prompts* are the real user
     requests (see ``user_prompt_texts``) that must survive compaction.
+
+    *resume* appends ``config.RESUME_MESSAGE`` (flagged ``injected``, so
+    the TUI and the filters skip it) after the prompts: without it the
+    rebuilt history ends with a bare user request and the model may redo
+    work the summary already records.  Only the automatic in-loop
+    compaction passes it — the manual /compact command waits for the
+    next user message instead.
     """
     frame = (config.COMPACT_HEADER + summary + config.COMPACT_SEPARATOR).strip()
-    return [
+    messages = [
         Message(role="user", content=frame),
         *[Message(role="user", content=p) for p in prompts],
     ]
+    if resume:
+        messages.append(Message(role="user", content=config.RESUME_MESSAGE, injected=True))
+    return messages
 
 
 # ---- custom agent discovery -----------------------------------------------

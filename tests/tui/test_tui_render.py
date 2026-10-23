@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.live import Live
 
 from python_agent_harness.core.models import ImagePart, Message, TextPart, ToolCall
+from python_agent_harness.session import config
 from tests.support import plan_cleanup  # noqa: F401,E402  (side-effect: auto-remove /tmp plan dirs)
 from tests.support.tui_test_utils import make_tui
 
@@ -1080,6 +1081,20 @@ class TestTuiRender(unittest.TestCase):
         self.assertIn("📦", out)
         self.assertIn("fixed the bug", out)
         self.assertNotIn("**user:**", out)
+
+    def test_resume_message_not_rendered_as_user_input(self):
+        """The post-compaction resume message is harness-injected: it
+        must not show up as something the user typed (live sessions flag
+        it, restored sessions fall back to the content check)."""
+        tui, buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content=config.RESUME_MESSAGE, injected=True),
+            Message(role="user", content=config.RESUME_MESSAGE),
+        ]
+        tui.console.print(tui._render_frame())
+        out = buf.getvalue()
+        self.assertNotIn("**user:**", out)
+        self.assertNotIn("Do not repeat completed steps", out)
 
     def test_lone_surrogates_never_reach_the_terminal(self):
         """A restored session can carry lone surrogates (the tools read

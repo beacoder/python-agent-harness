@@ -412,6 +412,36 @@ class TestAutoSaveDebounce(unittest.TestCase):
         self.assertEqual(self.session._last_save_at, self.clock)
 
 
+class TestRememberUserText(unittest.TestCase):
+    """The first real user message (title source) must skip harness
+    one-liners: the completion nudge and the post-compaction resume
+    message."""
+
+    def test_resume_message_not_used_as_title_source(self):
+        session = RecordingSession()
+        session.remember_user_text(
+            [
+                Message(role="user", content="real request"),
+                Message(role="assistant", content="ok"),
+                Message(role="user", content=config.RESUME_MESSAGE, injected=True),
+            ]
+        )
+        self.assertEqual(session.store.first_user_message(), "real request")
+
+    def test_restored_resume_message_not_used_as_title_source(self):
+        """A restored session loses the ``injected`` flag: the content
+        check must still keep the resume message out of the title."""
+        session = RecordingSession()
+        session.remember_user_text(
+            [
+                Message(role="user", content="real request"),
+                Message(role="assistant", content="ok"),
+                Message(role="user", content=config.RESUME_MESSAGE),
+            ]
+        )
+        self.assertEqual(session.store.first_user_message(), "real request")
+
+
 class TestTitleGeneration(unittest.TestCase):
     """Session-title generation: reasoning preamble stripped (even when
     it is not a prefix), failures logged and non-fatal."""
@@ -813,6 +843,23 @@ class TestCompactConversation(unittest.TestCase):
                 "you can now edit files. Execute the plan",
             ],
         )
+
+    def test_success_does_not_inject_resume_message(self):
+        """The manual command waits for the next user message: injecting
+        the automatic path's resume message would make the model start
+        working again on its own.  A resume message left by an earlier
+        automatic compaction is dropped, never carried over."""
+        session = RecordingSession()
+        session.tools_enabled = False
+        session.last_messages = [
+            Message(role="user", content="first"),
+            Message(role="assistant", content="ok"),
+            Message(role="user", content=config.RESUME_MESSAGE, injected=True),
+        ]
+        ok, _ = session.compact_conversation()
+        self.assertTrue(ok)
+        self.assertNotIn(config.RESUME_MESSAGE, [m.text() for m in session.last_messages])
+        self.assertEqual([m.text() for m in session.last_messages[1:]], ["first"])
 
     def test_success_flushes_past_the_debounce(self):
         """Compaction rewrites the whole conversation, so the save must
