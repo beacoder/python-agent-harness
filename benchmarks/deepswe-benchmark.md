@@ -37,7 +37,7 @@ share theirs, so without credentials the job can fail with
 `429 ... Data limit exceeded` even though the model API key is fine. See
 [ECR Public throttles the task image pulls](#ecr-public-throttles-the-task-image-pulls-429).
 
-The request body carries `reasoning_effort: "max"` and a fixed `temperature: 0.0`
+The request body carries `reasoning_effort: "high"` and a fixed `temperature: 0.0`
 (see `DEFAULT_REASONING_EFFORT` in the adapter). Both are overridable without
 editing code:
 
