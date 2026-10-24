@@ -31,10 +31,10 @@ htmlcov/
 sessions/
 *.session
 
-# DeepSWE benchmark artifacts (local runs)
-benchmarks/deep-swe/
-pier-results/
-.venv-deepswe/
+# Swebench benchmark artifacts (local runs)
+swebench-results/
+.venv-swebench/
+logs/run_evaluation/
 
 # OS / editor
 .DS_Store
