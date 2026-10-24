@@ -149,7 +149,8 @@ def _is_injected_user_text(text: str) -> bool:
     plan-mode.md, build-switch.md all start with the reminder tag), and
     the plan-exit approval notice.
     """
-    if text == config.NUDGE_MESSAGE or text == config.RESUME_MESSAGE:
+    injected = {config.NUDGE_MESSAGE, config.RESUME_MESSAGE}
+    if text in injected:
         return True
     return _is_mode_reminder_text(text)
 
