@@ -129,6 +129,29 @@ def _head_chars(text: str, n: int) -> str:
     return text[:n] + "…"
 
 
+def _truncate_cells(text: str, cells: int) -> str:
+    """Keep the head of TEXT that fits in CELLS terminal cells.
+
+    ``len()`` counts characters, not cells: a CJK/emoji character is two
+    cells wide, so a value cut at "N chars" rendered twice as wide as the
+    budget it was given and wrapped into an unbudgeted extra line.  The
+    ellipsis is part of the budget, so the result never exceeds CELLS.
+    """
+    if cells <= 0:
+        return ""
+    if cell_len(text) <= cells:
+        return text
+    kept: list[str] = []
+    used = 0
+    for ch in text:
+        width = cell_len(ch)
+        if used + width > cells - 1:  # leave a cell for the ellipsis
+            break
+        kept.append(ch)
+        used += width
+    return "".join(kept) + "…"
+
+
 def _tool_result_preview(content: str) -> str:
     """Preview of a tool result: first N lines, capped at N chars.
 
@@ -184,11 +207,17 @@ class ToolRow(Text):
     ``tool_id`` is the ``ToolCall.id`` the row displays; asking rich for
     the rendered lines of a row and walking the frame with it is how a
     terminal click is traced back to the call it landed on.
+
+    ``collapsed_row`` is set on the *header* of an expanded call: the
+    one-line form of the same call, kept so the row budget can fall back
+    to it instead of dropping the call (and with it the row the user
+    just clicked) when the expanded block no longer fits.
     """
 
     def __init__(self, tool_id: str, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.tool_id = tool_id
+        self.collapsed_row: ToolRow | None = None
 
 
 class RenderMixin:
@@ -358,37 +387,123 @@ class RenderMixin:
         the call it belongs to (the continuation rows included, so a
         click anywhere in an expanded call collapses it again).
         """
-        expanded = tc.id in getattr(self, "_expanded_tools", ())
-        if not expanded:
-            args = display_args(tc.arguments, limit=100)
-            if not args:
-                return [ToolRow(tc.id, f"▶ tool: {sanitize_terminal(tc.name)}", style="magenta")]
+        collapsed = self._collapsed_tool_row(tc)
+        if tc.id not in getattr(self, "_expanded_tools", ()):
+            return [collapsed]
+        expanded = self._expanded_tool_rows(tc, collapsed)
+        if expanded:
+            return expanded
+        # The block cannot be shown whole (tiny terminal, huge or very
+        # wide argument): stay collapsed instead of rendering a ``▾``
+        # header whose values were dropped.  The expansion request is
+        # forgotten so the next click retries rather than toggling a
+        # state the user cannot see.
+        expanded_state = getattr(self, "_expanded_tools", None)
+        if expanded_state is not None:
+            expanded_state.discard(tc.id)
+        return [collapsed]
+
+    def _collapsed_tool_row(self, tc: Any) -> ToolRow:
+        """The single-line ``▶ tool: Name(k=v, ...)`` form of TC.
+
+        Cut to the console width in *cells* and not just chars: the row
+        is the click target (and the fallback the budget substitutes for
+        an expanded block that no longer fits), so it must cost exactly
+        one line whatever the argument contains.
+        """
+        args = display_args(tc.arguments, limit=100)
+        if not args:
+            label = f"▶ tool: {sanitize_terminal(tc.name)}"
+        else:
             params = " ".join(f"{k}={v}" for k, v in args.items())
-            label = f"tool: {tc.name}({params})"
-            return [ToolRow(tc.id, f"▶ {sanitize_terminal(label)}", style="magenta")]
+            label = f"▶ {sanitize_terminal(f'tool: {tc.name}({params})')}"
+        width = max(1, getattr(self.console, "width", None) or 80)
+        return ToolRow(tc.id, _truncate_cells(label, width), style="magenta")
+
+    def _expanded_tool_rows(self, tc: Any, collapsed: ToolRow) -> list[Any]:
+        """Header plus one row per argument, or [] if the block cannot fit.
+
+        The line budget is handed out in *cells* and re-measured after
+        each row, so the returned block always occupies at most
+        ``_expanded_block_lines()`` lines: the header and its values stay
+        together, and the frame stays inside the terminal (a cropped
+        frame has no usable click mapping).
+        """
         args = display_args(tc.arguments, limit=config.TOOL_EXPANDED_ARG_CHARS)
         if not args:
-            return [ToolRow(tc.id, f"▶ tool: {sanitize_terminal(tc.name)}", style="magenta")]
+            return []
+        width = max(1, getattr(self.console, "width", None) or 80)
         head = ToolRow(tc.id, "▶ ", style="magenta")
         head.append(sanitize_terminal(f"tool: {tc.name} "), style="magenta")
         count = len(args)
         head.append(f"({count} argument{'s' if count != 1 else ''}) ", style="dim")
         head.append("▾", style="dim")
+        head.collapsed_row = collapsed
         rows: list[Any] = [head]
-        # lines the block may use: the header plus a share of the
-        # remaining budget for each argument value
-        width = max(1, getattr(self.console, "width", None) or 80)
-        budget = max(1, self._expanded_block_lines() - 1)
-        for index, (key, value) in enumerate(args.items()):
-            share = max(1, budget // max(1, len(args) - index))
-            chars = max(20, share * width - len(key) - 8)
-            if len(value) > chars:
-                value = value[: max(1, chars - 1)] + "…"
-            row = ToolRow(tc.id, style="dim")
-            row.append(sanitize_terminal(f"    {key} = {value}"))
-            budget -= self._est_lines(row, width)
+        left = self._expanded_block_lines() - self._est_lines(head, width)
+        pending = count
+        for key, value in args.items():
+            prefix = f"    {key} = "
+            # Sanitize BEFORE cutting: a cut through an escape sequence
+            # leaves a fragment (``ESC [ 3``) that sanitizing cannot
+            # recognise any more, so its tail would show up as literal
+            # text ("echo 31…") — and the escape bytes would eat cells
+            # the user paid for.
+            clean = sanitize_terminal(value)
+            share = max(1, left // max(1, pending))
+            cells = self._expanded_value_cells(clean, share, prefix)
+            row = ToolRow(tc.id, prefix + _truncate_cells(clean, cells), style="dim")
+            left -= self._est_lines(row, width)
+            pending -= 1
             rows.append(row)
+        if left < 0:
+            return []  # the block does not fit: never show a partial one
         return rows
+
+    def _expanded_value_cells(self, value: str, lines: int, prefix: str) -> int:
+        """Cells VALUE may use so that ``prefix + value`` fits in LINES lines.
+
+        ``TOOL_EXPANDED_ARG_CHARS`` is an absolute ceiling, and it is
+        taller than a short terminal can show, so the cap is scaled to
+        the visible area and divided between the arguments (see
+        ``_expanded_tool_rows``).
+
+        The scale is found by measuring instead of by arithmetic:
+        ``lines * width - len(prefix)`` ignores where rich actually
+        wraps.  A value that cannot fit after the prefix is folded onto
+        a *fresh* line, so the prefix gets a line of its own and the
+        formula over-ran the budget by the width of the prefix -- the
+        retry loop then walked all the way down to one line, and a
+        4000-cell ceiling rendered as 84 cells on a 25x100 terminal.
+
+        The guess walks only one measurement per row: either the value
+        continues on the prefix's line (``lines`` rows of ``width`` minus
+        the prefix) or it is folded onto a fresh line, wasting the rest
+        of the prefix's line (``lines - 1`` full rows, or one row when
+        the value must share the prefix's line).  A measurement decides;
+        a binary search only runs when the guess was too generous.
+        """
+        width = max(1, getattr(self.console, "width", None) or 80)
+        ceiling = max(1, min(config.TOOL_EXPANDED_ARG_CHARS, cell_len(value)))
+        guess = max(
+            1,
+            min(ceiling, lines * width - cell_len(prefix), max(width, (lines - 1) * width)),
+        )
+
+        def fits(cells: int) -> bool:
+            row = ToolRow("", prefix + _truncate_cells(value, cells), style="dim")
+            return self._est_lines(row, width) <= lines
+
+        if fits(guess):
+            return guess
+        low, high = 1, guess
+        while low < high:
+            mid = (low + high + 1) // 2
+            if fits(mid):
+                low = mid
+            else:
+                high = mid - 1
+        return low
 
     def _expanded_block_lines(self) -> int:
         """Lines an expanded tool call may occupy on screen.
@@ -402,19 +517,6 @@ class RenderMixin:
         """
         return max(1, self._visible_row_cap() - 3)
 
-    def _expanded_arg_limit(self, argument_count: int = 1) -> int:
-        """Char cap for one expanded argument value.
-
-        ``TOOL_EXPANDED_ARG_CHARS`` is an absolute ceiling, and it is
-        taller than a short terminal can show.  The cap is therefore
-        scaled to the visible area and divided between the arguments,
-        so the whole expanded block fits the row budget whatever the
-        terminal size (see ``_tool_call_rows``).
-        """
-        width = max(1, getattr(self.console, "width", None) or 80)
-        share = max(1, self._expanded_block_lines() - 1) // max(1, argument_count)
-        return max(40, min(config.TOOL_EXPANDED_ARG_CHARS, share * width - 8))
-
     def _todos_panel(self) -> Group | None:
         """Todos section — rebuilt every frame (not cached), so a
         TodoWrite call shows up immediately even mid-run.
@@ -426,6 +528,7 @@ class RenderMixin:
         """
         if not self._controller.todos:
             return None
+        width = max(1, getattr(self.console, "width", None) or 80)
         t = Table.grid(padding=(0, 1))
         for raw in self._controller.todos[-8:]:
             if isinstance(raw, dict):
@@ -436,10 +539,17 @@ class RenderMixin:
                 content = str(raw.get("content", ""))
             else:
                 mark, content = "•", repr(raw)
+            # One line per todo: the panel is pinned, and its height is
+            # reserved by _visible_row_cap as exactly 1 title + 1 row per
+            # todo.  A wrapping content made the panel taller than that
+            # reservation, so the frame outgrew the terminal and rich
+            # cropped it -- losing the newest conversation rows and
+            # leaving every click without a row mapping.
+            room = max(1, width - cell_len(mark) - 2)  # + column padding
             # Text, not str: add_row parses plain strings as markup, so a
             # model-written todo like "fix [/tmp] paths" raised
             # MarkupError on the render thread and killed the TUI
-            t.add_row(mark, Text(sanitize_terminal(content)))
+            t.add_row(mark, Text(_truncate_cells(sanitize_terminal(content), room)))
         return Group(Text("Todos", style="bold"), t)
 
     def _history_rows(self) -> list[Any]:
@@ -525,6 +635,15 @@ class RenderMixin:
         for unit in reversed(units):
             est = sum(self._est_lines(row, width) for row in unit)
             if budget - est < 0:
+                # The block no longer fits (the conversation grew under
+                # it).  Dropping it would make the row the user just
+                # clicked vanish, so fall back to its one-line form.
+                fallback = getattr(unit[0], "collapsed_row", None)
+                if fallback is not None:
+                    fallback_est = self._est_lines(fallback, width)
+                    if budget - fallback_est >= 0:
+                        kept.append([fallback])
+                        budget -= fallback_est
                 continue  # older rows are dropped once the budget is spent
             kept.append(unit)
             budget -= est
@@ -664,6 +783,11 @@ class RenderMixin:
             return 3 + RenderMixin._est_lines(row.renderable, width)
         if isinstance(row, Group):
             return sum(RenderMixin._est_lines(child, width) for child in row.renderables)
+        if isinstance(row, Table):
+            # one line per table row: the Todos panel truncates its
+            # content, so a row never wraps and must not be billed as a
+            # single line for the whole table
+            return max(1, len(row.rows))
         return 1
 
     def _render_frame(self) -> Group:

@@ -344,17 +344,121 @@ class TestClickExpandsToolCall(unittest.TestCase):
         self.assertLessEqual(len(texts), tui.console.height)
         self.assertIsNotNone(tui._frame_top(len(texts)))
 
-    def test_expanded_value_limit_scales_with_the_visible_area(self):
-        """The cap never exceeds the configured ceiling."""
-        from python_agent_harness.session import config
+    def test_clicked_row_never_vanishes_when_the_block_no_longer_fits(self):
+        """A block the budget cannot pay for degrades, never disappears.
 
+        The expanded block sits *before* its tool result, so a long
+        result spends the budget first; the block used to be dropped
+        whole, leaving the user without the row they had just clicked
+        and with no way to collapse it again.
+        """
+        tui, _buf = make_tui()
+        tui.console = Console(file=io.StringIO(), width=100, height=12, force_terminal=False)
+        tui.session.todos = [{"content": "task one", "status": "in_progress"}]
+        tui.session.last_messages = [
+            Message(role="user", content="run it"),
+            _tool_call_message(command="grep -rn " + "x" * 3000),
+            Message(
+                role="tool",
+                content="\n".join(f"line {i}" for i in range(60)),
+                tool_call_id="1",
+                name="Bash",
+            ),
+        ]
+        tui._expanded_tools.add("1")
+        tui._history_dirty = True
+        kept = [
+            r
+            for r in tui._apply_budget(tui._build_history_rows())
+            if getattr(r, "tool_id", None) == "1"
+        ]
+        self.assertEqual(len(kept), 1, "the clicked call must still be on screen")
+        self.assertIn("▶ tool: Bash", kept[0].plain)
+        self.assertNotIn("▾", kept[0].plain)  # the collapsed form, not a bare header
+        # the click target is still live: clicking it toggles the call off
+        self.assertIn("1", tui._expanded_tools)
+
+    def test_wide_characters_are_budgeted_in_cells_not_chars(self):
+        """A CJK value is twice as wide as its character count.
+
+        Cutting the value at "N chars" overflowed the row budget by a
+        factor of two, so the frame outgrew the terminal and the whole
+        expansion was dropped.
+        """
         tui, _buf = make_tui()
         tui.console = Console(file=io.StringIO(), width=100, height=25, force_terminal=False)
-        short = tui._expanded_arg_limit()
+        tui.session.todos = []
+        tui.session.last_messages = [
+            Message(role="user", content="go"),
+            _tool_call_message(command="x" + "命" * 3000),
+        ]
+        tui.agent_running = True
+        tui._expanded_tools.add("1")
+        tui._history_dirty = True
+        rows = [r for r in tui._build_history_rows() if getattr(r, "tool_id", None) == "1"]
+        self.assertEqual(len(rows), 2, "the expansion must be shown, not dropped")
+        used = sum(tui._est_lines(r, 100) for r in rows)
+        self.assertLessEqual(used, tui._expanded_block_lines())
+        lines = tui.console.render_lines(tui._render_frame(), tui.console.options, pad=False)
+        self.assertLessEqual(len(lines), tui.console.height)
+        self.assertIsNotNone(tui._frame_top(len(lines)))
+
+    def test_long_todo_stays_on_one_line_in_the_pinned_panel(self):
+        """The panel height is reserved per todo, so a todo must not wrap.
+
+        A wrapping item made the pinned panel taller than
+        ``_visible_row_cap`` reserved for it: the frame outgrew the
+        terminal, rich cropped the newest rows, and every click lost its
+        row mapping.
+        """
+        tui, _buf = make_tui()
+        tui.console = Console(file=io.StringIO(), width=100, height=20, force_terminal=False)
+        tui.session.todos = [{"content": "a very long todo item " * 30, "status": "pending"}]
+        tui.session.last_messages = [Message(role="user", content=f"m{i}") for i in range(40)]
+        tui._history_dirty = True
+        lines = tui.console.render_lines(tui._render_frame(), tui.console.options, pad=False)
+        texts = ["".join(segment.text for segment in line) for line in lines]
+        # title + exactly one line for the single todo
+        self.assertEqual(texts[1], "Todos")
+        self.assertTrue(texts[2].startswith("⬜ a very long todo item"))
+        self.assertIn("…", texts[2])
+        self.assertLessEqual(len(texts), tui.console.height)
+        self.assertIsNotNone(tui._frame_top(len(texts)))
+
+    def test_expanded_value_limit_scales_with_the_visible_area(self):
+        """The value cap never exceeds the configured ceiling."""
+        from python_agent_harness.session import config
+
+        value = "x" * 10000
+
+        def shown_value(height: int, width: int) -> int:
+            tui, _buf = make_tui()
+            tui.console = Console(
+                file=io.StringIO(), width=width, height=height, force_terminal=False
+            )
+            tui.session.todos = []
+            tui.session.last_messages = [
+                Message(role="user", content="run it"),
+                _tool_call_message(command=value),
+            ]
+            tui._expanded_tools.add("1")
+            tui._history_dirty = True
+            rows = [r for r in tui._build_history_rows() if getattr(r, "tool_id", None) == "1"]
+            self.assertEqual(len(rows), 2, "the expansion must be shown, not dropped")
+            return rows[1].plain.count("x")
+
+        short = shown_value(25, 100)
         self.assertLess(short, config.TOOL_EXPANDED_ARG_CHARS)
-        tui.console = Console(file=io.StringIO(), width=200, height=60, force_terminal=False)
-        self.assertEqual(tui._expanded_arg_limit(), config.TOOL_EXPANDED_ARG_CHARS)
-        self.assertGreaterEqual(short, 200)
+        # "fills the lines it was given" and not "shows something": the
+        # cap used to be derived as ``lines * width - len(prefix)``, which
+        # ignores that a value that cannot fit after the prefix is folded
+        # onto a FRESH line -- every candidate then measured one line too
+        # tall and the retry loop bottomed out at a single line (84 cells
+        # on a 25x100 terminal instead of the ~1800 that fit).
+        self.assertGreaterEqual(short, 15 * 100)
+        tall = shown_value(60, 200)
+        # the ceiling counts cells, and the ellipsis takes one of them
+        self.assertGreaterEqual(tall, config.TOOL_EXPANDED_ARG_CHARS - 2)
 
     def test_many_argument_expansion_keeps_the_frame_on_screen(self):
         """Eight arguments still leave a frame that fits and maps clicks.
@@ -388,6 +492,12 @@ class TestClickExpandsToolCall(unittest.TestCase):
         header = next(i for i, t in enumerate(texts) if "▶ tool: Custom (8 arguments) ▾" in t)
         # header and every value row survive together
         self.assertEqual(len([t for t in texts if t.startswith("    k")]), 8)
+        # the shared budget is actually spent on the values, not wasted by
+        # a per-row provider that measures the wrap wrong
+        used = sum(
+            tui._est_lines(r, 100) for r in tui._build_history_rows() if getattr(r, "tool_id", None)
+        )
+        self.assertEqual(used, tui._expanded_block_lines())
         top = tui._frame_top(len(texts))
         self.assertEqual(tui._toggle_tool_at(header + top), "1")
 
