@@ -203,6 +203,11 @@ SUBAGENT_EXCLUDED_TOOLS = ("Agent", "Question", "PlanExit", "TodoWrite")
 TOOL_RESULT_PREVIEW_LINES = 5  # max lines of a tool result shown in the TUI
 TOOL_RESULT_PREVIEW_CHARS = 500  # max chars of that preview (long single lines)
 
+# Per-argument value cap for a tool call the user expanded: the full
+# command/payload is shown, but a runaway (e.g. a 200KB argument) is
+# still trimmed so one row cannot flood the panel.
+TOOL_EXPANDED_ARG_CHARS = 4000
+
 # ---- default agent prompts -----------------------------------------------------
 # Ported system prompts (opencode-style) for the main agent and sub-agents,
 # bundled with the package (prompts/agent.md, prompts/subagent.md).

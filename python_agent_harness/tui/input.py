@@ -381,9 +381,14 @@ class InputMixin:
         )
 
     def _read_multiline(self) -> str | None:
+        # Text typed while a run held the terminal (mouse reporting on)
+        # is offered as the default buffer content rather than dropped.
+        default = self._pending_default()
         try:
             with _safe_patch_stdout():
-                text = self.prompt_session.prompt(self._input_prompt(), multiline=True)
+                text = self.prompt_session.prompt(
+                    self._input_prompt(), multiline=True, default=default
+                )
         except EOFError:
             # Ctrl-D: quit
             return None
@@ -392,6 +397,13 @@ class InputMixin:
             self.console.print("[dim]input cancelled[/dim]")
             return ""
         return text
+
+    def _pending_default(self) -> str:
+        """Text typed during the last run, consumed once."""
+        typed = getattr(self, "_typed_during_run", "")
+        if typed:
+            self._typed_during_run = ""
+        return typed
 
     def _ask_question_blocking(self) -> None:
         """Answer the pending question on the main thread.

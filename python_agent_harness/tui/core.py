@@ -32,6 +32,7 @@ from ..session import config
 from ..session.session import Session
 from .commands import CommandMixin
 from .input import InputMixin, SlashCompleter, UiQuestion, _history_path, _make_prompt_session
+from .mouse import MouseSession
 from .render import RenderMixin, safe_markup
 
 # Unexpected UI exceptions in a row (no successful input read in
@@ -81,6 +82,19 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         # prompts/agents/ directory; refreshed on each /agent call so files
         # added at runtime are picked up.
         self._discovered_agents: dict[str, str] = {}
+        # Tool calls the user expanded by clicking their ▶ row: their
+        # panel rows carry every argument in full instead of the
+        # truncated one-line label.
+        self._expanded_tools: set[str] = set()
+        # Last rendered frame, so a mouse click can be traced back to
+        # the row it landed on.
+        self._last_frame: Any = None
+        # Mouse session of the run in progress (None outside a run): a
+        # click has to ask the terminal where the panel is on screen.
+        self._mouse: MouseSession | None = None
+        # Text typed while the mouse reader owned the terminal during a
+        # run: replayed into the next input prompt instead of dropped.
+        self._typed_during_run = ""
         self.prompt_session = _make_prompt_session(
             FileHistory(_history_path(str(self._controller.project_dir))),
             SlashCompleter(lambda: str(self._controller.project_dir)),
@@ -377,6 +391,16 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
                 self.console.print()
                 self._flush()
 
+    def _collect_typed(self, text: str) -> None:
+        """Keep text typed while the mouse reader owned the terminal.
+
+        With mouse reporting on, the run owns stdin in cbreak mode, so
+        keystrokes would otherwise be read by the mouse reader and lost.
+        They are buffered here and offered as the next prompt's default
+        instead (see ``InputMixin._read_multiline``).
+        """
+        self._typed_during_run += text
+
     def _abandon_run(self) -> None:
         """Cancel the active run and release what it holds (UI side)."""
         self._controller.cancel()
@@ -401,25 +425,47 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         the moment new stream text arrives, so the text pushes the
         scroll immediately instead of waiting for a fixed tick.  The
         short timeout keeps the spinner animating between data bursts.
+
+        While the panel is live, terminal mouse reporting is on
+        (``mouse.MouseSession``) so clicking a ``▶`` tool row expands or
+        collapses it.  Reporting is switched off whenever the input
+        prompt needs the terminal (a pending question) and always on the
+        way out, so normal text selection and typing behave as usual
+        outside a run.
         """
+        mouse = MouseSession(
+            self.console,
+            self._on_mouse_click,
+            on_text=self._collect_typed,
+        )
+        self._mouse = mouse
         with Live(
             self._render_frame(),
             console=self.console,
             refresh_per_second=30,
             screen=False,
         ) as live:
-            while worker.is_alive():
-                if self.question is not None:
-                    live.stop()
-                    self._ask_question_blocking()
-                    live.start()
-                    continue
-                self._data_event.wait(timeout=0.1)
-                self._data_event.clear()
+            mouse.enable()
+            try:
+                while worker.is_alive():
+                    if self.question is not None:
+                        live.stop()
+                        # prompt_toolkit owns stdin here: mouse reports
+                        # would land in the answer buffer as garbage
+                        mouse.disable()
+                        self._ask_question_blocking()
+                        mouse.enable()
+                        live.start()
+                        continue
+                    self._data_event.wait(timeout=0.1)
+                    self._data_event.clear()
+                    live.update(self._render_frame())
+                    self._flush()
                 live.update(self._render_frame())
                 self._flush()
-            live.update(self._render_frame())
-            self._flush()
+            finally:
+                mouse.disable()
+                self._mouse = None
         # run finished: the last Live frame stays on screen, but the
         # in-place redraws never reached the scrollback — print the
         # full conversation so the user can scroll back through it
