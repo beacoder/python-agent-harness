@@ -236,6 +236,13 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             with self.lock:
                 self.stream_text = ""
                 self._history_dirty = True
+        elif kind == "agent-switched":
+            # /agent switched the profile: the status bar reads the
+            # active agent from the session store on every frame, so
+            # there is nothing to refresh -- but the kind must be
+            # handled explicitly, or the else branch would replace the
+            # idle status with a bare " running".
+            pass
         else:
             with self.lock:
                 self.status = " running"

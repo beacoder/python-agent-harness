@@ -1079,6 +1079,34 @@ class TestTuiCommandsExtra(unittest.TestCase):
             tui._agent_switch_by_name("nope")
         self.assertIn("no agent", buf.getvalue())
 
+    def test_agent_switch_reports_agent_switched(self):
+        """A successful switch emits ``agent-switched`` (so the render
+        loop wakes and the bar redraws) without touching the idle status
+        -- the generic notify branch would turn it into " running"; a
+        failed switch emits nothing."""
+        tui, _ = make_tui()
+        tui._data_event.clear()
+        with (
+            mock.patch.object(tui, "_on_notify") as notify,
+            mock.patch.object(tui.session, "switch_agent", return_value=(True, "ok")),
+        ):
+            tui._agent_switch_by_name("planner")
+        notify.assert_called_once_with("agent-switched")
+
+        tui2, _ = make_tui()
+        tui2._data_event.clear()
+        tui2.status = " idle"
+        tui2._on_notify("agent-switched")
+        self.assertEqual(tui2.status, " idle")
+        self.assertTrue(tui2._data_event.is_set())
+
+        with (
+            mock.patch.object(tui, "_on_notify") as notify,
+            mock.patch.object(tui.session, "switch_agent", return_value=(False, "nope")),
+        ):
+            tui._agent_switch_by_name("planner")
+        notify.assert_not_called()
+
     def test_agent_command_lists_without_agents(self):
         tui, buf = make_tui()
         with (
@@ -1089,6 +1117,59 @@ class TestTuiCommandsExtra(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("Available agent profiles", out)
         self.assertIn("none found", out)
+
+    def test_agent_command_marks_active_agent(self):
+        """/agent must show which profile is active, both for the
+        built-in default (store.agent is None) and a custom agent, and
+        the marker must stay on the profile's own line (a long prompt
+        path wraps, so an end-of-row marker could be orphaned)."""
+        tui, buf = make_tui()
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.discover_agents",
+                return_value={"planner": "/p/planner.md"},
+            ),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_agent_command("")
+        lines = buf.getvalue().splitlines()
+        default_line = [ln for ln in lines if "default" in ln]
+        self.assertEqual(len(default_line), 1)
+        self.assertIn("default ← active — agent.md", default_line[0])
+        # the other row must be listed without the marker (it is the only
+        # other line mentioning "planner", via its own prompt path)
+        other = [ln for ln in lines if "planner" in ln]
+        self.assertEqual(len(other), 1)
+        self.assertIn("2) planner — /p/planner.md", other[0])
+        self.assertNotIn("← active", other[0])
+
+        buf.truncate(0)
+        tui.session.store.agent = "planner"
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.discover_agents",
+                return_value={"planner": "/p/planner.md"},
+            ),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_agent_command("")
+        lines = buf.getvalue().splitlines()
+        planner_line = [ln for ln in lines if "planner" in ln]
+        self.assertEqual(len(planner_line), 1)
+        self.assertIn("planner ← active — /p/planner.md", planner_line[0])
+        self.assertIn("default — agent.md", buf.getvalue())
+
+    def test_agent_command_warns_when_active_file_vanished(self):
+        """An active agent whose prompt file disappeared is reported
+        instead of silently listing nothing as active."""
+        tui, buf = make_tui()
+        tui.session.store.agent = "gone"
+        with (
+            mock.patch("python_agent_harness.tui.commands.discover_agents", return_value={}),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_agent_command("")
+        self.assertIn("active agent gone no longer found on disk", buf.getvalue())
 
     def test_agent_command_interactive_number(self):
         tui, buf = make_tui()
@@ -1164,6 +1245,31 @@ class TestTuiCommandsExtra(unittest.TestCase):
         ):
             tui._run_agent_command("planner")
         switch.assert_called_once_with("planner")
+
+    def test_agent_unicode_digit_selection_not_treated_as_number(self):
+        """'²'.isdigit() is True but int('²') raises ValueError: a
+        superscript-digit argument must fall through to the name path
+        ("unknown agent") instead of crashing the command loop."""
+        tui, buf = make_tui()
+        with mock.patch("python_agent_harness.tui.commands.discover_agents", return_value={}):
+            tui._run_agent_command("²")
+        self.assertIn("unknown agent: ²", buf.getvalue())
+        buf.truncate(0)
+        with (
+            mock.patch("python_agent_harness.tui.commands.discover_agents", return_value={}),
+            mock.patch("builtins.input", return_value="²"),
+        ):
+            tui._run_agent_command("")
+        self.assertIn("unknown agent: ²", buf.getvalue())
+
+    def test_model_unicode_digit_selection_not_treated_as_number(self):
+        """Same int()/isdigit() mismatch for /model arguments."""
+        tui, buf = make_tui()
+        with mock.patch(
+            "python_agent_harness.tui.commands.config.load_models_config", return_value={}
+        ):
+            tui._run_model_command("²")
+        self.assertIn("unknown model: ²", buf.getvalue())
 
     # ------------------------------------------------------------------
     # /restore warning paths

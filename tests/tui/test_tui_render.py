@@ -117,6 +117,24 @@ class TestTuiRender(unittest.TestCase):
         self.assertIn("current quota", out)
         self.assertNotIn("…", out)
 
+    def test_status_bar_shows_active_agent(self):
+        """The status bar reports which agent profile is in effect, so a
+        /agent switch is visible without scrolling back to its message."""
+        tui, buf = make_tui()
+        tui.console.print(tui._status_bar())
+        self.assertIn("@default", buf.getvalue())
+        buf.truncate(0)
+        ok, _ = tui._controller.switch_agent("reviewer")
+        self.assertTrue(ok)
+        tui.console.print(tui._status_bar())
+        self.assertIn("@reviewer", buf.getvalue())
+        buf.truncate(0)
+        tui._controller.switch_agent("default")
+        tui.console.print(tui._status_bar())
+        out = buf.getvalue()
+        self.assertIn("@default", out)
+        self.assertNotIn("@reviewer", out)
+
     def test_status_bar_beyond_two_lines_ellipsized(self):
         """Content wider than two lines ends with an ellipsis on line 2."""
         tui, buf = make_tui()

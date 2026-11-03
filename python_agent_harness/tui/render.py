@@ -24,7 +24,7 @@ from rich.text import Text
 from ..core.models import ImagePart, api_safe, display_args
 from ..io.diffrender import render_diff
 from ..io.text_filter import strip_final_check, strip_reasoning
-from ..prompts import _is_mode_reminder_text
+from ..prompts import RESERVED_AGENT_NAME, _is_mode_reminder_text
 from ..session import config
 
 if TYPE_CHECKING:
@@ -34,6 +34,13 @@ if TYPE_CHECKING:
     from .input import UiQuestion
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+# Cells the status bar's prefix (mode/agent/context) must leave free on
+# its first line.  One cell is enough for the bar to stay two rows (the
+# status wraps next to the prefix and then onto a second full line), so
+# the prefix may never fill the width by itself -- which is what pushed a
+# narrow terminal to a third row once the agent name was added.
+_MIN_STATUS_CELLS = 1
 
 # message-body colors - distinct from tool colors (tool calls are magenta,
 # tool results dim) so roles never blend into tool activity
@@ -1062,6 +1069,24 @@ class RenderMixin:
     def _status_bar(self) -> Text:
         mode = self._controller.plan_mode.mode.value
         mode_style = "bold yellow" if mode == "plan" else "bold green"
+        mode_display = f" [{mode.upper()}]"
+        # Active agent profile: the store holds None for the built-in
+        # default agent, so "default" is what the bar reports there.
+        # It is shown unconditionally — a switch to the default agent
+        # (or a restored session) must be visible too, otherwise the
+        # bar cannot tell the user which prompt is in effect.
+        agent_name = getattr(self._controller.session.store, "agent", None)
+        custom_agent = bool(agent_name)
+        display_name = str(agent_name or RESERVED_AGENT_NAME)
+        # The name is an agent file's frontmatter ``name:`` (or its stem)
+        # and is otherwise unvalidated: sanitize it like every other
+        # untrusted display path and flatten whitespace, or a name could
+        # carry escape sequences (clear the screen, spoof hyperlinks) or
+        # newlines that split the pinned bar into unaccounted rows.
+        if needs_sanitize(display_name):
+            display_name = sanitize_terminal(display_name)
+        display_name = " ".join(display_name.split())
+        agent_style = "bold magenta" if custom_agent else "dim"
         ratio = self._controller.context_ratio
         ctx = ""
         if ratio is not None:
@@ -1070,8 +1095,20 @@ class RenderMixin:
             filled = round(ratio * 10)
             bar = "▓" * filled + "░" * (10 - filled)
             ctx = f" [Ctx:{bar} {pct}%/{trigger}%]"
+        # Budget the prefix so it cannot wrap by itself: the status takes
+        # at least _MIN_STATUS_CELLS of line 1, and the bar is at most two
+        # lines.  On a narrow terminal drop the context gauge first, then
+        # shorten the agent name (a long profile name must not push the
+        # bar to three rows); the mode tag is never dropped.
+        width = self.console.width or 80
+        budget = max(1, width - _MIN_STATUS_CELLS)
+        name_cells = budget - cell_len(mode_display) - 2  # " @" + one cell left
+        agent_display = f" @{_truncate_cells(display_name, name_cells)}" if name_cells > 1 else ""
+        if ctx and cell_len(mode_display) + cell_len(agent_display) + cell_len(ctx) > budget:
+            ctx = ""
         t = Text()
-        t.append(f" [{mode.upper()}]", style=mode_style)
+        t.append(mode_display, style=mode_style)
+        t.append(agent_display, style=agent_style)
         if ctx:
             over = ratio is not None and ratio >= config.CONTEXT_TRIGGER
             t.append(ctx, style="bold" if over else "")

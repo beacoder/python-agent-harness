@@ -323,7 +323,7 @@ def _resolve_numbered_choice(answer: str, options: list[str]) -> str:
     resolved: list[str] = []
     for part in answer.split(","):
         part = part.strip()
-        if part.isdigit():
+        if part.isascii() and part.isdigit():
             idx = int(part)
             if 1 <= idx <= len(options):
                 resolved.append(options[idx - 1])

@@ -255,6 +255,22 @@ class TestTuiTerminalEscapes(unittest.TestCase):
         self.assertNotIn("PWNED-TITLE", out)
         self.assertIn("Error: 500", out)
 
+    def test_status_bar_sanitizes_active_agent_name(self):
+        """The active agent name comes from an agent file's frontmatter
+        (``name:``), which is taken verbatim: it reaches the status bar,
+        so escapes must be stripped and newlines flattened -- otherwise a
+        crafted agent file could clear the screen, spoof a hyperlink or
+        split the pinned bar into rows the layout never reserved."""
+        tui, _ = make_tui()
+        tui.session.store.agent = "evil" + HOSTILE + "\nsecond-line"
+        out = self._status_out(tui)
+        self.assertNotIn(ESC, out)
+        self.assertNotIn("\x9b", out)
+        self.assertNotIn("\r", out)
+        self.assertNotIn("PWNED-TITLE", out)
+        self.assertEqual(len(out.rstrip("\n").split("\n")), 1)
+        self.assertIn("evilbeforeafter second-line", out)
+
 
 if __name__ == "__main__":
     unittest.main()

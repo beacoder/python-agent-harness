@@ -481,7 +481,7 @@ class CommandMixin:
                     return
 
                 # Check if selection is a number
-                if selection.isdigit():
+                if selection.isascii() and selection.isdigit():
                     idx = int(selection) - 1
                     if 0 <= idx < len(all_names):
                         selected = all_names[idx]
@@ -503,7 +503,7 @@ class CommandMixin:
             return
 
         # Check if arg is a number
-        if arg.strip().isdigit():
+        if arg.strip().isascii() and arg.strip().isdigit():
             all_names = self._model_list_names()
             idx = int(arg.strip()) - 1
             if 0 <= idx < len(all_names):
@@ -569,7 +569,7 @@ class CommandMixin:
         success, msg = self._controller.switch_agent(name)
         if success:
             self.console.print(f"[green]{safe_markup(msg)}[/green]")
-            self._data_event.set()
+            self._on_notify("agent-switched")
         else:
             self.console.print(f"[red]{safe_markup(msg)}[/red]")
 
@@ -583,14 +583,28 @@ class CommandMixin:
                 self.console.print(
                     "[yellow]  (none found — add .md files to the prompts/agents/ directory to use /agent)[/yellow]"
                 )
+            # Which agent is currently active: the store records None for
+            # the built-in default, so "no agent" means "default" here too.
+            # The marker sits right after the name (not at the end of the
+            # row) so a long prompt path wrapping the line cannot separate
+            # the marker from the profile it belongs to.
+            active_name = getattr(self._controller.session.store, "agent", None)
+            active = active_name or RESERVED_AGENT_NAME
             for idx, name in enumerate(all_names, 1):
+                marker = " [green]← active[/green]" if name == active else ""
                 if name == RESERVED_AGENT_NAME:
-                    self.console.print(f"  [cyan]{idx})[/cyan] default — agent.md")
+                    self.console.print(f"  [cyan]{idx})[/cyan] default{marker} — agent.md")
                 else:
                     prompt_file = self._discovered_agents[name]
                     self.console.print(
-                        f"  [cyan]{idx})[/cyan] {safe_markup(name)} — {safe_markup(prompt_file)}"
+                        f"  [cyan]{idx})[/cyan] {safe_markup(name)}{marker} — {safe_markup(prompt_file)}"
                     )
+            if active_name and active_name not in self._discovered_agents:
+                # The active prompt file disappeared while it was in use:
+                # say so instead of silently listing nothing as active.
+                self.console.print(
+                    f"  [yellow](active agent {safe_markup(active_name)} no longer found on disk)[/yellow]"
+                )
             total_count = len(all_names)
             self.console.print(
                 f"\n[dim]Type a number (1-{total_count}) to switch, or enter an agent name directly[/dim]\n"
@@ -599,7 +613,7 @@ class CommandMixin:
                 selection = input("Select agent: ").strip()
                 if not selection:
                     return
-                if selection.isdigit():
+                if selection.isascii() and selection.isdigit():
                     idx = int(selection) - 1
                     if 0 <= idx < len(all_names):
                         self._agent_switch_by_name(all_names[idx])
@@ -614,7 +628,7 @@ class CommandMixin:
             except KeyboardInterrupt:
                 self.console.print("\n[dim]cancelled[/dim]")
             return
-        if arg.strip().isdigit():
+        if arg.strip().isascii() and arg.strip().isdigit():
             all_names = self._agent_list_names()
             idx = int(arg.strip()) - 1
             if 0 <= idx < len(all_names):

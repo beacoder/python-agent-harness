@@ -106,7 +106,7 @@ Agent files are markdown (`.md`) in `prompts/agents/`. Each becomes a switchable
 - `name:` — override the agent name (defaults to file stem)
 - `exclude_tools:` — list of tool names to hide. Matches by exact name, glob (`mcp__git__*`), or `__`-delimited prefix (`mcp__git` hides `mcp__git__list_repos` but `Write` does NOT hide `TodoWrite`).
 
-**Commands vs Agents:** Commands (`/review`) are one-shot with a hardcoded kickoff and reset after run. Agents (`/agent reviewer`) persist until the next `/agent`, let the user type their own prompt, and stay active after `Ctrl-C`.
+**Commands vs Agents:** Commands (`/review`) are one-shot with a hardcoded kickoff and reset after run. Agents (`/agent reviewer`) persist until the next `/agent`, let the user type their own prompt, and stay active after `Ctrl-C`. The active agent is always shown in the status bar (`[BUILD] @reviewer ...`, `@default` for the built-in), and `/agent` marks the current profile with `← active` in its list.
 
 ## Configuration
 
