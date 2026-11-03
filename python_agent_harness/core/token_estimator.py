@@ -129,6 +129,7 @@ def payload_text(system: object, messages: list[dict], tools: list[dict]) -> str
                         if isinstance(v, str):
                             buf.append(v)
                             break
+        # currently unreachable: Message.to_api() never emits reasoning (and strips it from content)
         reasoning = extract_reasoning(msg)
         if reasoning:
             buf.append(reasoning)
