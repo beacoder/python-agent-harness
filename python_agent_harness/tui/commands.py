@@ -51,7 +51,7 @@ class CommandMixin:
     Expects the host class to provide: ``_controller``, ``console``,
     ``conversation_history``, ``_history_dirty``, ``_data_event``,
     ``agent_running``, ``status``, ``_current_tool``, ``_start_agent``,
-    ``_status_bar``, ``_flush``, ``_render_frame``.
+    ``_on_notify``, ``_status_bar``, ``_flush``, ``_render_frame``.
     """
 
     if TYPE_CHECKING:
@@ -72,6 +72,8 @@ class CommandMixin:
             system: str | None = None,
             restore: Callable[[], None] | None = None,
         ) -> None: ...
+
+        def _on_notify(self, kind: str, data: Any = None) -> None: ...
 
         def _status_bar(self) -> Any: ...
 
