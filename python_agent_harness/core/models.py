@@ -35,6 +35,23 @@ class AgentMode(enum.Enum):
     PLAN = "plan"
 
 
+def extract_reasoning(obj: dict[str, Any]) -> str:
+    """Reasoning text from a backend response object, or "".
+
+    Backends disagree on the field name: most (DeepSeek, GLM, ...) use
+    ``reasoning_content``; Qwen uses ``reasoning``.  This is the single
+    place that knows the variants — callers (the LLM client's streaming
+    and non-streaming parsers, token estimation) must not open-code the
+    keys.  Non-string values (some backends send a list of parts) are
+    dropped, not coerced.
+    """
+    for key in ("reasoning_content", "reasoning"):
+        value = obj.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 @dataclass
 class TextPart:
     """A plain-text content part in a multimodal message."""

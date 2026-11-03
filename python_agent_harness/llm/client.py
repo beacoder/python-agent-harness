@@ -24,7 +24,15 @@ from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
-from ..core.models import ImagePart, Message, TextPart, ToolCall, ToolSpec, Usage
+from ..core.models import (
+    ImagePart,
+    Message,
+    TextPart,
+    ToolCall,
+    ToolSpec,
+    Usage,
+    extract_reasoning,
+)
 from ..session import config
 
 
@@ -875,11 +883,12 @@ class Client:
                     content_parts.append(delta["content"])
                     if on_delta:
                         on_delta(delta["content"])
-                if delta.get("reasoning_content"):
-                    content_parts.append(delta["reasoning_content"])
-                    reasoning_parts.append(delta["reasoning_content"])
+                reasoning = extract_reasoning(delta)
+                if reasoning:
+                    content_parts.append(reasoning)
+                    reasoning_parts.append(reasoning)
                     if on_delta:
-                        on_delta(delta["reasoning_content"])
+                        on_delta(reasoning)
                 for tc in delta.get("tool_calls") or []:
                     self._absorb_tool_call(
                         tc_index, self._slot_for(tc_index, tc, 0), tc, on_tool_call
@@ -921,7 +930,7 @@ class Client:
         tc_index: dict[int, dict[str, Any]] = {}
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
-        reasoning = msg.get("reasoning_content") or ""
+        reasoning = extract_reasoning(msg)
         content = msg.get("content") or ""
         # some backends return content as a list of parts (multimodal);
         # normalize to plain text like Message.text() does, so the
@@ -931,8 +940,6 @@ class Client:
                 p.get("text", "") if isinstance(p, dict) else (p if isinstance(p, str) else "")
                 for p in content
             )
-        if not isinstance(reasoning, str):
-            reasoning = ""
         # mirror the streaming order: reasoning first, then the answer
         if reasoning:
             reasoning_parts.append(reasoning)

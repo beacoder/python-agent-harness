@@ -75,6 +75,27 @@ class TestClientStreaming(unittest.TestCase):
         )
         c.close()
 
+    def test_reasoning_key_streamed_and_captured(self):
+        """Backends that stream reasoning under ``reasoning`` (Qwen)
+        must be captured like ``reasoning_content``."""
+        fake_openai_server.reset_state()
+        fake_openai_server.STREAM_CHUNKS = [
+            {"choices": [{"delta": {"role": "assistant", "reasoning": "thinking"}}]},
+            {"choices": [{"delta": {"reasoning": " hard"}}]},
+            {"choices": [{"delta": {"content": "Hello"}}]},
+            {"choices": [{"delta": {"content": " world"}}]},
+            {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 12, "completion_tokens": 3}},
+        ]
+        c = make_client()
+        deltas: list[str] = []
+        try:
+            msg, _ = c.chat([Message(role="user", content="hi")], on_delta=deltas.append)
+        finally:
+            c.close()
+        self.assertEqual("".join(deltas), "thinking hardHello world")
+        self.assertEqual(msg.content, "thinking hardHello world")
+        self.assertEqual(msg.reasoning, "thinking hard")
+
     def test_tool_call_null_index_does_not_merge_or_crash(self):
         """A chunk with ``"index": null`` must neither crash nor merge.
 
@@ -428,6 +449,29 @@ class TestClientNonStreaming(unittest.TestCase):
             c.close()
         self.assertEqual(msg.content, "answer")
         self.assertIsNone(msg.reasoning)
+
+    def test_sync_chat_reasoning_key(self):
+        """Backends that report reasoning under ``reasoning`` (Qwen) in
+        the non-streaming message must be captured like
+        ``reasoning_content``."""
+        fake_openai_server.NON_STREAM_RESPONSE = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "the answer",
+                        "reasoning": "mulling",
+                    }
+                }
+            ],
+        }
+        c = make_client()
+        try:
+            msg, _ = c.chat([Message(role="user", content="hi")], stream=False)
+        finally:
+            c.close()
+        self.assertEqual(msg.reasoning, "mulling")
+        self.assertEqual(msg.content, "mullingthe answer")
 
     def test_sync_chat_missing_choice_no_crash(self):
         """A non-streaming response with no choices at all yields an

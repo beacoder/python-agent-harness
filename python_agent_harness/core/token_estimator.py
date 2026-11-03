@@ -12,6 +12,7 @@ import os
 import re
 
 from ..session import config
+from .models import extract_reasoning
 
 
 def is_cjk_char(c: str) -> bool:
@@ -128,8 +129,8 @@ def payload_text(system: object, messages: list[dict], tools: list[dict]) -> str
                         if isinstance(v, str):
                             buf.append(v)
                             break
-        reasoning = msg.get("reasoning_content")
-        if isinstance(reasoning, str):
+        reasoning = extract_reasoning(msg)
+        if reasoning:
             buf.append(reasoning)
         for tc in msg.get("tool_calls") or []:
             fn = tc.get("function", {}) if isinstance(tc, dict) else {}

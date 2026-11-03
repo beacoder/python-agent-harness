@@ -16,7 +16,27 @@ from python_agent_harness.core.models import (
     Usage,
     arg_repr,
     display_args,
+    extract_reasoning,
 )
+
+
+class TestExtractReasoning(unittest.TestCase):
+    def test_reasoning_content_key(self):
+        self.assertEqual(extract_reasoning({"reasoning_content": "mulling"}), "mulling")
+
+    def test_reasoning_key(self):
+        self.assertEqual(extract_reasoning({"reasoning": "mulling"}), "mulling")
+
+    def test_reasoning_content_wins(self):
+        self.assertEqual(extract_reasoning({"reasoning_content": "a", "reasoning": "b"}), "a")
+
+    def test_missing(self):
+        self.assertEqual(extract_reasoning({"content": "x"}), "")
+
+    def test_non_string_dropped(self):
+        self.assertEqual(extract_reasoning({"reasoning": [{"type": "text", "text": "x"}]}), "")
+        self.assertEqual(extract_reasoning({"reasoning_content": None}), "")
+        self.assertEqual(extract_reasoning({"reasoning": ""}), "")
 
 
 class TestMessageText(unittest.TestCase):
