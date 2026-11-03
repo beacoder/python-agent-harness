@@ -52,6 +52,21 @@ _DSR = re.compile(rb"\x1b\[(\d+);(\d+)R")
 # for the next chunk instead of being decoded as text.
 _MAX_CARRY = 32
 
+# Complete non-mouse escape sequences (arrow/function keys, other CSI and
+# SS3 sequences): stripped -- the input prompt owns those keys.
+_CSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
+_SS3 = re.compile(rb"\x1bO[ -~]")
+
+# What may still *become* a sequence worth waiting for: only these are
+# carried to the next read.  Carrying any ESC tail used to hold a
+# complete arrow key (and everything typed after it) back as "carry",
+# until 32 bytes later the whole tail was decoded as text ("[Ahello").
+_PARTIAL = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*|O)?")
+
+# Backspace as a terminal sends it (DEL, or ^H): applied to the typed
+# text rather than dropped, so "helo<BS><BS>lo" replays as "hello".
+BACKSPACE = "\x7f"
+
 LEFT_BUTTON = 0
 
 
@@ -95,26 +110,105 @@ def take_cursor_reports(data: bytes) -> tuple[bytes, list[tuple[int, int]]]:
     return _DSR.sub(b"", data), [(int(m.group(1)), int(m.group(2))) for m in _DSR.finditer(data)]
 
 
+def _utf8_incomplete_tail(data: bytes) -> int:
+    """Length of an unfinished UTF-8 character at the end of DATA (0-3).
+
+    A read can end in the middle of a multi-byte character; decoding
+    that chunk on its own would drop the character's head and tail.
+    """
+    for back in range(1, min(4, len(data)) + 1):
+        byte = data[-back]
+        if byte & 0xC0 == 0x80:  # continuation byte: keep looking back
+            continue
+        if byte & 0xE0 == 0xC0:
+            need = 2
+        elif byte & 0xF0 == 0xE0:
+            need = 3
+        elif byte & 0xF8 == 0xF0:
+            need = 4
+        else:
+            return 0  # ASCII / invalid lead: nothing to wait for
+        return back if back < need else 0
+    return 0
+
+
+def _clean_text(raw: str) -> str:
+    """Typed characters worth replaying into the input prompt.
+
+    Printable characters, tabs and line breaks (Enter is a newline in
+    the multi-line prompt) are kept; backspace is applied to the text
+    of this chunk, and one that has nothing left to delete is passed on
+    as ``BACKSPACE`` for the consumer to apply (see ``apply_typed``).
+    Other control characters (Ctrl-anything) are dropped.
+    """
+    out: list[str] = []
+    raw = raw.replace("\r\n", "\n").replace("\r", "\n")
+    for ch in raw:
+        if ch in ("\x7f", "\b"):
+            if out and out[-1] != BACKSPACE:
+                out.pop()
+            else:
+                out.append(BACKSPACE)
+        elif ch in ("\n", "\t") or ch.isprintable():
+            out.append(ch)
+    return "".join(out)
+
+
+def apply_typed(buffer: str, text: str) -> str:
+    """BUFFER with TEXT (from ``split``) typed at its end."""
+    for ch in text:
+        buffer = buffer[:-1] if ch == BACKSPACE else buffer + ch
+    return buffer
+
+
 def split(data: bytes) -> tuple[list[tuple[int, int, int, str]], bytes, str]:
     """Split a raw stdin chunk into (events, carry, text).
 
-    ``carry`` is an incomplete trailing escape sequence to prepend to
-    the next chunk; ``text`` is whatever the user typed while the
-    mouse reader owned the terminal.
+    ``carry`` is what may still complete in the next chunk -- the start
+    of an escape sequence, or a UTF-8 character cut by the read -- to be
+    prepended to it; ``text`` is whatever the user typed while the mouse
+    reader owned the terminal.  Complete non-mouse escape sequences are
+    stripped where they occur, so the text around them survives.
     """
-    events = parse_events(data)
-    rest = _SGR.sub(b"", data)
+    events: list[tuple[int, int, int, str]] = []
+    plain = bytearray()
     carry = b""
-    esc = rest.find(b"\x1b")
-    if esc != -1:
-        tail = rest[esc:]
-        if len(tail) <= _MAX_CARRY:
+    i, n = 0, len(data)
+    while i < n:
+        esc = data.find(b"\x1b", i)
+        if esc == -1:
+            plain += data[i:]
+            break
+        plain += data[i:esc]
+        m = _SGR.match(data, esc)
+        if m:
+            events.append(
+                (
+                    int(m.group(1)),
+                    int(m.group(2)),
+                    int(m.group(3)),
+                    "press" if m.group(4) == b"M" else "release",
+                )
+            )
+            i = m.end()
+            continue
+        m = _CSI.match(data, esc) or _SS3.match(data, esc)
+        if m:
+            i = m.end()
+            continue
+        tail = data[esc:]
+        if len(tail) <= _MAX_CARRY and _PARTIAL.fullmatch(tail):
             carry = tail
-            rest = rest[:esc]
-    text = rest.decode("utf-8", "ignore")
-    # drop control characters (arrow keys, Ctrl-anything): the input
-    # prompt owns those keys, we only preserve ordinary typing
-    text = "".join(ch for ch in text if ch.isprintable())
+            break
+        # ESC + an ordinary key (Alt+key, Esc then Enter): drop the ESC,
+        # keep the key
+        i = esc + 1
+    if not carry:
+        cut = _utf8_incomplete_tail(bytes(plain))
+        if cut:
+            carry = bytes(plain[-cut:])
+            del plain[-cut:]
+    text = _clean_text(plain.decode("utf-8", "ignore"))
     return events, carry, text
 
 
@@ -292,7 +386,7 @@ class MouseSession:
                 self._cursor_seen.set()
             events, carry, text = split(data)
             if text:
-                self.pending_text += text
+                self.pending_text = apply_typed(self.pending_text, text)
                 if self.on_text is not None:
                     self.on_text(text)
             for button, col, row, kind in events:

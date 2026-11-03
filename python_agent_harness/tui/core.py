@@ -32,7 +32,7 @@ from ..session import config
 from ..session.session import Session
 from .commands import CommandMixin
 from .input import InputMixin, SlashCompleter, UiQuestion, _history_path, _make_prompt_session
-from .mouse import MouseSession
+from .mouse import MouseSession, apply_typed
 from .render import RenderMixin, safe_markup
 
 # Unexpected UI exceptions in a row (no successful input read in
@@ -399,7 +399,7 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         They are buffered here and offered as the next prompt's default
         instead (see ``InputMixin._read_multiline``).
         """
-        self._typed_during_run += text
+        self._typed_during_run = apply_typed(self._typed_during_run, text)
 
     def _abandon_run(self) -> None:
         """Cancel the active run and release what it holds (UI side)."""

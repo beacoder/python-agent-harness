@@ -14,12 +14,19 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.text import Text
 
 from python_agent_harness.core.models import Message, ToolCall
 from python_agent_harness.tui import mouse as mouse_mod
 from tests.support.tui_test_utils import make_tui
+
+
+def _conversation_rows(tui):
+    """The rows of the live conversation panel (a Group when non-empty)."""
+    conversation = tui._render_conversation()
+    assert isinstance(conversation, Group)
+    return list(conversation.renderables)
 
 
 def _tool_call_message(tool_id="1", name="Bash", command="ls -la"):
@@ -74,6 +81,40 @@ class TestMouseParsing(unittest.TestCase):
     def test_split_drops_control_characters(self):
         _events, _carry, text = mouse_mod.split(b"a\x01\x03b")
         self.assertEqual(text, "ab")
+
+    def test_split_strips_complete_key_sequences_and_keeps_typing(self):
+        """An arrow key used to be carried, swallowing what followed it."""
+        self.assertEqual(mouse_mod.split(b"\x1b[A"), ([], b"", ""))
+        self.assertEqual(mouse_mod.split(b"\x1b[Ahello"), ([], b"", "hello"))
+        self.assertEqual(mouse_mod.split(b"a\x1bOPb\x1b[3~c")[2], "abc")
+
+    def test_split_drops_esc_before_an_ordinary_key(self):
+        """Esc then Enter (submit) must not hold Enter back forever."""
+        self.assertEqual(mouse_mod.split(b"\x1b\r"), ([], b"", "\n"))
+        self.assertEqual(mouse_mod.split(b"\x1bx")[2], "x")
+
+    def test_split_carries_only_real_prefixes(self):
+        for partial in (b"\x1b", b"\x1b[", b"\x1b[<0;5", b"\x1b[12;", b"\x1bO"):
+            with self.subTest(partial=partial):
+                self.assertEqual(mouse_mod.split(b"x" + partial), ([], partial, "x"))
+
+    def test_split_applies_backspace(self):
+        self.assertEqual(mouse_mod.split(b"helo\x7f\x7fllo")[2], "hello")
+        self.assertEqual(mouse_mod.split(b"ab\x08c")[2], "ac")
+        # nothing to delete in this chunk: passed on for the buffer
+        _e, _c, text = mouse_mod.split(b"\x7f")
+        self.assertEqual(mouse_mod.apply_typed("abc", text), "ab")
+        self.assertEqual(mouse_mod.apply_typed("", text), "")
+
+    def test_split_keeps_line_breaks(self):
+        self.assertEqual(mouse_mod.split(b"one\rtwo\r\nthree")[2], "one\ntwo\nthree")
+
+    def test_split_reassembles_a_utf8_character_cut_by_the_read(self):
+        raw = "日本".encode()
+        _e, carry, text = mouse_mod.split(raw[:4])
+        self.assertEqual(text, "日")
+        _e, carry, text = mouse_mod.split(carry + raw[4:])
+        self.assertEqual((carry, text), (b"", "本"))
 
     def test_take_cursor_reports_extracts_and_strips(self):
         """A DSR answer becomes a row, and never typed text."""
@@ -374,9 +415,191 @@ class TestClickExpandsToolCall(unittest.TestCase):
         ]
         self.assertEqual(len(kept), 1, "the clicked call must still be on screen")
         self.assertIn("▶ tool: Bash", kept[0].plain)
-        self.assertNotIn("▾", kept[0].plain)  # the collapsed form, not a bare header
-        # the click target is still live: clicking it toggles the call off
+        # the marked stand-in, not a bare header and not a plain row
+        self.assertTrue(kept[0].plain.endswith("▾ no room"), kept[0].plain)
+        self.assertEqual(tui._est_lines(kept[0], 100), 1)
+        # the request is kept: the block comes back once there is room
         self.assertIn("1", tui._expanded_tools)
+        self.assertTrue(kept[0].expanded)
+
+    def test_expanded_block_refits_next_to_its_own_result(self):
+        """A long command stays expanded beside its result and the stream.
+
+        The block was sized to almost the whole panel, so its own result
+        row (and any streaming reply) left it too little room and it was
+        always shown as the one-line fallback on a normal terminal.
+        """
+        for height, stream in ((25, ""), (40, ""), (40, "word " * 3000)):
+            with self.subTest(height=height, streaming=bool(stream)):
+                tui, _buf = make_tui()
+                tui.console = Console(
+                    file=io.StringIO(), width=100, height=height, force_terminal=False
+                )
+                tui.session.todos = []
+                tui.session.last_messages = [
+                    Message(role="user", content="run it"),
+                    _tool_call_message(command="grep -rn " + "x" * 3000),
+                    Message(
+                        role="tool",
+                        content="\n".join(f"line {i}" for i in range(5)),
+                        tool_call_id="1",
+                        name="Bash",
+                    ),
+                ]
+                tui.agent_running = True
+                tui.stream_text = stream
+                tui._expanded_tools.add("1")
+                tui._history_dirty = True
+                lines = tui.console.render_lines(
+                    tui._render_frame(), tui.console.options, pad=False
+                )
+                texts = ["".join(s.text for s in line) for line in lines]
+                self.assertTrue(any("▶ tool: Bash (1 argument) ▾" in t for t in texts))
+                self.assertTrue(any("command =" in t for t in texts))
+                self.assertTrue(any("line 4" in t for t in texts), "result still shown")
+                self.assertLessEqual(len(texts), height)
+                self.assertIsNotNone(tui._frame_top(len(texts)))
+
+    def test_stream_keeps_its_height_when_the_expanded_block_is_out_of_view(self):
+        """The stream only yields when that brings an expanded block back."""
+        tui, _buf = make_tui()
+        tui.console = Console(file=io.StringIO(), width=100, height=25, force_terminal=False)
+        tui.session.todos = []
+        tui.session.last_messages = [
+            Message(role="user", content="run it"),
+            _tool_call_message(command="ls"),
+            *[Message(role="assistant", content=f"note {i}") for i in range(30)],
+        ]
+        tui.agent_running = True
+        tui.stream_text = "\n".join(f"streamed {i}" for i in range(200))
+        tui._expanded_tools.add("1")
+        tui._history_dirty = True
+        rows = _conversation_rows(tui)
+        self.assertFalse(any(getattr(r, "expanded", False) for r in rows))
+        last, expected = rows[-1], tui._stream_row()
+        assert isinstance(last, Text) and expected is not None
+        self.assertEqual(last.plain.rstrip("▍"), expected.plain.rstrip("▍"))
+
+    def test_refitted_block_follows_a_rebuilt_history(self):
+        """A squeezed block always shows the call currently in history.
+
+        Guards the re-fit memo: it must follow a history rebuild (a new
+        call under the same id, e.g. after compaction or restore) rather
+        than keep drawing the rows it computed for the previous one.
+        """
+        tui, _buf = make_tui()
+        tui.console = Console(file=io.StringIO(), width=100, height=40, force_terminal=False)
+        tui.session.todos = []
+        tui.agent_running = True
+        tui.stream_text = "word " * 3000
+        tui._expanded_tools.add("1")
+        for marker in ("first", "second"):
+            tui.session.last_messages = [
+                Message(role="user", content="run it"),
+                _tool_call_message(command=f"echo {marker} " + "x" * 3000),
+                Message(role="tool", content="ok", tool_call_id="1", name="Bash"),
+            ]
+            tui._history_dirty = True
+            plain = "".join(getattr(r, "plain", "") for r in _conversation_rows(tui))
+            self.assertIn(f"echo {marker}", plain)
+
+    def test_click_on_a_no_room_row_visibly_cancels_and_reexpands(self):
+        """A pending expansion that cannot fit is marked and cancellable.
+
+        It used to be drawn as a plain collapsed row: a click then asked
+        to expand what was already requested, nothing on screen changed
+        and the request could not be cancelled.
+        """
+        tui, _buf = make_tui()
+        tui.console = Console(file=io.StringIO(), width=100, height=8, force_terminal=False)
+        tui.session.todos = [{"content": "task one", "status": "in_progress"}]
+        tui.session.last_messages = [
+            Message(role="user", content="run it"),
+            _tool_call_message(command="grep -rn " + "x" * 3000),
+            Message(
+                role="tool",
+                content="\n".join(f"line {i}" for i in range(60)),
+                tool_call_id="1",
+                name="Bash",
+            ),
+        ]
+        tui.agent_running = True
+        tui._expanded_tools.add("1")
+        tui._history_dirty = True
+
+        def tool_line():
+            texts = [
+                "".join(s.text for s in line)
+                for line in tui.console.render_lines(
+                    tui._render_frame(), tui.console.options, pad=False
+                )
+            ]
+            top = tui._frame_top(len(texts))
+            assert top is not None
+            index = next(i for i, t in enumerate(texts) if "▶ tool: Bash" in t)
+            return texts[index], index + top
+
+        text, row = tool_line()
+        self.assertIn("▾ no room", text)
+        tui._on_mouse_click(5, row)  # cancel: the row turns into the plain form
+        self.assertNotIn("1", tui._expanded_tools)
+        text, row = tool_line()
+        self.assertNotIn("▾", text)
+        tui._on_mouse_click(5, row)  # and a second click requests it again
+        self.assertIn("1", tui._expanded_tools)
+        self.assertIn("▾ no room", tool_line()[0])
+
+    def test_call_with_nothing_to_expand_stays_a_plain_row(self):
+        """No arguments, only ``content``, or truncated JSON: no stand-in."""
+        tui, _buf = make_tui()
+        tui._expanded_tools.add("1")
+        for args in ({}, {"content": "x"}, '{"truncated'):
+            with self.subTest(args=args):
+                rows = tui._tool_call_rows(ToolCall(id="1", name="T", arguments=args))
+                self.assertEqual(len(rows), 1)
+                self.assertNotIn("▾", rows[0].plain)
+                self.assertFalse(rows[0].expanded)
+
+    def test_unfittable_expansion_prints_plainly_in_the_dump(self):
+        """The post-run dump is not clickable: no "no room" marker there."""
+        tui, _buf = make_tui()
+        tui.console = Console(file=io.StringIO(), width=100, height=6, force_terminal=False)
+        tui.session.last_messages = [
+            Message(role="user", content="go"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[
+                    ToolCall(id="1", name="Custom", arguments={f"k{i}": "v" for i in range(8)})
+                ],
+            ),
+        ]
+        tui._expanded_tools.add("1")
+        live = [r for r in tui._build_history_rows() if getattr(r, "tool_id", None)]
+        dump = [r for r in tui._build_history_rows(full=True) if getattr(r, "tool_id", None)]
+        self.assertIn("▾ no room", live[0].plain)
+        self.assertNotIn("▾", dump[0].plain)
+
+    def test_click_on_an_expanded_block_collapses_it(self):
+        tui, _buf = make_tui()
+        tui.session.last_messages = [
+            Message(role="user", content="run it"),
+            _tool_call_message(command="ls"),
+        ]
+        tui.agent_running = True
+        tui._expanded_tools.add("1")
+        tui._history_dirty = True
+        texts = [
+            "".join(s.text for s in line)
+            for line in tui.console.render_lines(
+                tui._render_frame(), tui.console.options, pad=False
+            )
+        ]
+        index = next(i for i, t in enumerate(texts) if "command =" in t)
+        top = tui._frame_top(len(texts))
+        assert top is not None
+        tui._on_mouse_click(5, index + top)
+        self.assertNotIn("1", tui._expanded_tools)
 
     def test_wide_characters_are_budgeted_in_cells_not_chars(self):
         """A CJK value is twice as wide as its character count.
@@ -701,6 +924,33 @@ class TestTypedDuringRun(unittest.TestCase):
         with mock.patch.object(tui.prompt_session, "prompt", return_value="") as m:
             tui._read_multiline()
         self.assertEqual(m.call_args.kwargs.get("default"), "")
+
+    def test_backspace_across_reads_edits_the_buffered_text(self):
+        tui, _buf = make_tui()
+        tui._collect_typed("helo")
+        tui._collect_typed(mouse_mod.split(b"\x7f")[2])
+        tui._collect_typed("lo")
+        self.assertEqual(tui._typed_during_run, "hello")
+
+    def test_enter_pressed_during_the_run_does_not_seed_blank_lines(self):
+        """Enter is kept between lines, never as leading/trailing blanks.
+
+        Leading whitespace would also hide a ``/command`` from dispatch;
+        a trailing space is kept for the sentence the user goes on typing.
+        """
+        for typed, expected in (
+            ("\n\n", ""),
+            ("\n/plan\n", "/plan"),
+            ("\n  /plan", "/plan"),
+            ("a\nb\n", "a\nb"),
+            ("fix the ", "fix the "),
+            ("\n    def f():\n        pass", "    def f():\n        pass"),
+            (" \n\t\n  x", "  x"),
+        ):
+            with self.subTest(typed=typed):
+                tui, _buf = make_tui()
+                tui._collect_typed(typed)
+                self.assertEqual(tui._pending_default(), expected)
 
 
 if __name__ == "__main__":

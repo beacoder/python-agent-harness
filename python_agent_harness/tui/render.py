@@ -208,16 +208,29 @@ class ToolRow(Text):
     the rendered lines of a row and walking the frame with it is how a
     terminal click is traced back to the call it landed on.
 
-    ``collapsed_row`` is set on the *header* of an expanded call: the
-    one-line form of the same call, kept so the row budget can fall back
-    to it instead of dropping the call (and with it the row the user
-    just clicked) when the expanded block no longer fits.
+    ``expanded`` tells what the row *stands for*: True for every row of
+    an expanded block and for its one-line ``▾ no room`` stand-in, False
+    for a collapsed call.  A click acts on what is on screen (expand a
+    collapsed row, collapse an expanded one or its stand-in).
+
+    On the *header* of an expanded call, ``tool_call`` is the call it
+    displays and ``collapsed_row`` its ``▾ no room`` stand-in: the row
+    budget re-fits the block to the space actually left (``tool_call``)
+    and only falls back to the stand-in when not even a minimal block
+    fits, so the row the user just clicked never vanishes.
     """
 
     def __init__(self, tool_id: str, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.tool_id = tool_id
+        self.expanded = False
+        self.tool_call: Any = None
         self.collapsed_row: ToolRow | None = None
+        # the one-line stand-in of an expanded call that has no room
+        self.no_room = False
+        # header only: the block re-fitted to (lines, width), see
+        # RenderMixin._refit_expanded
+        self.refit_cache: dict[tuple[int, int], list[Any]] | None = None
 
 
 class RenderMixin:
@@ -338,7 +351,7 @@ class RenderMixin:
                     rows.append(Text("reasoning ...", style="dim"))
                 if m.tool_calls:
                     for tc in m.tool_calls:
-                        rows.extend(self._tool_call_rows(tc))
+                        rows.extend(self._tool_call_rows(tc, live=not full))
                 if body.strip():
                     rows.append(
                         Markdown(f"**assistant:** {body}", style=ASSISTANT_STYLE, hyperlinks=False)
@@ -363,7 +376,7 @@ class RenderMixin:
                     rows.append(render_diff(sanitize_terminal(call.diff)))
         return rows
 
-    def _tool_call_rows(self, tc: Any) -> list[Any]:
+    def _tool_call_rows(self, tc: Any, live: bool = True) -> list[Any]:
         """Rows for one tool call: collapsed by default, expanded on click.
 
         Collapsed: a single magenta ``▶ tool: Name(k=v, ...)`` line with
@@ -387,21 +400,46 @@ class RenderMixin:
         the call it belongs to (the continuation rows included, so a
         click anywhere in an expanded call collapses it again).
         """
-        collapsed = self._collapsed_tool_row(tc)
         if tc.id not in getattr(self, "_expanded_tools", ()):
-            return [collapsed]
-        expanded = self._expanded_tool_rows(tc, collapsed)
+            return [self._collapsed_tool_row(tc)]
+        if not display_args(tc.arguments, limit=1):
+            # nothing to expand (no arguments, only ``content``, or JSON
+            # the model truncated): the one-line row already shows it
+            # all, so a click must not turn it into a "no room" stand-in
+            return [self._collapsed_tool_row(tc)]
+        # The one-line stand-in for this block when it cannot be shown
+        # (here, or later in _apply_budget when newer rows took the room)
+        no_room = self._no_room_tool_row(tc)
+        expanded = self._expanded_tool_rows(tc, no_room)
         if expanded:
             return expanded
         # The block cannot be shown whole (tiny terminal, huge or very
-        # wide argument): stay collapsed instead of rendering a ``▾``
-        # header whose values were dropped.  The expansion request is
-        # forgotten so the next click retries rather than toggling a
-        # state the user cannot see.
-        expanded_state = getattr(self, "_expanded_tools", None)
-        if expanded_state is not None:
-            expanded_state.discard(tc.id)
-        return [collapsed]
+        # wide argument): show the one-line placeholder instead of a
+        # ``▾`` header whose values were dropped.  The request is kept,
+        # so the block appears on a later rebuild once there is room;
+        # the placeholder is marked, so a click on it visibly cancels
+        # the request instead of re-asking for one that cannot show.
+        # The post-run dump (not LIVE) is not clickable: plain form.
+        return [no_room] if live else [self._collapsed_tool_row(tc)]
+
+    def _no_room_tool_row(self, tc: Any) -> ToolRow:
+        """One-line form of an expanded call that has no room to show.
+
+        Marked (``▾ no room``) and flagged ``expanded`` so it behaves
+        like the block it stands in for: a click collapses the request.
+        An unmarked one-line row here looked exactly like a collapsed
+        call, so a click asked to expand what was already requested and
+        nothing on screen changed -- the request could not be cancelled.
+        """
+        width = max(1, getattr(self.console, "width", None) or 80)
+        mark = " ▾ no room" if width >= 40 else " ▾" if width >= 3 else ""
+        row = self._collapsed_tool_row(tc)
+        label = _truncate_cells(row.plain, max(1, width - cell_len(mark)))
+        placeholder = ToolRow(tc.id, label, style="magenta")
+        placeholder.append(mark, style="dim")
+        placeholder.expanded = True
+        placeholder.no_room = True
+        return placeholder
 
     def _collapsed_tool_row(self, tc: Any) -> ToolRow:
         """The single-line ``▶ tool: Name(k=v, ...)`` form of TC.
@@ -420,27 +458,37 @@ class RenderMixin:
         width = max(1, getattr(self.console, "width", None) or 80)
         return ToolRow(tc.id, _truncate_cells(label, width), style="magenta")
 
-    def _expanded_tool_rows(self, tc: Any, collapsed: ToolRow) -> list[Any]:
+    def _expanded_tool_rows(
+        self, tc: Any, collapsed: ToolRow, lines: int | None = None
+    ) -> list[Any]:
         """Header plus one row per argument, or [] if the block cannot fit.
 
-        The line budget is handed out in *cells* and re-measured after
-        each row, so the returned block always occupies at most
-        ``_expanded_block_lines()`` lines: the header and its values stay
-        together, and the frame stays inside the terminal (a cropped
-        frame has no usable click mapping).
+        The line budget (LINES, default ``_expanded_block_lines()``) is
+        handed out in *cells* and re-measured after each row, so the
+        returned block always occupies at most that many lines: the
+        header and its values stay together, and the frame stays inside
+        the terminal (a cropped frame has no usable click mapping).
+        ``_apply_budget`` calls this again with the space actually left
+        when newer rows took part of the default budget.
         """
         args = display_args(tc.arguments, limit=config.TOOL_EXPANDED_ARG_CHARS)
         if not args:
             return []
+        if lines is None:
+            lines = self._expanded_block_lines()
         width = max(1, getattr(self.console, "width", None) or 80)
         head = ToolRow(tc.id, "▶ ", style="magenta")
         head.append(sanitize_terminal(f"tool: {tc.name} "), style="magenta")
         count = len(args)
         head.append(f"({count} argument{'s' if count != 1 else ''}) ", style="dim")
         head.append("▾", style="dim")
+        head.expanded = True
+        head.tool_call = tc
         head.collapsed_row = collapsed
         rows: list[Any] = [head]
-        left = self._expanded_block_lines() - self._est_lines(head, width)
+        left = lines - self._est_lines(head, width)
+        if left < count:
+            return []  # not even one line per value: never show a partial block
         pending = count
         for key, value in args.items():
             prefix = f"    {key} = "
@@ -453,6 +501,7 @@ class RenderMixin:
             share = max(1, left // max(1, pending))
             cells = self._expanded_value_cells(clean, share, prefix)
             row = ToolRow(tc.id, prefix + _truncate_cells(clean, cells), style="dim")
+            row.expanded = True
             left -= self._est_lines(row, width)
             pending -= 1
             rows.append(row)
@@ -570,13 +619,14 @@ class RenderMixin:
             return list(built)
         return list(cache)
 
-    def _stream_row(self) -> Text | None:
-        """Live stream row (cheap Text, tail-capped)."""
+    def _stream_row(self, lines: int | None = None) -> Text | None:
+        """Live stream row (cheap Text, tail-capped to LINES lines)."""
         with self.lock:
             stream = self.stream_text
         cap = self._visible_row_cap()
         width = getattr(self.console, "width", None) or 80
-        lines = max(3, cap - 3)
+        if lines is None:
+            lines = max(3, cap - 3)
         # Sanitize BEFORE stripping: a control sequence inside the
         # [FINAL CHECK] header ("[FINAL\x1b[0m CHECK]") would otherwise
         # defeat the header match and leak the block.  The full-buffer
@@ -603,10 +653,36 @@ class RenderMixin:
     def _render_conversation(self) -> Group | Text:
         rows = self._history_rows()
         stream_row = self._stream_row()
-        if stream_row is not None:
-            rows.append(stream_row)
-        rows = self._apply_budget(rows)
-        return Group(*rows) if rows else Text("(empty)")
+        kept = self._apply_budget(rows + ([stream_row] if stream_row is not None else []))
+        # An expanded call is what the user chose to read, but the
+        # stream row is the newest row and takes the budget first (up to
+        # the whole panel), squeezing the block down to its one-line
+        # fallback (or a sliver) for as long as the reply streams.  When
+        # the block is not shown whole, the stream yields to a third of
+        # the panel -- but only if that shows more of the block, so one
+        # already out of view never costs the stream its height.
+        expanded = [r for r in rows if getattr(r, "expanded", False)]
+        if stream_row is not None and expanded:
+            width = getattr(self.console, "width", None) or 80
+
+            def shown(candidate: list[Any]) -> int:
+                # block lines actually readable: the one-line "no room"
+                # stand-in is not worth two thirds of the stream
+                return sum(
+                    self._est_lines(r, width)
+                    for r in candidate
+                    if getattr(r, "expanded", False) and not getattr(r, "no_room", False)
+                )
+
+            before = shown(kept)
+            shorter = None
+            if before < shown(expanded):
+                shorter = self._stream_row(max(3, self._visible_row_cap() // 3))
+            if shorter is not None:
+                retry = self._apply_budget([*rows, shorter])
+                if shown(retry) > before:
+                    kept = retry
+        return Group(*kept) if kept else Text("(empty)")
 
     def _apply_budget(self, rows: list[Any]) -> list[Any]:
         """Keep the NEWEST rows that fit the visible terminal area.
@@ -635,19 +711,53 @@ class RenderMixin:
         for unit in reversed(units):
             est = sum(self._est_lines(row, width) for row in unit)
             if budget - est < 0:
-                # The block no longer fits (the conversation grew under
-                # it).  Dropping it would make the row the user just
-                # clicked vanish, so fall back to its one-line form.
-                fallback = getattr(unit[0], "collapsed_row", None)
-                if fallback is not None:
-                    fallback_est = self._est_lines(fallback, width)
+                # The block no longer fits (newer rows -- its own
+                # result, the stream -- took part of the space it was
+                # sized for).  Re-fit it to what is left, so the values
+                # stay readable; only when not even a minimal block fits
+                # fall back to its one-line form, so the row the user
+                # just clicked never vanishes.
+                head = unit[0]
+                collapsed = getattr(head, "collapsed_row", None)
+                if getattr(head, "tool_call", None) is not None and budget > 0:
+                    refit = self._refit_expanded(head, budget)
+                    if refit:
+                        kept.append(refit)
+                        budget -= sum(self._est_lines(row, width) for row in refit)
+                        continue
+                if collapsed is not None:
+                    fallback_est = self._est_lines(collapsed, width)
                     if budget - fallback_est >= 0:
-                        kept.append([fallback])
+                        kept.append([collapsed])
                         budget -= fallback_est
                 continue  # older rows are dropped once the budget is spent
             kept.append(unit)
             budget -= est
         return [row for unit in reversed(kept) for row in unit]
+
+    def _refit_expanded(self, head: ToolRow, lines: int) -> list[Any]:
+        """HEAD's block re-sized to LINES, memoised on HEAD itself.
+
+        ``_apply_budget`` runs on every frame (30/s while streaming) and
+        sizing a block measures each value a few times, so the result is
+        kept for as long as the space and the width are the same -- the
+        common case between two stream deltas.  The memo lives on the
+        header row, so it is dropped together with the history rows it
+        belongs to (every history rebuild starts afresh).
+        """
+        width = getattr(self.console, "width", None) or 80
+        if head.tool_call is None or head.collapsed_row is None:
+            return []
+        if head.refit_cache is None:
+            head.refit_cache = {}
+        key = (lines, width)
+        rows = head.refit_cache.get(key)
+        if rows is None:
+            if len(head.refit_cache) > 64:
+                head.refit_cache.clear()
+            rows = self._expanded_tool_rows(head.tool_call, head.collapsed_row, lines)
+            head.refit_cache[key] = rows
+        return rows
 
     def _round_time(self, round_no: int) -> str | None:
         """Formatted HH:MM:SS start time of round N, if recorded.
@@ -890,7 +1000,12 @@ class RenderMixin:
         return result
 
     def _toggle_tool_at(self, row: int) -> Any:
-        """Tool-call id displayed at terminal ROW (1-based), or None.
+        """Tool-call id displayed at terminal ROW (1-based), or None."""
+        part = self._tool_row_at(row)
+        return None if part is None else part.tool_id
+
+    def _tool_row_at(self, row: int) -> Any:
+        """The ``ToolRow`` drawn at terminal ROW (1-based), or None.
 
         Lines are counted with rich's own renderer, so wrapped rows and
         diffs are accounted for exactly: an estimate would drift by a
@@ -909,9 +1024,8 @@ class RenderMixin:
             row_height = self._frame_height(part)
             if row_height is None:
                 return None
-            tool_id = getattr(part, "tool_id", None)
-            if tool_id is not None and offset <= line < offset + row_height:
-                return tool_id
+            if getattr(part, "tool_id", None) is not None and offset <= line < offset + row_height:
+                return part
             offset += row_height
         return None
 
@@ -921,20 +1035,26 @@ class RenderMixin:
         ``row`` is 1-based, counted from the top of the terminal.  The
         click is ignored unless it lands on a `▶` tool row of the live
         panel; the run's stream keeps rendering either way.
+
+        The click acts on what the row shows: a collapsed row asks for
+        the expansion; an expanded block -- or its ``▾ no room``
+        stand-in, when it cannot fit -- is collapsed.  The stand-in is
+        marked so the user can see the request is pending; an unmarked
+        one looked collapsed, so clicking it changed nothing on screen.
         """
         with self.lock:
             if not self.agent_running:
                 return
-        tool_id = self._toggle_tool_at(row)
-        if tool_id is None:
+        part = self._tool_row_at(row)
+        if part is None:
             return
         expanded = getattr(self, "_expanded_tools", None)
         if expanded is None:
             return
-        if tool_id in expanded:
-            expanded.discard(tool_id)
+        if getattr(part, "expanded", False):
+            expanded.discard(part.tool_id)
         else:
-            expanded.add(tool_id)
+            expanded.add(part.tool_id)
         with self.lock:
             self._history_dirty = True
         self._data_event.set()

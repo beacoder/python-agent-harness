@@ -399,11 +399,29 @@ class InputMixin:
         return text
 
     def _pending_default(self) -> str:
-        """Text typed during the last run, consumed once."""
+        """Text typed during the last run, consumed once.
+
+        Line breaks typed during the run are kept between lines, but
+        stripped at the ends: pressing Enter while waiting (to "wake"
+        the terminal, or to submit) would otherwise seed the prompt
+        with blank lines, and leading whitespace would hide a
+        ``/command`` from the slash dispatcher.
+        """
         typed = getattr(self, "_typed_during_run", "")
         if typed:
             self._typed_during_run = ""
-        return typed
+        # Leading blank lines never matter; leading spaces only go in
+        # front of a "/command" (they would hide it from dispatch), so
+        # pasted indented code keeps its first line's indentation.  At
+        # the end only line breaks go -- a trailing space is part of a
+        # sentence the user goes on typing.
+        lines = typed.split("\n")
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        if lines and lines[0].lstrip().startswith("/"):
+            lines[0] = lines[0].lstrip()
+        typed = "\n".join(lines).rstrip("\n")
+        return typed if typed.strip() else ""
 
     def _ask_question_blocking(self) -> None:
         """Answer the pending question on the main thread.
