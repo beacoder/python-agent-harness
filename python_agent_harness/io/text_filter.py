@@ -260,3 +260,18 @@ def strip_reasoning(text: str, reasoning: str) -> str:
     if stripped.startswith(reasoning):
         return stripped[len(reasoning) :]
     return text
+
+
+def is_mode_reminder_text(text: str) -> bool:
+    """True for harness-injected plan/build mode reminders.
+
+    Content-based: the plan.md / plan-mode.md / build-switch.md prompts
+    all start with the <system-reminder> tag, and the plan-exit approval
+    notice has a fixed format — the same checks the TUI uses, which also
+    cover restored sessions where the ``injected`` flag is lost.
+    """
+    if text.startswith("<system-reminder>"):
+        return True
+    from ..prompts.core import _is_plan_exit_notice
+
+    return _is_plan_exit_notice(text)

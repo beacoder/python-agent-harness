@@ -1118,11 +1118,9 @@ class TestTuiCommandsExtra(unittest.TestCase):
         self.assertIn("Available agent profiles", out)
         self.assertIn("none found", out)
 
-    def test_agent_command_marks_active_agent(self):
-        """/agent must show which profile is active, both for the
-        built-in default (store.agent is None) and a custom agent, and
-        the marker must stay on the profile's own line (a long prompt
-        path wraps, so an end-of-row marker could be orphaned)."""
+    def test_agent_command_lists_without_active_marker(self):
+        """/agent lists profiles without an active marker (the status
+        bar already shows the active agent, and /model has no marker)."""
         tui, buf = make_tui()
         with (
             mock.patch(
@@ -1132,16 +1130,10 @@ class TestTuiCommandsExtra(unittest.TestCase):
             mock.patch("builtins.input", return_value=""),
         ):
             tui._run_agent_command("")
-        lines = buf.getvalue().splitlines()
-        default_line = [ln for ln in lines if "default" in ln]
-        self.assertEqual(len(default_line), 1)
-        self.assertIn("default ← active — agent.md", default_line[0])
-        # the other row must be listed without the marker (it is the only
-        # other line mentioning "planner", via its own prompt path)
-        other = [ln for ln in lines if "planner" in ln]
-        self.assertEqual(len(other), 1)
-        self.assertIn("2) planner — /p/planner.md", other[0])
-        self.assertNotIn("← active", other[0])
+        out = buf.getvalue()
+        self.assertIn("1) default — agent.md", out)
+        self.assertIn("2) planner — /p/planner.md", out)
+        self.assertNotIn("← active", out)
 
         buf.truncate(0)
         tui.session.store.agent = "planner"
@@ -1153,11 +1145,10 @@ class TestTuiCommandsExtra(unittest.TestCase):
             mock.patch("builtins.input", return_value=""),
         ):
             tui._run_agent_command("")
-        lines = buf.getvalue().splitlines()
-        planner_line = [ln for ln in lines if "planner" in ln]
-        self.assertEqual(len(planner_line), 1)
-        self.assertIn("planner ← active — /p/planner.md", planner_line[0])
-        self.assertIn("default — agent.md", buf.getvalue())
+        out = buf.getvalue()
+        self.assertIn("1) default — agent.md", out)
+        self.assertIn("2) planner — /p/planner.md", out)
+        self.assertNotIn("← active", out)
 
     def test_agent_command_warns_when_active_file_vanished(self):
         """An active agent whose prompt file disappeared is reported

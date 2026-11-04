@@ -141,11 +141,7 @@ def make_session(
     )
     if default_agent and default_agent != RESERVED_AGENT_NAME:
         ok, msg = session.switch_agent(default_agent)
-        if ok:
-            # record the applied agent so saved sessions restore it;
-            # switch_agent("default") clears it again
-            session.store.agent = default_agent
-        else:
+        if not ok:
             # A typo'd/missing default_agent must not silently start the
             # session with the built-in prompt — record the config error
             # so the TUI can surface it (see Tui.run).

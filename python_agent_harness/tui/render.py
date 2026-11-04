@@ -23,8 +23,8 @@ from rich.text import Text
 
 from ..core.models import ImagePart, api_safe, display_args
 from ..io.diffrender import render_diff
-from ..io.text_filter import strip_final_check, strip_reasoning
-from ..prompts import RESERVED_AGENT_NAME, _is_mode_reminder_text
+from ..io.text_filter import is_mode_reminder_text, strip_final_check, strip_reasoning
+from ..prompts import RESERVED_AGENT_NAME
 from ..session import config
 
 if TYPE_CHECKING:
@@ -183,7 +183,7 @@ def _is_injected_user_text(text: str) -> bool:
     injected = {config.NUDGE_MESSAGE, config.RESUME_MESSAGE}
     if text in injected:
         return True
-    return _is_mode_reminder_text(text)
+    return is_mode_reminder_text(text)
 
 
 def _image_indicator(msg: Any) -> str:

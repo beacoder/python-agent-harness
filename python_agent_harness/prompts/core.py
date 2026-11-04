@@ -471,9 +471,9 @@ def _is_mode_reminder_text(text: str) -> bool:
     notice has a fixed format — the same checks the TUI uses, which also
     cover restored sessions where the ``injected`` flag is lost.
     """
-    if text.startswith("<system-reminder>"):
-        return True
-    return _is_plan_exit_notice(text)
+    from ..io.text_filter import is_mode_reminder_text
+
+    return is_mode_reminder_text(text)
 
 
 def user_prompt_texts(messages: list) -> list[str]:

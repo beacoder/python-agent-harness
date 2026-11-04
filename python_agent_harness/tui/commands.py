@@ -585,21 +585,14 @@ class CommandMixin:
                 self.console.print(
                     "[yellow]  (none found — add .md files to the prompts/agents/ directory to use /agent)[/yellow]"
                 )
-            # Which agent is currently active: the store records None for
-            # the built-in default, so "no agent" means "default" here too.
-            # The marker sits right after the name (not at the end of the
-            # row) so a long prompt path wrapping the line cannot separate
-            # the marker from the profile it belongs to.
             active_name = getattr(self._controller.session.store, "agent", None)
-            active = active_name or RESERVED_AGENT_NAME
             for idx, name in enumerate(all_names, 1):
-                marker = " [green]← active[/green]" if name == active else ""
                 if name == RESERVED_AGENT_NAME:
-                    self.console.print(f"  [cyan]{idx})[/cyan] default{marker} — agent.md")
+                    self.console.print(f"  [cyan]{idx})[/cyan] default — agent.md")
                 else:
                     prompt_file = self._discovered_agents[name]
                     self.console.print(
-                        f"  [cyan]{idx})[/cyan] {safe_markup(name)}{marker} — {safe_markup(prompt_file)}"
+                        f"  [cyan]{idx})[/cyan] {safe_markup(name)} — {safe_markup(prompt_file)}"
                     )
             if active_name and active_name not in self._discovered_agents:
                 # The active prompt file disappeared while it was in use:
