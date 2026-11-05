@@ -531,6 +531,10 @@ def user_prompt_texts(messages: list) -> list[str]:
             continue
         if text.startswith(config.COMPACT_HEADER):
             continue
+        # agent.start hook context: per-turn harness context, not a
+        # user request (the hook supplies fresh context next turn)
+        if text.startswith(config.HOOK_CONTEXT_HEADER):
+            continue
         if is_reminder[i] and not (batch_start <= i <= last_reminder):
             continue
         image_note = _image_placeholder_text(msg)

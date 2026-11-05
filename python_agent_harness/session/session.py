@@ -19,6 +19,7 @@ from ..core.models import AgentMode, ImagePart
 from ..core.planmode import PlanMode
 from ..core.subagent import run_subagent
 from ..core.token_estimator import TokenCalibrator
+from ..hooks import HookRunner
 from ..io.attachments import image_placeholder
 from ..io.diffrender import sanitize_for_display
 from ..io.persistence import SessionPersistence, escape_role_headers
@@ -251,11 +252,32 @@ class Session:
         self.notify_fn: Callable[[str, Any], None] | None = None
         self.confirm_fn: Callable[[str], bool] | None = None
         self.ask_fn: Callable[[list[dict]], str] | None = None
+        # shell-command hooks (see hooks.py); none until the entry point
+        # installs the configured ones (cli.make_session)
+        self.install_hooks([])
         # Per-thread run identity for event emission, tagged by
         # ``AgentLoop`` (see ``mark_emit_generation``).  Lets the
         # dispatch below drop events from a superseded run instead of
         # misattributing them to the current one.
         self._emit_local = threading.local()
+
+    # ------------------------------------------------------------------
+    # emission fencing
+    # ------------------------------------------------------------------
+    def install_hooks(self, hooks: list) -> None:
+        """Replace the session's hooks with HOOKS (a list of ``hooks.Hook``).
+
+        Failures go to ``log``; Ctrl-C (the cancel flag) stops running
+        hooks; a running hook is announced as ``hook_running`` (label,
+        then None) for the status bar.
+        """
+        self.hooks = HookRunner(
+            hooks,
+            lambda: self.project_dir,
+            self.log,
+            self.cancel_event.is_set,
+            lambda label: self.notify("hook_running", label),
+        )
 
     # ------------------------------------------------------------------
     # emission fencing
@@ -679,7 +701,12 @@ class Session:
         """
         injected = {config.NUDGE_MESSAGE, config.RESUME_MESSAGE}
         for m in reversed(messages):
-            if m.role == "user" and not m.injected and m.text() not in injected:
+            if (
+                m.role == "user"
+                and not m.injected
+                and m.text() not in injected
+                and not m.text().startswith(config.HOOK_CONTEXT_HEADER)
+            ):
                 self.store.remember_first_user_message(m.text())
                 break
 

@@ -43,6 +43,13 @@ NUDGE_MESSAGE = (
 
 # ---- compaction -----------------------------------------------------------
 COMPACT_HEADER = "**[Compacted Summary]**\n\n"
+# Prefix of the harness-injected message carrying agent.start hook
+# context (see Controller._run_worker).  Matched by content too, so a
+# restored session (where the ``injected`` flag is lost) still keeps it
+# out of title generation and compaction's user-prompt replay.
+HOOK_CONTEXT_HEADER = (
+    "[context from agent.start hooks — added by the harness, not typed by the user]\n"
+)
 COMPACT_SEPARATOR = "\n\n---\n\n**[Context compacted]**\n\n---\n\n"
 # Appended after the summary frame + preserved prompts on the AUTOMATIC
 # path only (AgentLoop -> ContextManager.compact).  The rebuilt history
@@ -316,6 +323,23 @@ CONFIG_TEMPLATE = """\
     "context_path": null,
     "skill_path": null
   }},
+  "hooks": {{
+    "_comment": "Optional shell-command hooks (see README 'Hooks'). Events: tool.before, tool.after, agent.start, agent.end; each a list of {{command, matcher?, timeout?, fail_closed?, env_passthrough?}}. A command runs via /bin/sh -c in the project dir with the event as JSON on stdin. Exit 2 = tool.before: block the call (stderr = reason); tool.after: stderr is feedback appended to the result. agent.start: stdout (exit 0) is context for the turn. agent.end: notification. The payload is model-written (untrusted): never eval it. Secret-looking env vars are removed unless listed in env_passthrough. Keys starting with _ are ignored: copy entries from _examples to enable them.",
+    "_examples": {{
+      "tool.before": [
+        {{"matcher": "Bash", "command": "~/bin/pah-guard.sh", "timeout": 10, "fail_closed": true}}
+      ],
+      "tool.after": [
+        {{"matcher": "Edit|Write", "command": "ruff check -q . >&2 || exit 2"}}
+      ],
+      "agent.start": [
+        {{"command": "git status --short"}}
+      ],
+      "agent.end": [
+        {{"command": "notify-send 'python-agent-harness: run finished'"}}
+      ]
+    }}
+  }},
   "mcp": {{
     "_comment": "Optional MCP servers (requires: pip install -e '.[mcp]'). Each server's tools become agent tools named mcp__<server>__<tool>. Transports: stdio (spawn command+args, pass through env var names), streamable-http / sse (connect to url, optional headers). 'parallel: true' marks read-only servers whose tools may run concurrently; default is serial. 'timeout' bounds connects, discovery and calls (seconds).",
     "servers": {{
@@ -575,6 +599,22 @@ def load_bash_env_passthrough(path: str | os.PathLike | None = None) -> frozense
     if not isinstance(names, list):
         return frozenset()
     return frozenset(n.strip().upper() for n in names if isinstance(n, str) and n.strip())
+
+
+def load_hooks(path: str | os.PathLike | None = None) -> list:
+    """The validated ``hooks`` section (a list of ``hooks.Hook``).
+
+    Unlike most loaders this never falls back to a default: a broken
+    file or a malformed entry raises ValueError, so a configured guard
+    stops the session instead of being silently dropped.
+    """
+    from ..hooks import parse_hooks  # lazy: keep config import-light
+
+    section = _read_config(path).get("hooks")
+    try:
+        return parse_hooks(section)
+    except ValueError as e:
+        raise ValueError(f"config file {_config_path(path)}: {e}") from e
 
 
 def load_mcp_config(path: str | os.PathLike | None = None) -> MCPConfig:

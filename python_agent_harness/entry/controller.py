@@ -23,8 +23,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..core.agent import run_agent_loop
-from ..core.models import ImagePart, Message, TextPart
+from ..core.models import ImagePart, Message, TextPart, api_safe
 from ..io.attachments import AttachmentError, parse_at_references
+from ..io.text_filter import strip_final_check
+from ..session import config
 from ..session.session import Session
 from .view import View
 
@@ -49,6 +51,45 @@ class RunHandle:
     display_text: str
     errors: list[AttachmentError]
     warnings: list[str]
+
+
+def final_answer_text(session: Any) -> str:
+    """The run's final assistant answer, TUI-filtered.
+
+    Scans the session history backwards for the last assistant message
+    whose text survives the filters (reasoning preamble and the
+    trailing [FINAL CHECK] block).  Models following the
+    task-completion rules often end with a SEPARATE assistant message
+    holding only the [FINAL CHECK] block, so a check-only message
+    strips to empty and must be skipped in favor of the real answer
+    before it.  Empty when no assistant message has visible text
+    (e.g. the run errored out).
+
+    The scan stops at THIS run's prompt -- the newest user message the
+    harness did not inject itself (nudges, plan reminders and mid-run
+    prompts are ``injected``; compaction re-adds the prompts as plain
+    user messages, so the run's own prompt is still the newest one).
+    History persists across runs (``serve``) and restored sessions
+    (``--restore``), so without the boundary a run that was cancelled
+    or died before answering reported the PREVIOUS run's answer as its
+    own -- and defeated serve's "run produced no answer" check.
+    """
+    for msg in reversed(session.last_messages):
+        role = getattr(msg, "role", None)
+        if role == "user" and not getattr(msg, "injected", False):
+            break
+        if role != "assistant":
+            continue
+        text = strip_final_check(msg.text_without_reasoning()).strip()
+        if text:
+            # api_safe: the answer is written to stdout (headless prints it
+            # verbatim; --json and serve JSON-encode it), and a lone
+            # surrogate from a restored non-UTF-8 session raised
+            # UnicodeEncodeError there — headless died before writing the
+            # result line, and serve's _write_line SWALLOWED it (it is a
+            # ValueError), reporting success with an empty stream.
+            return api_safe(text)
+    return ""
 
 
 class Controller:
@@ -367,9 +408,23 @@ class Controller:
         staleness guard; the cancel event no longer blocks the
         adoption).
         """
+        hooks = getattr(self.session, "hooks", None)  # test doubles may lack it
+        answer: str | None = None
+        crashed = False
         try:
+            context = hooks.agent_start(user_msg.text()) if hooks is not None else None
+            if isinstance(context, str) and context:  # hooks may be a replaced object
+                # its own injected message BEFORE the user's: the request
+                # stays the last thing the model reads (where queued
+                # prompts expect it), and title generation / compaction
+                # skip it like other harness-injected messages
+                self.conversation_history.append(
+                    Message(
+                        role="user", content=config.HOOK_CONTEXT_HEADER + context, injected=True
+                    )
+                )
             self.conversation_history.append(user_msg)
-            run_agent_loop(
+            answer = run_agent_loop(
                 self.session,
                 messages=list(self.conversation_history),
                 top_level=True,
@@ -381,9 +436,17 @@ class Controller:
             if seq == self.session.run_generation and self.session.last_messages:
                 self.conversation_history = list(self.session.last_messages)
         except Exception as e:  # noqa: BLE001
+            crashed = True
             if seq == self.session.run_generation:
                 self.session.log(f"agent error: {e}")
         finally:
+            # every run that started gets its end event (a superseded
+            # one too -- the payload carries its own text).  agent_end
+            # never raises and returns at once (its hooks run on their
+            # own thread); answer/status are computed inside its
+            # boundary, so run_finished/restore below always run
+            if hooks is not None:
+                hooks.agent_end(user_msg.text(), lambda: self._end_outcome(seq, answer, crashed))
             if seq == self.session.run_generation:
                 # the run is done: the final assistant message is now
                 # part of the conversation history, so the view can drop
@@ -392,3 +455,44 @@ class Controller:
                 self.session.notify("run_finished")
                 if restore is not None:
                     restore()
+
+    def _end_outcome(self, seq: int, raw: str | None, crashed: bool) -> tuple[str | None, str]:
+        """``(answer, status)`` for the agent.end hook."""
+        status = self._run_status(seq, raw, crashed)
+        return self._end_answer(seq, raw, status), status
+
+    def _end_answer(self, seq: int, raw: str | None, status: str) -> str | None:
+        """The ``answer`` for agent.end: what the user was shown.
+
+        The loop's raw result can carry the reasoning preamble, or be
+        only the [FINAL CHECK] block of a supervised run, so the current
+        run's answer is extracted like headless/serve do.  An ``error``
+        run reports its error text instead; a superseded run's history
+        already belongs to the next run, so only its raw result (with
+        the check block dropped) is available.
+        """
+        if status == "error":
+            return raw
+        if status == "superseded":
+            if raw is None:
+                return None
+            return strip_final_check(raw).strip() or None
+        return final_answer_text(self.session) or None
+
+    def _run_status(self, seq: int, answer: str | None, crashed: bool) -> str:
+        """How a run ended, for the agent.end hook (see hooks.RUN_STATUSES).
+
+        Derived here rather than from the loop's FSM state, which
+        ``run_agent_loop`` does not expose: superseded beats cancelled
+        (a newer run clears the cancel flag); an ``Error: ...`` result
+        is how the loop reports a failed LLM request (and how the TUI
+        recognizes failures).
+        """
+        if seq != self.session.run_generation:
+            return "superseded"
+        cancel_event = getattr(self.session, "cancel_event", None)
+        if cancel_event is not None and cancel_event.is_set():
+            return "cancelled"
+        if crashed or (answer is not None and answer.startswith("Error:")):
+            return "error"
+        return "done"

@@ -47,6 +47,7 @@ Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_
 - **MCP support** — optional via `[mcp]` extra. MCP tools become ordinary agent tools (`mcp__<server>__<tool>`). Supports `stdio`, `streamable-http`, and `sse` transports.
 - **Slash commands** — built-in `/init`, `/review`, `/explain`, etc., plus custom commands from `prompts/commands/*.md`.
 - **Custom agents** — switch the main agent's system prompt at runtime with `/agent`. Agent files live in `prompts/agents/*.md` and support `name:` and `exclude_tools:` frontmatter.
+- **Hooks** — shell commands on `tool.before` / `tool.after` / `agent.start` / `agent.end`: block risky tool calls, feed linter output back to the model, add per-turn context, notify on completion. See [Hooks](#hooks).
 - **Embeddable runtime boundaries** — `headless --json` for one-shot CI/scripting; `serve` for hosting apps (resident process, bidirectional protocol: multi-turn memory, mid-run Q&A, protocol-level cancel).
 
 ## Usage
@@ -159,9 +160,27 @@ All LLM settings live in `~/.config/python-agent-harness/config.json`. Environme
 - **`paths.context_path` / `paths.skill_path`** — locations for context files and skills. Default: project-local `contexts/` and `skills/`.
 - **`mcp.servers`** — MCP server config (requires `[mcp]` extra). Each supports `transport`, `command`, `args`, `env`, `url`, `headers`, `parallel`, `timeout`, `enabled`.
 - **`headless` / `serve`** — optional budget limits: `max_rounds` (LLM rounds) and `timeout` (wall-clock seconds). `--max-rounds` / `--timeout` override per call; `<= 0` or `null` disables. Unset = unlimited.
+- **`hooks`** — shell-command hooks; see [Hooks](#hooks).
 - **Precedence** — code defaults < config file < `OPENAI_*` env vars. Sub-agents also support `OPENAI_SUBAGENT_*` (`_BASE_URL`, `_API_KEY`, `_MODEL`).
 - **Custom config** — `--config PATH` or `PYTHON_AGENT_HARNESS_CONFIG` env var.
 - **LLM logging** — request/response bodies logged as JSON to `/tmp/python-agent-harness-<date>-<id>.json`. Set `LLM_LOG_DIR` to change. Path printed at startup.
+
+### Hooks
+
+Shell commands run at four points of a run, configured under `hooks` (`config --init` writes inactive examples under `hooks._examples`; `config` lists the active ones):
+
+```json
+"hooks": {
+  "tool.before": [{ "matcher": "Bash", "command": "~/bin/guard.sh", "fail_closed": true }],
+  "tool.after":  [{ "matcher": "Edit|Write", "command": "ruff check -q . >&2 || exit 2" }],
+  "agent.start": [{ "command": "git status --short" }],
+  "agent.end":   [{ "command": "notify-send 'run finished'" }]
+}
+```
+
+- **Behavior** — the event arrives as JSON on stdin. Exit `2` from `tool.before` blocks the call (stderr is the reason); from `tool.after` it appends stderr to the result as feedback. `agent.start` stdout becomes turn context; `agent.end` is notify-only and gets `status` + `answer`.
+- **Keys** — `command` (required), `matcher` (regex on the full tool name), `timeout` (default 30 s), `fail_closed` (block if the hook itself fails), `env_passthrough` (secret env vars the hook may see; others are stripped as for Bash).
+- **Safety** — failures are logged, never fed to the model, and can't crash the agent; `Ctrl-C` stops running hooks; output is capped. The payload is model-written: never `eval` it, and never print secrets (hook output reaches the model).
 
 ## Inspired by opencode
 

@@ -23,9 +23,8 @@ import threading
 from typing import Any, TextIO
 
 from ..core.models import api_safe
-from ..io.text_filter import strip_final_check
 from ..session.session import Session
-from .controller import Controller
+from .controller import Controller, final_answer_text  # noqa: F401  (re-exported)
 from .view import FilteredDeltaStream
 
 # Exec-stream protocol version: rides on every ``start`` and ``result``
@@ -154,45 +153,6 @@ def usage_snapshot(session: Any) -> dict[str, Any] | None:
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 usage[key] = int(value)
     return usage
-
-
-def final_answer_text(session: Session) -> str:
-    """The run's final assistant answer, TUI-filtered.
-
-    Scans the session history backwards for the last assistant message
-    whose text survives the filters (reasoning preamble and the
-    trailing [FINAL CHECK] block).  Models following the
-    task-completion rules often end with a SEPARATE assistant message
-    holding only the [FINAL CHECK] block, so a check-only message
-    strips to empty and must be skipped in favor of the real answer
-    before it.  Empty when no assistant message has visible text
-    (e.g. the run errored out).
-
-    The scan stops at THIS run's prompt -- the newest user message the
-    harness did not inject itself (nudges, plan reminders and mid-run
-    prompts are ``injected``; compaction re-adds the prompts as plain
-    user messages, so the run's own prompt is still the newest one).
-    History persists across runs (``serve``) and restored sessions
-    (``--restore``), so without the boundary a run that was cancelled
-    or died before answering reported the PREVIOUS run's answer as its
-    own -- and defeated serve's "run produced no answer" check.
-    """
-    for msg in reversed(session.last_messages):
-        role = getattr(msg, "role", None)
-        if role == "user" and not getattr(msg, "injected", False):
-            break
-        if role != "assistant":
-            continue
-        text = strip_final_check(msg.text_without_reasoning()).strip()
-        if text:
-            # api_safe: the answer is written to stdout (headless prints it
-            # verbatim; --json and serve JSON-encode it), and a lone
-            # surrogate from a restored non-UTF-8 session raised
-            # UnicodeEncodeError there — headless died before writing the
-            # result line, and serve's _write_line SWALLOWED it (it is a
-            # ValueError), reporting success with an empty stream.
-            return api_safe(text)
-    return ""
 
 
 def _restorable_handler(previous: Any) -> Any:

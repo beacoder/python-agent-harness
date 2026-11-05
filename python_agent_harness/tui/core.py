@@ -57,6 +57,9 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         self.agent_running = False
         self.status = " idle"
         self._current_tool = ""
+        # hook_running: hooks in flight, and the status to restore after
+        self._hooks_active = 0
+        self._status_before_hooks = ""
         self.run_seq = 0
         self._restore: Callable[[], None] | None = None
         # Index into ``session.last_messages`` where the current round
@@ -184,7 +187,27 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
             name = data if isinstance(data, str) else ""
             with self.lock:
                 self._current_tool = name
-                self.status = f" ⏳ {name}" if name else " ⏳ tools"
+                status = f" ⏳ {name}" if name else " ⏳ tools"
+                if self._hooks_active:
+                    # a hook label is showing: update what it restores to,
+                    # so the bar never falls back to a finished tool
+                    self._status_before_hooks = status
+                else:
+                    self.status = status
+        elif kind == "hook_running":
+            # a hook started (label) / ended (None): show it beside the
+            # spinner, then restore what was there.  Counted, because
+            # parallel readonly rounds run tool.before hooks at once.
+            with self.lock:
+                if isinstance(data, str) and data:
+                    if self._hooks_active == 0:
+                        self._status_before_hooks = self.status
+                    self._hooks_active += 1
+                    self.status = f" ⏳ {data}"
+                elif self._hooks_active > 0:
+                    self._hooks_active -= 1
+                    if self._hooks_active == 0:
+                        self.status = self._status_before_hooks
         elif kind == "tools":
             # tool round finished: session.last_messages now contains the
             # tool-call + result rows — rebuild the cached history so
@@ -352,6 +375,9 @@ class Tui(RenderMixin, InputMixin, CommandMixin):
         self.stream_text = ""
         self.status = " running"
         self._current_tool = ""
+        # a superseded run's "hook ended" notifies are fenced off: never
+        # let a stale count pin the status bar
+        self._hooks_active = 0
         # Mark where this round begins in the shared history: the live
         # panel renders only from here on (the latest round), while the
         # end-of-run dump prints the full conversation.  Captured before

@@ -97,11 +97,24 @@ class ToolRunner:
             missing = [k for k in required if k not in args]
             if missing:
                 return f"Error: {call.name} is missing required argument(s): {', '.join(missing)}"
+        hooks = getattr(loop.session, "hooks", None)  # test doubles may lack it
+        if hooks is not None:
+            blocked = hooks.before_tool(call.name, args, call.id, not loop.top_level)
+            if isinstance(blocked, str):  # not just "not None": hooks may be replaced
+                return blocked
         return loop.session.execute_tool(call.name, args, call_id=call.id)
 
     def deliver_tool_result(self, p: ToolCall, result: str) -> None:
         """Append one tool result message for call P (parent thread only)."""
         loop = self.loop
+        # tool.after: the result is final here for sync AND async tools,
+        # and delivery is sequential in call order on the loop's thread.
+        # HookRunner never raises (its own boundary): no handling here.
+        hooks = getattr(loop.session, "hooks", None)  # test doubles may lack it
+        if hooks is not None:
+            final = hooks.after_tool(p.name, p.arguments, p.id, not loop.top_level, result)
+            if isinstance(final, str):  # a replaced hooks object may return anything
+                result = final
         p.result = result
         if hasattr(loop.session, "take_diff"):
             p.diff = loop.session.take_diff(p.id)

@@ -45,6 +45,9 @@ def make_session(
     settings = config.load_llm_config(config_path)
     paths = config.load_paths_config(config_path)
     mcp_config = config.load_mcp_config(config_path)
+    # validated before anything is built: an invalid hooks section stops
+    # startup (a configured guard must never be silently dropped)
+    hook_specs = config.load_hooks(config_path)
     model = model or settings["model"]
     # resolve sub-agent overrides against the EFFECTIVE main settings
     # (so a CLI/caller model override is inherited too when the
@@ -139,6 +142,7 @@ def make_session(
         llm_settings=llm_settings,
         config_path=config_path,
     )
+    session.install_hooks(hook_specs)
     if default_agent and default_agent != RESERVED_AGENT_NAME:
         ok, msg = session.switch_agent(default_agent)
         if not ok:
@@ -315,6 +319,19 @@ def cmd_config(args: argparse.Namespace) -> int:
             )
     else:
         print('mcp: (none configured — add an "mcp" section to the config file)')
+    try:
+        hooks = config.load_hooks(args.path)
+    except ValueError as e:
+        print(f"hooks: INVALID — {e}")
+    else:
+        if hooks:
+            print("hooks:")
+            for h in hooks:
+                matcher = f" [{h.matcher.pattern}]" if h.matcher else ""
+                flags = ", fail_closed" if h.fail_closed else ""
+                print(f"  {h.event}{matcher}: {h.command} (timeout={h.timeout:g}s{flags})")
+        else:
+            print('hooks: (none configured — add a "hooks" section to the config file)')
     print(
         "subagent_llm: (inherits main)"
         if subagent_settings == settings
