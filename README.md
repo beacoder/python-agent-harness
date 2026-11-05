@@ -38,7 +38,7 @@ Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_
 ## Features
 
 - **FSM-driven execution** — explicit `WAIT` / `TOOL` / `TRET` / `SUPERVISE` / `DONE` / `ERRS` / `ABRT` states. Completion supervision nudges the model when it stops early; failed tool calls are sanitized. Transient API failures (`429` / `5xx`) retry with exponential backoff. Auth-expired codes (configurable via `AUTH_REFRESH_STATUS_CODES` in `config.py`; defaults to `[401, 502]`) trigger automatic API key re-read from config/env.
-- **Context management** — CJK-aware token estimation, per-model context windows, automatic compaction at 70% usage.
+- **Context management** — CJK-aware token estimation, per-model context windows, automatic compaction at 80% usage.
 - **Image & text attachments** — attach with `@path` (e.g. `@screenshot.png`, `@README.md`): images (PNG/JPEG/GIF/WebP, up to 20 MB) become multimodal `image_url` parts; text files are inlined. Web URLs supported for images.
 - **Coding tools** — `Agent`, `TodoWrite`, `Glob`, `Grep`, `Read`, `Edit` (incl. unified diffs), `Write`, `Bash`, `Skill`, `Question`, `PlanExit`. Read-only tool rounds (`Read`, `Glob`, `Grep`, `Skill`) dispatch concurrently; async tools (`Bash`, `Agent`) can also run concurrently. Results always delivered in emitted order.
 - **Plan / Build modes** — plan mode is read-only except for the per-session plan file.
@@ -178,9 +178,9 @@ Shell commands run at four points of a run, configured under `hooks` (`config --
 }
 ```
 
-- **Behavior** — the event arrives as JSON on stdin. Exit `2` from `tool.before` blocks the call (stderr is the reason); from `tool.after` it appends stderr to the result as feedback. `agent.start` stdout becomes turn context; `agent.end` is notify-only and gets `status` + `answer`.
+- **Behavior** — the event arrives as JSON on stdin. Exit `2` from `tool.before` blocks the call (stderr is the reason); from `tool.after` it appends stderr to the result as feedback. `agent.start` stdout becomes turn context; `agent.end` is notify-only and gets `status` + `answer`; `tool.after` skips results discarded by `Ctrl-C`.
 - **Keys** — `command` (required), `matcher` (regex on the full tool name), `timeout` (default 30 s), `fail_closed` (block if the hook itself fails), `env_passthrough` (secret env vars the hook may see; others are stripped as for Bash).
-- **Safety** — failures are logged, never fed to the model, and can't crash the agent; `Ctrl-C` stops running hooks; output is capped. The payload is model-written: never `eval` it, and never print secrets (hook output reaches the model).
+- **Safety** — failures are logged, not fed to the model (except a `fail_closed` reason), and can't crash the agent; `Ctrl-C` stops running hooks; output is capped. The payload is model-written: never `eval` it, and never print secrets (hook output reaches the model).
 
 ## Inspired by opencode
 

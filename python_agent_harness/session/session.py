@@ -262,7 +262,7 @@ class Session:
         self._emit_local = threading.local()
 
     # ------------------------------------------------------------------
-    # emission fencing
+    # shell-command hooks (see hooks.py)
     # ------------------------------------------------------------------
     def install_hooks(self, hooks: list) -> None:
         """Replace the session's hooks with HOOKS (a list of ``hooks.Hook``).

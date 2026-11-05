@@ -982,12 +982,47 @@ class TestReviewFixes(HookTestCase):
         thread.join(10)
         self.assertEqual(len(shown), 2)  # agent.end runs after the run: no status
 
-    def test_long_command_label_is_shortened(self):
+    def test_label_shows_the_program_not_the_arguments(self):
         from python_agent_harness.hooks import Hook, _label
 
-        label = _label(Hook("tool.after", "ruff   check -q .\n" + "x" * 100))
-        self.assertTrue(label.startswith("hook tool.after: ruff check -q . x"))
-        self.assertLessEqual(len(label), len("hook tool.after: ") + 40)
+        label = _label(Hook("tool.before", "curl -H 'Authorization: Bearer s3cret' https://x"))
+        self.assertEqual(label, "hook tool.before: curl")
+        self.assertNotIn("s3cret", label)
+        self.assertEqual(
+            _label(Hook("tool.before", "~/bin/guard.sh --flag argument")),
+            "hook tool.before: guard.sh",
+        )
+        self.assertEqual(
+            _label(Hook("tool.before", "FOO=1 /usr/bin/ruff   check -q .")),
+            "hook tool.before: ruff",
+        )
+        self.assertEqual(_label(Hook("tool.before", '"~/bin/q.sh" --x')), "hook tool.before: q.sh")
+        # a quoted program containing spaces must not be split on them
+        self.assertEqual(
+            _label(Hook("tool.before", '"/opt/my dir/guard.sh" --flag')),
+            "hook tool.before: guard.sh",
+        )
+
+    def test_label_tolerates_empty_quotes_and_unbalanced_quoting(self):
+        """An empty quoted word must not raise or become the program."""
+        from python_agent_harness.hooks import Hook, _label
+
+        for command in ("''", '""', "'' --x", "A=1 ''", "'   '", '"a', "guard.sh' --a", 'x"y'):
+            label = _label(Hook("tool.before", command))  # must not raise
+            self.assertTrue(label.startswith("hook tool.before"), label)
+        self.assertEqual(_label(Hook("tool.before", '"" guard.sh')), "hook tool.before: guard.sh")
+        self.assertEqual(
+            _label(Hook("tool.before", 'curl -H "Bearer s3cret')), "hook tool.before: curl"
+        )
+
+    def test_label_never_falls_back_to_the_raw_command(self):
+        """A command that is only assignments (or blank) has no program to show."""
+        from python_agent_harness.hooks import Hook, _label
+
+        label = _label(Hook("agent.start", "TOKEN=s3cret"))
+        self.assertEqual(label, "hook agent.start")
+        self.assertNotIn("s3cret", label)
+        self.assertEqual(_label(Hook("tool.before", "   ")), "hook tool.before")
 
     def test_session_wires_status_to_hook_running_notify(self):
         from python_agent_harness.session.session import Session

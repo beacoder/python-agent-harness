@@ -24,6 +24,7 @@ from typing import Any
 
 from ..core.agent import run_agent_loop
 from ..core.models import ImagePart, Message, TextPart, api_safe
+from ..hooks import RunStatus
 from ..io.attachments import AttachmentError, parse_at_references
 from ..io.text_filter import strip_final_check
 from ..session import config
@@ -456,12 +457,14 @@ class Controller:
                 if restore is not None:
                     restore()
 
-    def _end_outcome(self, seq: int, raw: str | None, crashed: bool) -> tuple[str | None, str]:
+    def _end_outcome(
+        self, seq: int, raw: str | None, crashed: bool
+    ) -> tuple[str | None, RunStatus]:
         """``(answer, status)`` for the agent.end hook."""
         status = self._run_status(seq, raw, crashed)
         return self._end_answer(seq, raw, status), status
 
-    def _end_answer(self, seq: int, raw: str | None, status: str) -> str | None:
+    def _end_answer(self, seq: int, raw: str | None, status: RunStatus) -> str | None:
         """The ``answer`` for agent.end: what the user was shown.
 
         The loop's raw result can carry the reasoning preamble, or be
@@ -479,8 +482,8 @@ class Controller:
             return strip_final_check(raw).strip() or None
         return final_answer_text(self.session) or None
 
-    def _run_status(self, seq: int, answer: str | None, crashed: bool) -> str:
-        """How a run ended, for the agent.end hook (see hooks.RUN_STATUSES).
+    def _run_status(self, seq: int, answer: str | None, crashed: bool) -> RunStatus:
+        """How a run ended, for the agent.end hook (see ``hooks.RunStatus``).
 
         Derived here rather than from the loop's FSM state, which
         ``run_agent_loop`` does not expose: superseded beats cancelled

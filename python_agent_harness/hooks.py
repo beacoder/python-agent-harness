@@ -41,7 +41,9 @@ Behavior:
   still applies) and may run concurrently in parallel readonly rounds.
   Calls rejected before dispatch (bad JSON, missing args, parent-only
   tools) skip tool.before; tool.after sees every delivered result,
-  errors included.
+  errors included.  Results discarded by a cancel (or a superseded run)
+  are never delivered, so their tool.after hooks do not run even when
+  the tool already executed.
 - Stopping (timeout, Ctrl-C): SIGTERM to the process group, SIGKILL
   after 0.5s.  Ctrl-C acts within ~0.1s; an interrupted tool.before
   blocks its call.  A hook is done when its shell exits.
@@ -70,11 +72,11 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 EVENTS = ("tool.before", "tool.after", "agent.start", "agent.end")
 TOOL_EVENTS = ("tool.before", "tool.after")
-RUN_STATUSES = ("done", "error", "cancelled", "superseded")
+RunStatus = Literal["done", "error", "cancelled", "superseded"]
 DEFAULT_TIMEOUT = 30.0
 BLOCK_EXIT_CODE = 2
 MAX_TEXT_CHARS = 8000  # per text sent to the model (reason/feedback/context)
@@ -346,10 +348,36 @@ def _parsed_args(arguments: Any) -> Any:
     return arguments
 
 
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+# A shell word: single-quoted, double-quoted (both may contain spaces), or
+# a bare run of non-space characters.
+_WORD = re.compile(r"""'([^']*)'|"([^"]*)"|(\S+)""")
+_LABEL_CHARS = 40
+
+
 def _label(hook: Hook) -> str:
-    """Status-bar text for a running hook."""
-    cmd = " ".join(hook.command.split())
-    return f"hook {hook.event}: {cmd if len(cmd) <= 40 else cmd[:39] + '…'}"
+    """Status-bar text for a running hook: its program, never the rest.
+
+    Only the executable's own name is shown: arguments (or a lone
+    ``VAR=value`` assignment) may inline a credential and the status bar
+    is on screen.  No program at all -> the event alone.
+    """
+    words: list[str] = []
+    for match in _WORD.finditer(hook.command):
+        # group(1)/(2) are the quoted bodies and may be empty: '' is a
+        # word, but an empty one, so it must not become a program.
+        word = match.group(1) or match.group(2) or match.group(3)
+        if word and word.strip():
+            words.append(word)
+    while words and _ASSIGNMENT.match(words[0]):  # VAR=value cmd ...
+        words.pop(0)
+    # a quoted program: '"/opt/my dir/guard.sh" --flag' -> guard.sh
+    program = os.path.basename(words[0]) if words else ""
+    if not program:
+        return f"hook {hook.event}"
+    if len(program) > _LABEL_CHARS:
+        program = program[: _LABEL_CHARS - 1] + "…"
+    return f"hook {hook.event}: {program}"
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +467,7 @@ class HookRunner:
         return self._guard("agent.start", lambda: None, lambda: self._agent_start(text))
 
     def agent_end(
-        self, text: str, outcome: Callable[[], tuple[str | None, str]]
+        self, text: str, outcome: Callable[[], tuple[str | None, RunStatus]]
     ) -> threading.Thread | None:
         """Start agent.end hooks on a background thread and return it (None
         if there are none, or on error).  OUTCOME -> ``(answer, status)``
@@ -580,7 +608,7 @@ class HookRunner:
         return "\n\n".join(context) or None
 
     def _agent_end(
-        self, text: str, outcome: Callable[[], tuple[str | None, str]]
+        self, text: str, outcome: Callable[[], tuple[str | None, RunStatus]]
     ) -> threading.Thread | None:
         hooks = self._for("agent.end")
         if not hooks:

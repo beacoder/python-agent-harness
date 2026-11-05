@@ -9,7 +9,7 @@ from pathlib import Path
 from ..mcp.config import MCPConfig
 
 # ---- context management -------------------------------------------------
-CONTEXT_TRIGGER = 0.70
+CONTEXT_TRIGGER = 0.80
 
 # Entries are matched in order (first match wins): put more specific
 # patterns before general ones.

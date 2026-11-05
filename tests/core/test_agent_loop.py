@@ -768,11 +768,21 @@ class TestAgentLoop(unittest.TestCase):
     def test_compaction_resumes_once_context_grows_past_the_floor(self):
         """The floor only suppresses pointless compactions: when the
         conversation grows well past it, compaction runs again."""
-        # WAIT 1: 0.95 -> compact; WAIT 2: still 0.80 -> send, floor 0.80;
-        # WAIT 3: 0.85 (< 0.80 + 0.20/2 = 0.90) -> no compaction;
-        # WAIT 4: 0.95 -> grown past the floor -> compact again
+        # Ratios are derived from the trigger so the test keeps covering
+        # the "still above it after compacting" branch when the trigger
+        # moves (a hardcoded 0.80 stopped exercising it at CONTEXT_TRIGGER
+        # 0.80: it no longer cleared the bar).
+        trigger = config.CONTEXT_TRIGGER
+        floor = trigger + 0.02
+        half = floor + (1.0 - floor) / 2
         tool_round = ("", [ToolCall(id="1", name="Read", arguments='{"file_path": "/tmp/x"}')])
-        n = self._count_compactions([tool_round] * 4 + ["done"], [0.95, 0.80, 0.85, 0.95, 0.10])
+        # WAIT 1: above the trigger -> compact; WAIT 2: still above it ->
+        # send, floor recorded; WAIT 3: below floor + half the remaining
+        # headroom -> no compaction; WAIT 4: grown past it -> compact again
+        n = self._count_compactions(
+            [tool_round] * 4 + ["done"],
+            [trigger + 0.05, floor, floor + (half - floor) / 2, floor + (1.0 - floor) * 0.9, 0.10],
+        )
         self.assertEqual(n, 2)
 
     def _count_failed_compactions(self, script, ratios) -> int:
