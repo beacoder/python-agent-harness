@@ -170,10 +170,18 @@ class SessionPersistence:
     # -- saving ---------------------------------------------------------------
     def metadata_block(self) -> str:
         lines = [";; Local Variables:"]
+        # The agent is ALWAYS recorded: the built-in default is stored
+        # as "default" rather than omitted, so "saved on the default
+        # agent" stays distinguishable from a pre-agent-era file (no
+        # key at all) and /restore can switch a currently-active custom
+        # agent back to the default prompt.  switch_agent also stores
+        # None there on a default switch (see Session.switch_agent),
+        # which is normalized to the reserved name here.
+        agent = self.agent if self.agent else "default"
         pairs = [
             ("python-agent-harness--project-dir", self.project_dir),
             ("python-agent-harness--model", self.model),
-            ("python-agent-harness--agent", self.agent),
+            ("python-agent-harness--agent", agent),
         ]
         for name, value in pairs:
             if value is None:

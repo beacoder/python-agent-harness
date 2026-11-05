@@ -74,11 +74,18 @@ class TestSession(unittest.TestCase):
         parsed = SessionPersistence.parse_metadata(text)
         self.assertEqual(parsed["python-agent-harness--agent"], "reviewer")
 
-    def test_agent_absent_when_none(self):
-        """No custom agent -> no agent line in the metadata block, so
-        old sessions and default-agent sessions parse identically."""
+    def test_default_agent_recorded_explicitly(self):
+        """A session saved on the built-in default agent records
+        ``default`` explicitly: without it, "saved on default" would be
+        indistinguishable from a pre-agent-era file (no key at all), and
+        /restore would keep whatever custom agent happens to be active
+        in the current session instead of switching back to default."""
         store = SessionPersistence(project_dir="/tmp/proj", model="m", agent=None)
-        self.assertNotIn("python-agent-harness--agent", store.metadata_block())
+        meta = store.metadata_block()
+        self.assertIn("python-agent-harness--agent: 'default'", meta)
+        text = "conversation...\n\n" + meta + "\n"
+        parsed = SessionPersistence.parse_metadata(text)
+        self.assertEqual(parsed["python-agent-harness--agent"], "default")
 
     def test_save_and_restore_flow(self):
         import os

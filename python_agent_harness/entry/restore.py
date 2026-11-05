@@ -79,8 +79,12 @@ def load_saved_session(path: str) -> SavedSession:
 
 
 def restore_agent(controller: Controller, agent: str | None, report: Report) -> None:
-    """Switch to the saved AGENT; fall back to the default agent (so no
-    stale tool exclusions linger) when it no longer exists."""
+    """Switch to the saved AGENT; keep the current agent when the session
+    was saved without one (pre-agent-era file), and fall back to the
+    default agent (so no stale tool exclusions linger) when the saved
+    name no longer exists.  A session saved on the default agent records
+    ``default`` explicitly (see SessionPersistence.metadata_block), so it
+    still switches back even when a custom agent is active now."""
     if not agent:
         return
     try:
