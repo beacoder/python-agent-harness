@@ -20,8 +20,6 @@ from rich.text import Text
 
 from ..core.models import ImagePart, Message, TextPart
 from ..entry.restore import (
-    AGENT_KEY,
-    MODEL_KEY,
     PROJECT_KEY,
     apply_saved_session,
     load_saved_session,
@@ -428,10 +426,14 @@ class CommandMixin:
         return ["default", *sorted(self._controller.model_profiles.keys())]
 
     def _model_switch_by_name(self, name: str) -> None:
-        """Switch to a named profile (or ``default``) and report the outcome."""
+        """Switch to a named profile (or ``default``).
+
+        Only failures are reported: a successful switch already shows up
+        in the input prompt's "model >" prefix, so an extra confirmation
+        line is noise.
+        """
         success, msg = self._controller.switch_model(name)
         if success:
-            self.console.print(f"[green]{safe_markup(msg)}[/green]")
             self._data_event.set()
         else:
             self.console.print(f"[red]{safe_markup(msg)}[/red]")
@@ -567,10 +569,13 @@ class CommandMixin:
         return [RESERVED_AGENT_NAME, *sorted(self._discovered_agents.keys())]
 
     def _agent_switch_by_name(self, name: str) -> None:
-        """Switch to a named agent (or ``default``) and report."""
+        """Switch to a named agent (or ``default``).
+
+        Only failures are reported: the status bar's " @agent" segment
+        already reflects a successful switch.
+        """
         success, msg = self._controller.switch_agent(name)
         if success:
-            self.console.print(f"[green]{safe_markup(msg)}[/green]")
             self._on_notify("agent-switched")
         else:
             self.console.print(f"[red]{safe_markup(msg)}[/red]")
@@ -686,9 +691,10 @@ class CommandMixin:
             return
 
         def report(level: str, msg: str) -> None:
-            if level == "ok":
-                self.console.print(f"[green]{safe_markup(msg)}[/green]")
-            else:
+            # successful agent/model restores need no line of their own:
+            # the status bar and the input prompt's "model >" prefix
+            # already reflect them, only problems are worth reporting
+            if level != "ok":
                 self.console.print(f"[yellow]warning: {safe_markup(msg)}[/yellow]")
 
         apply_saved_session(self._controller, saved, report)
@@ -701,12 +707,9 @@ class CommandMixin:
         saved_project = saved.meta.get(PROJECT_KEY)
         if saved_project:
             self._switch_input_history(saved_project)
-        model = saved.meta.get(MODEL_KEY)
-        agent_display = saved.meta.get(AGENT_KEY, "default")
         self.console.print(
             f"[green]restored:[/green] {safe_markup(os.path.basename(path))} "
-            f"(model={safe_markup(model)}, agent={safe_markup(agent_display)}, "
-            f"project={safe_markup(saved_project or '?')}, {len(saved.messages)} messages)"
+            f"(project={safe_markup(saved_project or '?')}, {len(saved.messages)} messages)"
         )
 
     def _switch_input_history(self, project_dir: str) -> None:

@@ -462,7 +462,8 @@ class TestTuiCommands(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_restore_applies_saved_agent(self):
         """A session saved under a custom agent switches back to it on
-        restore; the summary line shows the agent name."""
+        restore, silently: the status bar reports the agent, so no extra
+        "switched to" line is printed."""
         tui, buf = make_tui()
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "session.md")
@@ -475,8 +476,8 @@ class TestTuiCommands(unittest.TestCase):
                 )
             tui._run_restore(path)
         out = buf.getvalue()
-        self.assertIn("switched to reviewer", out)
-        self.assertIn("agent=reviewer", out)
+        self.assertNotIn("switched", out)
+        self.assertNotIn("agent=reviewer", out)
         self.assertIn("code reviewer", tui.session.system_prompt)
         self.assertEqual(tui.session.store.agent, "reviewer")
 
@@ -539,7 +540,7 @@ class TestTuiCommands(unittest.TestCase):
         self.assertEqual(tui.session.model, "ds-chat")
         self.assertEqual(tui.session.client.model, "ds-chat")
         self.assertEqual(tui.session.client.base_url, "https://ds/v1")
-        self.assertIn("switched to deepseek", buf.getvalue())
+        self.assertNotIn("switched", buf.getvalue())
 
     def test_restore_default_model_via_pseudo_profile(self):
         """A saved model equal to the session-start default restores the
@@ -560,7 +561,7 @@ class TestTuiCommands(unittest.TestCase):
                 )
             tui._run_restore(path)
         self.assertEqual(tui.session.model, "start-model")
-        self.assertIn("switched to default", buf.getvalue())
+        self.assertNotIn("switched", buf.getvalue())
 
     def test_restore_model_without_match_keeps_current(self):
         """A saved model with no profile-name or profile-model match warns
@@ -607,9 +608,9 @@ class TestTuiCommands(unittest.TestCase):
         self.assertEqual(tui2.session.model, "glm-5.2")
         self.assertEqual(tui2.session.client.base_url, "https://glm/v1")
         out = buf2.getvalue()
-        self.assertIn("switched to reviewer", out)
-        self.assertIn("switched to glm", out)
-        self.assertIn("agent=reviewer", out)
+        self.assertNotIn("switched", out)
+        self.assertNotIn("agent=reviewer", out)
+        self.assertIn("restored:", out)
 
     def test_restore_drops_system_and_tool_blocks(self):
         """``**system**:`` and ``**tool**:`` blocks in a saved body are
@@ -768,7 +769,9 @@ class TestTuiCommands(unittest.TestCase):
         switch.assert_called_once_with("default")
 
     def test_model_switch_by_name(self):
-        """``/model <name>`` switches via the session."""
+        """``/model <name>`` switches via the session without printing a
+        confirmation: the input prompt's "model >" prefix already shows
+        the active model."""
         tui, buf = make_tui()
         profiles = {"deepseek": {"model": "deepseek-chat"}}
         tui.session.model_profiles = dict(profiles)
@@ -780,7 +783,7 @@ class TestTuiCommands(unittest.TestCase):
         ):
             tui._run_model_command("deepseek")
         sw.assert_called_once_with("deepseek")
-        self.assertIn("switched", buf.getvalue())
+        self.assertNotIn("switched", buf.getvalue())
 
     def test_model_reloads_profiles_from_config_each_call(self):
         """``/model`` re-reads the config file on every call, so a
@@ -1070,10 +1073,12 @@ class TestTuiCommandsExtra(unittest.TestCase):
         self.assertEqual(tui._agent_list_names(), ["default", "planner"])
 
     def test_agent_switch_by_name_success_and_failure(self):
+        """A successful switch prints nothing (the status bar shows the
+        active agent); a failure still reports the reason."""
         tui, buf = make_tui()
         with mock.patch.object(tui.session, "switch_agent", return_value=(True, "agent ok")):
             tui._agent_switch_by_name("planner")
-        self.assertIn("agent ok", buf.getvalue())
+        self.assertNotIn("agent ok", buf.getvalue())
         buf.truncate(0)
         with mock.patch.object(tui.session, "switch_agent", return_value=(False, "no agent")):
             tui._agent_switch_by_name("nope")
