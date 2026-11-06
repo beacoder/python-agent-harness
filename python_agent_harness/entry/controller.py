@@ -24,10 +24,10 @@ from typing import Any
 
 from ..core.agent import run_agent_loop
 from ..core.models import ImagePart, Message, TextPart, api_safe
-from ..hooks import RunStatus
 from ..io.attachments import AttachmentError, parse_at_references
 from ..io.text_filter import strip_final_check
 from ..session import config
+from ..session.hooks import RunStatus
 from ..session.session import Session
 from .view import View
 

@@ -317,7 +317,7 @@ def _stop(proc: subprocess.Popen[bytes], readers: list[threading.Thread]) -> Non
 def _env_builder() -> Callable[[Hook], dict[str, str]]:
     """Per-event environment: os.environ snapshotted and scrubbed ONCE
     (the scrub can stat paths), then each hook's passthrough added back."""
-    from .tools.bash import scrubbed_env  # lazy: avoids an import cycle
+    from ..tools.bash import scrubbed_env  # lazy: avoids an import cycle
 
     full = dict(os.environ)
     base = scrubbed_env(full)

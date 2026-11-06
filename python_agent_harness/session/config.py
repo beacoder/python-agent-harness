@@ -608,7 +608,7 @@ def load_hooks(path: str | os.PathLike | None = None) -> list:
     file or a malformed entry raises ValueError, so a configured guard
     stops the session instead of being silently dropped.
     """
-    from ..hooks import parse_hooks  # lazy: keep config import-light
+    from .hooks import parse_hooks  # lazy: keep config import-light
 
     section = _read_config(path).get("hooks")
     try:

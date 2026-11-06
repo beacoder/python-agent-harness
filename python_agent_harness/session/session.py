@@ -19,7 +19,6 @@ from ..core.models import AgentMode, ImagePart
 from ..core.planmode import PlanMode
 from ..core.subagent import run_subagent
 from ..core.token_estimator import TokenCalibrator
-from ..hooks import HookRunner
 from ..io.attachments import image_placeholder
 from ..io.diffrender import sanitize_for_display
 from ..io.persistence import SessionPersistence, escape_role_headers
@@ -32,6 +31,7 @@ from ..tools import Registry, ToolContext
 from ..tools.base import PendingToolResult, resolve_path
 from ..tools.filesystem import cleanup_spooled_files
 from ..tools.mcp import mcp_tools_from_manager
+from .hooks import HookRunner
 
 if TYPE_CHECKING:
     from ..tools.base import ToolRuntime
@@ -252,7 +252,7 @@ class Session:
         self.notify_fn: Callable[[str, Any], None] | None = None
         self.confirm_fn: Callable[[str], bool] | None = None
         self.ask_fn: Callable[[list[dict]], str] | None = None
-        # shell-command hooks (see hooks.py); none until the entry point
+        # shell-command hooks (see session/hooks.py); none until the entry point
         # installs the configured ones (cli.make_session)
         self.install_hooks([])
         # Per-thread run identity for event emission, tagged by
@@ -262,7 +262,7 @@ class Session:
         self._emit_local = threading.local()
 
     # ------------------------------------------------------------------
-    # shell-command hooks (see hooks.py)
+    # shell-command hooks (see session/hooks.py)
     # ------------------------------------------------------------------
     def install_hooks(self, hooks: list) -> None:
         """Replace the session's hooks with HOOKS (a list of ``hooks.Hook``).

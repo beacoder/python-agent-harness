@@ -1,4 +1,4 @@
-"""Tests for shell-command hooks (hooks.py) and their wiring into the
+"""Tests for shell-command hooks (session/hooks.py) and their wiring into the
 tool runner (tool.before/after), the controller (agent.start/end) and
 cli.make_session (config loading)."""
 
@@ -22,9 +22,9 @@ import tests  # noqa: F401,E402  (side-effect: hermetic config, see tests/__init
 from python_agent_harness.core.models import Message, ToolCall
 from python_agent_harness.core.tool_runner import ToolRunner
 from python_agent_harness.entry.controller import Controller
-from python_agent_harness.hooks import MAX_TEXT_CHARS, Hook, HookRunner, parse_hooks
 from python_agent_harness.prompts.core import user_prompt_texts
 from python_agent_harness.session import config
+from python_agent_harness.session.hooks import MAX_TEXT_CHARS, Hook, HookRunner, parse_hooks
 from tests.support import session_sandbox  # noqa: F401  (side-effect: redirect SESSION_DIR)
 
 
@@ -805,7 +805,7 @@ class TestBoundary(HookTestCase):
 
     def test_unserializable_payload_is_contained(self):
         r = self.one("tool.before", "exit 2")
-        with mock.patch("python_agent_harness.hooks.json.dumps", self.boom):
+        with mock.patch("python_agent_harness.session.hooks.json.dumps", self.boom):
             # json.dumps fails inside _run -> a per-hook failure outcome,
             # not an exception: logged, call allowed (not fail_closed)
             self.assertIsNone(r.before_tool("Bash", {}, None, False))
@@ -838,7 +838,7 @@ class TestResourceBounds(HookTestCase):
     def test_runaway_output_is_bounded(self):
         """`yes` writes as fast as it can until the timeout: memory stays
         bounded and the hook still ends at its timeout."""
-        from python_agent_harness.hooks import MAX_CAPTURE_BYTES, _run
+        from python_agent_harness.session.hooks import MAX_CAPTURE_BYTES, _run
 
         (hook,) = parse_hooks({"tool.after": [{"command": "yes", "timeout": 1}]})
         start = time.monotonic()
@@ -919,12 +919,12 @@ class TestReviewFixes(HookTestCase):
                 parse_hooks(section)
 
     def test_unserializable_payload_spawns_nothing(self):
-        from python_agent_harness.hooks import _run
+        from python_agent_harness.session.hooks import _run
 
         (hook,) = parse_hooks({"tool.before": [{"command": "true"}]})
         circular: dict = {}
         circular["self"] = circular
-        with mock.patch("python_agent_harness.hooks.subprocess.Popen") as popen:
+        with mock.patch("python_agent_harness.session.hooks.subprocess.Popen") as popen:
             outcome = _run(hook, {"tool_args": circular}, self.dir, {}, None)
         popen.assert_not_called()
         assert outcome.error is not None
@@ -937,7 +937,7 @@ class TestReviewFixes(HookTestCase):
             self.assertIsNotNone(r.before_tool("Bash", {}, None, False))  # covered
 
     def test_capture_flag_only_when_bytes_were_dropped(self):
-        from python_agent_harness.hooks import MAX_CAPTURE_BYTES, _run
+        from python_agent_harness.session.hooks import MAX_CAPTURE_BYTES, _run
 
         for size, dropped in ((MAX_CAPTURE_BYTES, False), (MAX_CAPTURE_BYTES + 1, True)):
             (hook,) = parse_hooks({"tool.before": [{"command": f"head -c {size} /dev/zero"}]})
@@ -983,7 +983,7 @@ class TestReviewFixes(HookTestCase):
         self.assertEqual(len(shown), 2)  # agent.end runs after the run: no status
 
     def test_label_shows_the_program_not_the_arguments(self):
-        from python_agent_harness.hooks import Hook, _label
+        from python_agent_harness.session.hooks import Hook, _label
 
         label = _label(Hook("tool.before", "curl -H 'Authorization: Bearer s3cret' https://x"))
         self.assertEqual(label, "hook tool.before: curl")
@@ -1005,7 +1005,7 @@ class TestReviewFixes(HookTestCase):
 
     def test_label_tolerates_empty_quotes_and_unbalanced_quoting(self):
         """An empty quoted word must not raise or become the program."""
-        from python_agent_harness.hooks import Hook, _label
+        from python_agent_harness.session.hooks import Hook, _label
 
         for command in ("''", '""', "'' --x", "A=1 ''", "'   '", '"a', "guard.sh' --a", 'x"y'):
             label = _label(Hook("tool.before", command))  # must not raise
@@ -1017,7 +1017,7 @@ class TestReviewFixes(HookTestCase):
 
     def test_label_never_falls_back_to_the_raw_command(self):
         """A command that is only assignments (or blank) has no program to show."""
-        from python_agent_harness.hooks import Hook, _label
+        from python_agent_harness.session.hooks import Hook, _label
 
         label = _label(Hook("agent.start", "TOKEN=s3cret"))
         self.assertEqual(label, "hook agent.start")
