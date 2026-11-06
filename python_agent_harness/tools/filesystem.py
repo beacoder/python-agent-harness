@@ -37,6 +37,7 @@ import os
 import shutil  # noqa: F401  (mock target for tests)
 import stat
 import subprocess  # noqa: F401  (mock target for tests)
+import sys
 import tempfile
 import threading
 import time
@@ -94,12 +95,26 @@ def _spool(text: str, label: str) -> str:
             suffix=".txt",
             dir=_spool_dir(),
         )
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-        with _spooled_files_lock:
-            _spooled_files.append(temp_file)
     except OSError:
         return _truncate(text, label)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+    except BaseException:
+        # The file exists on disk but was never tracked (tracking happens
+        # after a successful write), so cleanup_spooled_files could never
+        # remove it.  Unlink before propagating to the in-memory fallback:
+        # a failed spool must not leave an orphan in TMPDIR — worst case a
+        # large, secret-bearing partial write surviving the session.
+        with contextlib.suppress(OSError):
+            os.unlink(temp_file)
+        if isinstance(sys.exc_info()[1], OSError):
+            # ordinary write failure (ENOSPC, quota, ...): fall back to
+            # in-memory truncation as before
+            return _truncate(text, label)
+        raise
+    with _spooled_files_lock:
+        _spooled_files.append(temp_file)
     lines = text.splitlines()
     preview = "\n".join(lines[:SPOOL_LINES])
     return (

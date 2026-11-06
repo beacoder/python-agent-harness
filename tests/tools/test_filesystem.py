@@ -278,7 +278,7 @@ class TestSpool(unittest.TestCase):
         big = _big_output()
         result = self.fs._spool(big, "grep")
         m = re.search(r'file_path="([^"]+)"', result)
-        self.assertIsNotNone(m, result)
+        assert m is not None, result
         self.assertTrue(os.path.exists(m.group(1)))
         self.fs.cleanup_spooled_files()
         self.assertFalse(os.path.exists(m.group(1)))
@@ -288,6 +288,7 @@ class TestSpool(unittest.TestCase):
         big = _big_output()
         result = self.fs._spool(big, "grep")
         m = re.search(r'file_path="([^"]+)"', result)
+        assert m is not None, result
         os.remove(m.group(1))
         self.fs.cleanup_spooled_files()  # must not raise
         self.assertEqual(self.fs._spooled_files, [])
@@ -300,7 +301,7 @@ class TestSpool(unittest.TestCase):
         self.assertIn("Stored in:", result)
         self.assertIn(f"First {self.fs.SPOOL_LINES} lines", result)
         m = re.search(r'file_path="([^"]+)"', result)
-        self.assertIsNotNone(m, result)
+        assert m is not None, result
         self.assertTrue(os.path.isabs(m.group(1)))
         with open(m.group(1)) as f:
             self.assertEqual(f.read(), big)
@@ -313,7 +314,7 @@ class TestSpool(unittest.TestCase):
         result = self.fs._git_glob_results(big, "/repo", "/repo", None)
         self.assertIn("glob results too large", result)
         m = re.search(r'file_path="([^"]+)"', result)
-        self.assertIsNotNone(m, result)
+        assert m is not None, result
         with open(m.group(1)) as f:
             self.assertEqual(f.read(), big + "\n")
 
@@ -331,7 +332,7 @@ class TestSpool(unittest.TestCase):
             result = grep_tool().run({"regex": "needle", "path": d, "context_lines": 15}, ctx)
             self.assertIn("grep results too large", result)
             m = re.search(r'file_path="([^"]+)"', result)
-            self.assertIsNotNone(m, result)
+            assert m is not None, result
             self.assertGreater(os.path.getsize(m.group(1)), self.fs.MAX_OUTPUT)
 
     def test_spool_falls_back_to_truncation_when_tempdir_unwritable(self):
@@ -340,6 +341,44 @@ class TestSpool(unittest.TestCase):
         result = self.fs._spool(big, "grep")
         self.assertIn("[truncated grep]", result)
         self.assertNotIn("Stored in:", result)
+
+    def test_spool_unlinks_temp_file_when_write_fails(self):
+        """A write failure after mkstemp must not orphan the temp file.
+
+        mkstemp succeeds on a full disk (0-byte file costs no blocks);
+        the write then fails (ENOSPC).  The file was never appended to
+        _spooled_files (tracking happens only after a successful write),
+        so cleanup_spooled_files could never remove it: unlink it on
+        the failure path.
+        """
+        big = _big_output()
+        real_fdopen = os.fdopen
+        written = []
+
+        def failing_fdopen(fd, *a, **kw):
+            f = real_fdopen(fd, *a, **kw)
+
+            class Broken:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    return f.__exit__(*exc)
+
+                def write(self, data):
+                    written.append(data)
+                    raise OSError(28, "No space left on device")
+
+            return Broken()
+
+        with mock.patch("os.fdopen", failing_fdopen):
+            result = self.fs._spool(big, "grep")
+        self.assertIn("[truncated grep]", result)  # graceful fallback
+        self.assertNotIn("Stored in:", result)
+        self.assertEqual(written, [big])  # failure happened at write
+        leftovers = [n for n in os.listdir(self.tmp.name) if "python-agent-harness-" in n]
+        self.assertEqual(leftovers, [], f"orphaned spool files: {leftovers}")
+        self.assertEqual(self.fs._spooled_files, [])
 
     def test_grep_out_formats_backend_errors(self):
         """A failing backend (exit code >= 2) must surface as an explicit
@@ -526,7 +565,7 @@ class TestReadTool(unittest.TestCase):
         out = Read().run({"file_path": p, "start_line": 1, "end_line": 20000}, ToolContext())
         self.assertIn("read results too large", out)
         m = re.search(r'file_path="([^"]+)"', out)
-        self.assertIsNotNone(m, out)
+        assert m is not None, out
         with open(m.group(1)) as f:
             content = f.read()
         self.assertIn("Showing lines 1-20000 of 20000:", content)
