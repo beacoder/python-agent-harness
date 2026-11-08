@@ -98,11 +98,11 @@ A persistent, bidirectional runtime for hosting applications. Keeps the `Control
 | `/help` | List available commands |
 | `/exit` | Quit |
 
-Custom commands from `prompts/commands/*.md` are always registered. Files in `paths.command_path` are added on top, and a command file **replaces the slash command of the same name**, builtin or bundled: a configured `review.md` turns `/review` into your prompt, a configured `plan.md` replaces `/plan`, and a configured `explain.md` overrides the bundled one. Precedence: configured file > bundled file > builtin. The only exception is `/exit`, which a command file cannot shadow. `/help` notes which builtin names are overridden.
+Custom commands from `prompts/commands/*.md` and `paths.command_path` are always registered (TUI only). A command file **replaces** the command of the same name — builtin or bundled (precedence: configured > bundled > builtin), except `/exit`, which cannot be shadowed. `/help` lists the overrides.
 
 ### Custom agents
 
-Agent files are markdown (`.md`) in `prompts/agents/`. When `paths.agent_path` is configured, its files are merged on top: a configured agent overrides a bundled one of the same name and the remaining bundled profiles stay available. Each becomes a switchable profile via `/agent`. Optional YAML frontmatter:
+Agent files are markdown (`.md`) in `prompts/agents/`. Files in `paths.agent_path` are merged on top (a same-named configured agent wins; the rest stay available). Each becomes a switchable profile via `/agent`. Optional YAML frontmatter:
 
 - `name:` — override the agent name (defaults to file stem)
 - `exclude_tools:` — list of tool names to hide. Matches by exact name, glob (`mcp__git__*`), or `__`-delimited prefix (`mcp__git` hides `mcp__git__list_repos` but `Write` does NOT hide `TodoWrite`).
@@ -160,7 +160,7 @@ All LLM settings live in `~/.config/python-agent-harness/config.json`. Environme
 - **`subagent_llm`** — LLM config for `Agent` tool. Unset values inherit from `llm`. Set `profile` to reuse a `models` entry. Precedence: profile > `subagent_llm` > `llm` > env vars.
 - **`default_agent`** — agent name to use at session start (must exist in the discovered agent set: bundled `prompts/agents/` plus `paths.agent_path`). `null` = built-in default.
 - **`paths.context_path` / `paths.skill_path`** — locations for context files and skills. Default: project-local `contexts/` and `skills/`.
-- **`paths.agent_path` / `paths.command_path`** — extra locations for custom agent files and custom slash commands, merged on top of the bundled `prompts/agents/` and `prompts/commands/` directories: a configured file overrides a bundled file of the same name, everything else stays available. Absolute paths and `~` are supported. (Unlike `context_path`/`skill_path`, which *replace* the project-local default: agents/commands are package-internal base layers, so losing `reviewer`/`explain` just by adding one file would be surprising.)
+- **`paths.agent_path` / `paths.command_path`** — extra directories for custom agents and slash commands, **merged** on top of the bundled `prompts/agents/` and `prompts/commands/`: a same-named configured file wins, everything else stays available. Absolute paths and `~` supported. (`context_path`/`skill_path` instead *replace* the project-local default.)
 - **`mcp.servers`** — MCP server config (requires `[mcp]` extra). Each supports `transport`, `command`, `args`, `env`, `url`, `headers`, `parallel`, `timeout`, `enabled`.
 - **`headless` / `serve`** — optional budget limits: `max_rounds` (LLM rounds) and `timeout` (wall-clock seconds). `--max-rounds` / `--timeout` override per call; `<= 0` or `null` disables. Unset = unlimited.
 - **`hooks`** — shell-command hooks; see [Hooks](#hooks).
