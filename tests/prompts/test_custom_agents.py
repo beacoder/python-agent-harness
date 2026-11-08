@@ -68,15 +68,26 @@ class TestDiscoverAgents(unittest.TestCase):
         """paths.agent_path (passed as ``agents_dir``) is layered on top of
         the bundled prompts/agents/ directory: new agents are added and
         same-named configured agents override the bundled ones."""
-        with tempfile.TemporaryDirectory() as d:
+        with (
+            tempfile.TemporaryDirectory() as bundled,
+            tempfile.TemporaryDirectory() as d,
+        ):
+            (Path(bundled) / "bundled-only.md").write_text("You are bundled.", encoding="utf-8")
+            (Path(bundled) / "reviewer.md").write_text(
+                "You are the bundled reviewer.", encoding="utf-8"
+            )
             (Path(d) / "external.md").write_text("You are external.", encoding="utf-8")
             (Path(d) / "reviewer.md").write_text("You are my reviewer.", encoding="utf-8")
-            agents = discover_agents(d)
+            with mock.patch("python_agent_harness.prompts.core.AGENTS_DIR", Path(bundled)):
+                agents = discover_agents(d)
+            configured = Path(d).resolve()
+            bundled_root = Path(bundled).resolve()
         self.assertTrue(Path(agents["external"]).is_absolute())
+        self.assertTrue(Path(agents["external"]).is_relative_to(configured))
         # bundled agent overridden by the configured file
-        self.assertTrue(agents["reviewer"].startswith(os.path.abspath(d)))
+        self.assertTrue(Path(agents["reviewer"]).is_relative_to(configured))
         # other bundled agents survive
-        self.assertIn("jailbreak-deepseek-4-1", agents)
+        self.assertTrue(Path(agents["bundled-only"]).is_relative_to(bundled_root))
         self.assertIn("reviewer", discover_agents())
         self.assertNotIn("external", discover_agents())
 
