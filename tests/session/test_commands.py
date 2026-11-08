@@ -104,6 +104,71 @@ class TestLoadCustomCommands(unittest.TestCase):
         self.assertEqual([c.name for c in loaded], ["explain"])
         self.assertEqual(loaded[0].prompt_file.replace(os.sep, "/"), "commands/explain.md")
 
+    def test_external_commands_dir_uses_absolute_prompt_file(self):
+        """A configured dir outside the package must still resolve its prompt
+        file: ``read_prompt_file`` gets an absolute path (relative_to would
+        raise ValueError for a file outside PROMPTS_DIR)."""
+        with tempfile.TemporaryDirectory() as d:
+            cmds_dir = Path(d) / "cmds"
+            cmds_dir.mkdir()
+            (cmds_dir / "external-cmd.md").write_text("external prompt", encoding="utf-8")
+            loaded = load_custom_commands(cmds_dir)
+            names = [c.name for c in loaded]
+            self.assertIn("external-cmd", names)
+            # bundled commands are still available (merge, not replace)
+            self.assertIn("explain", names)
+            external = next(c for c in loaded if c.name == "external-cmd")
+            self.assertTrue(Path(external.prompt_file).is_absolute())
+            _, prompt, _ = external.prepare(project_dir=d)
+        self.assertEqual(prompt, "external prompt")
+
+    def test_configured_command_overrides_bundled_of_same_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            cmds_dir = Path(d) / "cmds"
+            cmds_dir.mkdir()
+            (cmds_dir / "explain.md").write_text("my explain prompt", encoding="utf-8")
+            loaded = {c.name: c for c in load_custom_commands(cmds_dir)}
+            # exactly one entry, and it points at the configured file
+            self.assertEqual([n for n in loaded if n == "explain"], ["explain"])
+            self.assertTrue(Path(loaded["explain"].prompt_file).is_absolute())
+            _, prompt, _ = loaded["explain"].prepare(project_dir=d)
+        self.assertEqual(prompt, "my explain prompt")
+
+    def test_configured_command_overrides_builtin_command(self):
+        """A command file replaces the builtin slash command of the same name:
+        a configured review.md wins over the builtin /review."""
+        with tempfile.TemporaryDirectory() as d:
+            cmds_dir = Path(d) / "cmds"
+            cmds_dir.mkdir()
+            (cmds_dir / "review.md").write_text("my review prompt", encoding="utf-8")
+            (cmds_dir / "init.md").write_text("my init prompt", encoding="utf-8")
+            self.assertEqual(find_command("review", cmds_dir).name, "review")
+            self.assertEqual(find_command("init", cmds_dir).name, "init")
+            _, prompt, _ = find_command("review", cmds_dir).prepare(project_dir=d)
+            self.assertEqual(prompt, "my review prompt")
+            # without the configured dir the builtin prompt commands apply
+            self.assertEqual(find_command("review").name, "review")
+            self.assertEqual(
+                Path(find_command("review").prompt_file).name,
+                "review.md",
+            )
+            self.assertEqual(find_command("init").name, "initialize")
+
+    def test_only_exit_cannot_be_overridden(self):
+        """``exit`` is the one name a command file may not claim (it is the
+        only way out of a session); /help reports the skipped file."""
+        with tempfile.TemporaryDirectory() as d:
+            cmds_dir = Path(d) / "cmds"
+            cmds_dir.mkdir()
+            (cmds_dir / "exit.md").write_text("shadow exit", encoding="utf-8")
+            (cmds_dir / "ok-cmd.md").write_text("fine", encoding="utf-8")
+            loaded = {c.name for c in load_custom_commands(cmds_dir)}
+            self.assertIn("ok-cmd", loaded)
+            self.assertNotIn("exit", loaded)
+            self.assertIsNone(find_command("exit", cmds_dir))
+            self.assertEqual(commands.unoverridable_command_names(cmds_dir), ["exit"])
+            self.assertEqual(commands.unoverridable_command_names(str(Path(d) / "missing")), [])
+
 
 class TestFindCommand(unittest.TestCase):
     def test_builtin_commands(self):
@@ -114,6 +179,22 @@ class TestFindCommand(unittest.TestCase):
         cmd = find_command("explain")
         self.assertIsNotNone(cmd)
         self.assertEqual(cmd.name, "explain")
+
+    def test_configured_command_beats_builtin(self):
+        """Resolution order: configured files > bundled files > builtin
+        prompt commands."""
+        with tempfile.TemporaryDirectory() as d:
+            cmds_dir = Path(d) / "cmds"
+            cmds_dir.mkdir()
+            (cmds_dir / "explain.md").write_text("configured explain", encoding="utf-8")
+            (cmds_dir / "review.md").write_text("configured review", encoding="utf-8")
+            explain = find_command("explain", cmds_dir)
+            self.assertTrue(Path(explain.prompt_file).is_absolute())
+            _, prompt, _ = explain.prepare(project_dir=d)
+            self.assertEqual(prompt, "configured explain")
+            review = find_command("review", cmds_dir)
+            self.assertEqual(Path(review.prompt_file).name, "review.md")
+            self.assertTrue(Path(review.prompt_file).is_absolute())
 
     def test_unknown_command_returns_none(self):
         self.assertIsNone(find_command("no-such-command"))

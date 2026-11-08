@@ -246,6 +246,109 @@ class TestTuiCommands(unittest.TestCase):
         ):
             self.assertIn(s, out)
 
+    def test_configured_paths_reach_agent_and_help(self):
+        """paths.agent_path / paths.command_path (threaded through the
+        Session as explicit args, like context_path/skill_path) drive the
+        /agent listing, the /help custom block and Tab completion, layered
+        on top of the bundled agents/commands."""
+        from python_agent_harness.tui.input import SlashCompleter
+
+        with tempfile.TemporaryDirectory() as d:
+            agents_dir = Path(d) / "agents"
+            cmds_dir = Path(d) / "cmds"
+            agents_dir.mkdir()
+            cmds_dir.mkdir()
+            (agents_dir / "external-reviewer.md").write_text(
+                "---\nname: external-reviewer\n---\nYou are external.\n", encoding="utf-8"
+            )
+            (cmds_dir / "ext-cmd.md").write_text("Explain ${path}.", encoding="utf-8")
+
+            tui, buf = make_tui()
+            tui.session._configured_agent_path = str(agents_dir)
+            with mock.patch("builtins.input", return_value=""):
+                tui._handle_slash("/agent")
+            out = buf.getvalue()
+            self.assertIn("external-reviewer", out)
+            # bundled agents stay available (merge, not replace)
+            self.assertIn("reviewer", out.replace("external-reviewer", ""))
+
+            # Session.switch_agent resolves names in both directories
+            ok, msg = tui.session.switch_agent("external-reviewer")
+            self.assertTrue(ok, msg)
+            ok, msg = tui.session.switch_agent("reviewer")  # bundled → still found
+            self.assertTrue(ok, msg)
+
+            tui, buf = make_tui()
+            tui.session._configured_command_path = str(cmds_dir)
+            tui._handle_slash("/help")
+            help_out = buf.getvalue()
+            self.assertIn("/ext-cmd", help_out)
+            # bundled commands stay available (merge, not replace)
+            self.assertIn("/explain", help_out)
+
+            completer = SlashCompleter(lambda: d, lambda: tui.session._configured_command_path)
+            commands = completer._slash_commands()
+            self.assertIn("/ext-cmd", commands)
+            self.assertIn("/explain", commands)
+            self.assertIn("/explain", SlashCompleter(lambda: d)._slash_commands())
+
+    def test_configured_command_overrides_builtin_slash(self):
+        """A configured command file replaces the builtin slash command of
+        the same name: /review runs the configured prompt instead of the
+        builtin review, and /help lists the name once plus a note."""
+        with tempfile.TemporaryDirectory() as d:
+            cmds_dir = Path(d) / "cmds"
+            cmds_dir.mkdir()
+            (cmds_dir / "review.md").write_text("MY REVIEW PROMPT", encoding="utf-8")
+            tui, buf = make_tui()
+            tui.session._configured_command_path = str(cmds_dir)
+            captured = {}
+
+            def fake_start(text, system=None, restore=None):
+                captured["system"] = system
+                captured["text"] = text
+
+            with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+                self.assertFalse(tui._handle_slash("/review"))
+            self.assertIn("MY REVIEW PROMPT", captured["system"])
+            self.assertNotIn("unknown command", buf.getvalue())
+
+            # a structural builtin is replaceable too (e.g. /help.md)
+            (cmds_dir / "help.md").write_text("MY HELP PROMPT", encoding="utf-8")
+            with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+                tui._handle_slash("/help")
+            self.assertIn("MY HELP PROMPT", captured["system"])
+
+            # ... while the plain /help still reports the override
+            (cmds_dir / "help.md").unlink()
+            tui, buf = make_tui()
+            tui.session._configured_command_path = str(cmds_dir)
+            tui._handle_slash("/help")
+            help_out = buf.getvalue()
+        self.assertIn("overrides builtin: review.md", help_out)
+        # listed once, in the custom line, not in the builtin block
+        self.assertEqual(help_out.count("/review"), 1)
+        self.assertIn("/review\n", help_out)
+        # the builtin usage line no longer applies to the replaced command
+        self.assertNotIn("review code changes", help_out)
+
+    def test_help_reports_unoverridable_command_file(self):
+        """``exit`` is the one builtin a command file may not shadow; /help
+        reports the ignored file instead of dropping it silently."""
+        with tempfile.TemporaryDirectory() as d:
+            cmds_dir = Path(d) / "cmds"
+            cmds_dir.mkdir()
+            (cmds_dir / "exit.md").write_text("shadow exit", encoding="utf-8")
+            tui, buf = make_tui()
+            tui.session._configured_command_path = str(cmds_dir)
+            tui._handle_slash("/help")
+            help_out = buf.getvalue()
+        self.assertIn("ignored (cannot override): exit.md", help_out)
+        # /exit still quits
+        tui, _ = make_tui()
+        tui.session._configured_command_path = str(cmds_dir)
+        self.assertTrue(tui._handle_slash("/exit"))
+
     # ------------------------------------------------------------------
     # remaining slash commands
     # ------------------------------------------------------------------

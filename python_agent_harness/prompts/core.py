@@ -31,8 +31,15 @@ RESERVED_AGENT_NAME = "default"
 
 
 def read_prompt_file(name: str) -> str:
-    """Read a prompt file from the package prompts dir."""
-    path = PROMPTS_DIR / name
+    """Read a prompt file.
+
+    ``name`` is either relative to the packaged prompts directory or an
+    absolute path (a custom command configured outside the package, see
+    ``paths.command_path``).
+    """
+    path = Path(os.path.expanduser(name))
+    if not path.is_absolute():
+        path = PROMPTS_DIR / path
     return path.read_text(encoding="utf-8")
 
 
@@ -621,8 +628,10 @@ def compacted_messages(summary: str, prompts: list[str], resume: bool = False) -
 
 
 # ---- custom agent discovery -----------------------------------------------
-# Agent prompt files are markdown files (``*.md``) in
-# ``prompts/agents/``.  Each file becomes a switchable agent profile
+# Agent prompt files are markdown files (``*.md``) in the bundled
+# ``prompts/agents/`` directory and, when configured, in
+# ``paths.agent_path`` too (configured names override bundled ones).
+# Each file becomes a switchable agent profile
 # available via the ``/agent`` TUI command.  The file's stem (e.g.
 # ``reviewer.md`` → ``reviewer``) is the agent name; an optional YAML
 # frontmatter ``name:`` can override it, and an optional
@@ -630,7 +639,7 @@ def compacted_messages(summary: str, prompts: list[str], resume: bool = False) -
 # entry matches by exact name, glob pattern, or ``__``-delimited
 # prefix, e.g. ``mcp__git`` or ``mcp__git__*``).  The built-in
 # ``default`` agent (``prompts/agent.md``) is always available and
-# cannot be overridden by a file in this directory.
+# cannot be overridden by a file in these directories.
 
 
 def _agent_frontmatter(path: Path) -> dict[str, Any]:
@@ -697,21 +706,40 @@ def agent_exclude_tools(path: Path | str) -> tuple[str, ...]:
     return tuple(_agent_frontmatter(Path(path)).get("exclude_tools", ()))
 
 
-def discover_agents() -> dict[str, str]:
-    """Discover all custom agents in the ``prompts/agents/`` directory.
+def _scan_agents_dir(directory: Path) -> dict[str, str]:
+    """Map agent name → resolved prompt path for the ``*.md`` files in
+    *directory*.  Files without a valid name are skipped, as is a file
+    claiming the reserved name ``default``.  A missing directory yields
+    an empty dict.
+    """
+    if not directory.is_dir():
+        return {}
+    agents: dict[str, str] = {}
+    for f in sorted(directory.glob("*.md")):
+        name = _agent_name_from_file(f)
+        if not name or name == RESERVED_AGENT_NAME:
+            continue
+        agents[name] = str(f.resolve())
+    return agents
+
+
+def discover_agents(agents_dir: str | os.PathLike | None = None) -> dict[str, str]:
+    """Discover custom agents from the bundled and the configured directory.
 
     Returns a dict mapping agent name → absolute path to the prompt
     file.  Files without a valid name are skipped.  The built-in
     ``default`` agent is NOT included here — callers add it separately.
     A file claiming the reserved name ``default`` (via stem or
     frontmatter) is skipped: the built-in agent always wins.
+
+    The bundled ``prompts/agents/`` profiles are always discovered.  When
+    *agents_dir* is set (``paths.agent_path`` in the config file), its
+    files are layered on top: a configured agent overrides a bundled one
+    of the same name, and the rest of the bundled profiles stay
+    available.  A missing configured directory contributes nothing.
     """
-    if not AGENTS_DIR.is_dir():
-        return {}
-    agents: dict[str, str] = {}
-    for f in sorted(AGENTS_DIR.glob("*.md")):
-        name = _agent_name_from_file(f)
-        if not name or name == RESERVED_AGENT_NAME:
-            continue
-        agents[name] = str(f.resolve())
+    agents = _scan_agents_dir(AGENTS_DIR)
+    if agents_dir:
+        configured = Path(os.path.abspath(os.path.expanduser(agents_dir)))
+        agents.update(_scan_agents_dir(configured))
     return agents

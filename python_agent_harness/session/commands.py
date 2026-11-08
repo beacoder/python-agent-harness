@@ -9,13 +9,17 @@ the run's user text.
 Tool availability per command:
 - init/review: all tools EXCEPT PlanExit (they are one-shot runs that
   must not end in a plan/build handoff)
-- custom commands (prompts/commands/*.md): all tools, incl. PlanExit
+- custom commands (prompts/commands/*.md and paths.command_path): all tools, incl. PlanExit
 - compact/summary: no tools at all (direct chat_sync calls, like the
   session-title generation)
+
+Precedence: a command file (configured dir first, then bundled) replaces
+the builtin slash command of the same name — see ``find_command``.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections.abc import Callable
@@ -26,6 +30,23 @@ from ..prompts import read_prompt_file
 
 PROMPTS_DIR = Path(__file__).parents[1] / "prompts"
 COMMANDS_DIR = PROMPTS_DIR / "commands"
+
+# Custom command files take precedence over the builtin slash commands (see
+# ``find_command``), so a configured ``review.md`` replaces ``/review``.  The
+# one exception is ``/exit``: it is the only way out of an interactive
+# session, so a command file may not shadow it.  Such a file is skipped and
+# ``/help`` reports it instead of silently dropping it.
+UNOVERRIDABLE_COMMAND_NAMES = frozenset({"exit"})
+
+
+def _prompt_file_ref(f: Path) -> str:
+    """Reference for ``read_prompt_file``: relative to the packaged prompts
+    dir when the file lives inside it (backward compatible), absolute
+    otherwise (a custom command dir configured via ``paths.command_path``)."""
+    try:
+        return str(f.relative_to(PROMPTS_DIR))
+    except ValueError:
+        return os.path.abspath(f)
 
 
 def _substitute(text: str, path: str, extra: str | None) -> str:
@@ -144,18 +165,32 @@ def custom_name(file: str) -> str:
     return base.strip("-")
 
 
-def load_custom_commands() -> list[SessionCommand]:
-    if not COMMANDS_DIR.is_dir():
+def _resolve_commands_dir(commands_dir: str | os.PathLike | None) -> Path | None:
+    """Absolute path of a configured commands dir, or None when unset."""
+    if not commands_dir:
+        return None
+    return Path(os.path.abspath(os.path.expanduser(commands_dir)))
+
+
+def _scan_commands_dir(directory: Path) -> list[SessionCommand]:
+    """Commands defined by the ``*.md`` files in *directory*.
+
+    Files whose name normalizes to nothing (``---.md``) and files that
+    would shadow an unoverridable builtin (see
+    ``UNOVERRIDABLE_COMMAND_NAMES``) are skipped, so the advertised
+    listing only contains runnable commands.
+    """
+    if not directory.is_dir():
         return []
     commands = []
-    for f in sorted(COMMANDS_DIR.glob("*.md")):
+    for f in sorted(directory.glob("*.md")):
         name = custom_name(f.name)
-        if not name:
+        if not name or name in UNOVERRIDABLE_COMMAND_NAMES:
             continue
         commands.append(
             SessionCommand(
                 name=name,
-                prompt_file=str(f.relative_to(PROMPTS_DIR)),
+                prompt_file=_prompt_file_ref(f),
                 kickoff="Proceed with the task described in your instructions.\n",
                 status=f" Running {name}...",
             )
@@ -163,13 +198,55 @@ def load_custom_commands() -> list[SessionCommand]:
     return commands
 
 
-def find_command(name: str) -> SessionCommand | None:
-    """Look up a command by name: builtins (init/review) then custom."""
+def unoverridable_command_names(commands_dir: str | os.PathLike | None = None) -> list[str]:
+    """Names in *commands_dir* skipped because the builtin cannot be replaced.
+
+    Only ``exit`` is in that set; ``/help`` reports the files so the user
+    is not left wondering why their command never ran.
+    """
+    directory = _resolve_commands_dir(commands_dir)
+    if directory is None or not directory.is_dir():
+        return []
+    return sorted(
+        name
+        for name in (custom_name(f.name) for f in sorted(directory.glob("*.md")))
+        if name in UNOVERRIDABLE_COMMAND_NAMES
+    )
+
+
+def load_custom_commands(
+    commands_dir: str | os.PathLike | None = None,
+) -> list[SessionCommand]:
+    """Load custom commands from the bundled and the configured directory.
+
+    The bundled ``prompts/commands/`` commands are always loaded.  When
+    *commands_dir* is set (``paths.command_path`` in the config file),
+    its files are layered on top: a configured command overrides a
+    bundled one of the same name, and the remaining bundled commands stay
+    available.  A missing configured directory contributes nothing.
+    """
+    merged = {c.name: c for c in _scan_commands_dir(COMMANDS_DIR)}
+    configured = _resolve_commands_dir(commands_dir)
+    if configured is not None:
+        merged.update({c.name: c for c in _scan_commands_dir(configured)})
+    return [merged[name] for name in sorted(merged)]
+
+
+def find_command(name: str, commands_dir: str | os.PathLike | None = None) -> SessionCommand | None:
+    """Look up a command by name.
+
+    Command files win over the builtin prompt commands, so a configured
+    ``review.md`` replaces ``/review`` and an ``init.md`` replaces
+    ``/init``.  Among command files the configured directory wins over
+    the bundled one (see ``load_custom_commands``); the remaining bundled
+    ``initialize.md``/``review.md`` prompts back the builtins when no
+    command file claims the name.
+    """
+    for c in load_custom_commands(commands_dir):
+        if c.name == name:
+            return c
     if name == "init":
         return initialize_command()
     if name == "review":
         return review_command()
-    for c in load_custom_commands():
-        if c.name == name:
-            return c
     return None

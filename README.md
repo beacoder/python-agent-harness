@@ -45,8 +45,8 @@ Edit `~/.config/python-agent-harness/config.json` and set your `base_url`, `api_
 - **Persistent sessions** — auto-saved after every response to `~/.local/share/python-agent-harness/sessions/`, with LLM-generated titles and `/restore --latest` / `/sessions`.
 - **Focused TUI** — Rich-based with pinned status bar, Todos panel, inline diff rendering, and a `prompt_toolkit` editor with history and completion. `Esc+Enter` submits, `Ctrl-D` quits, `Ctrl-C` cancels.
 - **MCP support** — optional via `[mcp]` extra. MCP tools become ordinary agent tools (`mcp__<server>__<tool>`). Supports `stdio`, `streamable-http`, and `sse` transports.
-- **Slash commands** — built-in `/init`, `/review`, `/explain`, etc., plus custom commands from `prompts/commands/*.md`.
-- **Custom agents** — switch the main agent's system prompt at runtime with `/agent`. Agent files live in `prompts/agents/*.md` and support `name:` and `exclude_tools:` frontmatter.
+- **Slash commands** — built-in `/init`, `/review`, `/explain`, etc., plus custom commands from `prompts/commands/*.md` (extendable via `paths.command_path`).
+- **Custom agents** — switch the main agent's system prompt at runtime with `/agent`. Agent files live in `prompts/agents/*.md` (extendable via `paths.agent_path`) and support `name:` and `exclude_tools:` frontmatter.
 - **Hooks** — shell commands on `tool.before` / `tool.after` / `agent.start` / `agent.end`: block risky tool calls, feed linter output back to the model, add per-turn context, notify on completion. See [Hooks](#hooks).
 - **Embeddable runtime boundaries** — `headless --json` for one-shot CI/scripting; `serve` for hosting apps (resident process, bidirectional protocol: multi-turn memory, mid-run Q&A, protocol-level cancel).
 
@@ -98,11 +98,11 @@ A persistent, bidirectional runtime for hosting applications. Keeps the `Control
 | `/help` | List available commands |
 | `/exit` | Quit |
 
-Custom commands from `prompts/commands/*.md` are also registered (TUI only).
+Custom commands from `prompts/commands/*.md` are always registered. Files in `paths.command_path` are added on top, and a command file **replaces the slash command of the same name**, builtin or bundled: a configured `review.md` turns `/review` into your prompt, a configured `plan.md` replaces `/plan`, and a configured `explain.md` overrides the bundled one. Precedence: configured file > bundled file > builtin. The only exception is `/exit`, which a command file cannot shadow. `/help` notes which builtin names are overridden.
 
 ### Custom agents
 
-Agent files are markdown (`.md`) in `prompts/agents/`. Each becomes a switchable profile via `/agent`. Optional YAML frontmatter:
+Agent files are markdown (`.md`) in `prompts/agents/`. When `paths.agent_path` is configured, its files are merged on top: a configured agent overrides a bundled one of the same name and the remaining bundled profiles stay available. Each becomes a switchable profile via `/agent`. Optional YAML frontmatter:
 
 - `name:` — override the agent name (defaults to file stem)
 - `exclude_tools:` — list of tool names to hide. Matches by exact name, glob (`mcp__git__*`), or `__`-delimited prefix (`mcp__git` hides `mcp__git__list_repos` but `Write` does NOT hide `TodoWrite`).
@@ -132,7 +132,9 @@ All LLM settings live in `~/.config/python-agent-harness/config.json`. Environme
   },
   "paths": {
     "context_path": null,
-    "skill_path": null
+    "skill_path": null,
+    "agent_path": null,
+    "command_path": null
   },
   "mcp": {
     "servers": {
@@ -156,8 +158,9 @@ All LLM settings live in `~/.config/python-agent-harness/config.json`. Environme
 - **`models`** — named LLM profiles for `/model` switching. Partial settings; unset keys inherit from `llm`. `default` restores the main config.
 - **`context_windows`** — per-model context-window overrides (tokens). Keys are model names or substrings; first match wins. Overrides `CONTEXT_WINDOWS` in `config.py`.
 - **`subagent_llm`** — LLM config for `Agent` tool. Unset values inherit from `llm`. Set `profile` to reuse a `models` entry. Precedence: profile > `subagent_llm` > `llm` > env vars.
-- **`default_agent`** — agent name to use at session start (must exist in `prompts/agents/`). `null` = built-in default.
+- **`default_agent`** — agent name to use at session start (must exist in the discovered agent set: bundled `prompts/agents/` plus `paths.agent_path`). `null` = built-in default.
 - **`paths.context_path` / `paths.skill_path`** — locations for context files and skills. Default: project-local `contexts/` and `skills/`.
+- **`paths.agent_path` / `paths.command_path`** — extra locations for custom agent files and custom slash commands, merged on top of the bundled `prompts/agents/` and `prompts/commands/` directories: a configured file overrides a bundled file of the same name, everything else stays available. Absolute paths and `~` are supported. (Unlike `context_path`/`skill_path`, which *replace* the project-local default: agents/commands are package-internal base layers, so losing `reviewer`/`explain` just by adding one file would be surprising.)
 - **`mcp.servers`** — MCP server config (requires `[mcp]` extra). Each supports `transport`, `command`, `args`, `env`, `url`, `headers`, `parallel`, `timeout`, `enabled`.
 - **`headless` / `serve`** — optional budget limits: `max_rounds` (LLM rounds) and `timeout` (wall-clock seconds). `--max-rounds` / `--timeout` override per call; `<= 0` or `null` disables. Unset = unlimited.
 - **`hooks`** — shell-command hooks; see [Hooks](#hooks).

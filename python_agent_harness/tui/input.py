@@ -71,7 +71,6 @@ SLASH_COMMANDS = [
     "/build",
     "/init",
     "/review",
-    "/explain",
     "/compact",
     "/save",
     "/summary",
@@ -82,12 +81,16 @@ SLASH_COMMANDS = [
     "/agent",
     "/exit",
 ]
+# NOTE: custom commands (/explain, ...) are NOT listed here — they are
+# discovered from the bundled prompts/commands/ directory plus the
+# configured one (paths.command_path) so the completion listing matches
+# what is actually runnable, see _custom_slash_commands.
 
 
-def _custom_slash_commands() -> list[str]:
+def _custom_slash_commands(commands_dir: str | None = None) -> list[str]:
     from ..session.commands import load_custom_commands
 
-    return sorted(f"/{c.name}" for c in load_custom_commands())
+    return sorted(f"/{c.name}" for c in load_custom_commands(commands_dir))
 
 
 def _history_path(project_dir: str | None = None) -> str:
@@ -188,8 +191,9 @@ class SlashCompleter(Completer):
     """Tab-completion for the input line.
 
     - A first token starting with ``/`` completes against the known
-      slash commands (builtins + custom commands from
-      prompts/commands/*.md); if no command matches, it is treated as
+      slash commands (builtins + custom commands from the bundled
+      prompts/commands/ directory and the configured one,
+      ``paths.command_path``); if no command matches, it is treated as
       an absolute path.
     - After a slash command's space, Tab completes paths relative to
       the session's project dir (absolute and ``~`` paths work too).
@@ -201,11 +205,16 @@ class SlashCompleter(Completer):
       ``~`` alone completes to ``~/``.
     """
 
-    def __init__(self, get_project_dir: Callable[[], str]) -> None:
+    def __init__(
+        self,
+        get_project_dir: Callable[[], str],
+        get_commands_dir: Callable[[], str | None] | None = None,
+    ) -> None:
         self.get_project_dir = get_project_dir
+        self.get_commands_dir = get_commands_dir or (lambda: None)
 
     def _slash_commands(self) -> list[str]:
-        return sorted(set(SLASH_COMMANDS + _custom_slash_commands()))
+        return sorted(set(SLASH_COMMANDS + _custom_slash_commands(self.get_commands_dir())))
 
     def _complete_paths(self, arg: str) -> Iterable[Completion]:
         expanded = os.path.expanduser(arg)

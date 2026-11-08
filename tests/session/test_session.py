@@ -1550,5 +1550,40 @@ class TestEmissionFencing(unittest.TestCase):
         self.assertEqual(seen, [("tool", "no-local")])
 
 
+class TestConfiguredAgentAndCommandPaths(unittest.TestCase):
+    """paths.agent_path / paths.command_path reach the Session and drive
+    agent switching, without displacing the bundled profiles."""
+
+    def _session(self, **kwargs):
+        from tests.support.agent_test_utils import FakeClient
+
+        return Session(project_dir="/tmp/proj", client=FakeClient([]), model="m", **kwargs)
+
+    def test_paths_are_stored(self):
+        with tempfile.TemporaryDirectory(prefix="pah-paths-") as d:
+            s = self._session(agent_path=d, command_path=d)
+            try:
+                self.assertEqual(s._configured_agent_path, d)
+                self.assertEqual(s._configured_command_path, d)
+            finally:
+                s.close()
+
+    def test_switch_agent_resolves_configured_and_bundled(self):
+        with tempfile.TemporaryDirectory(prefix="pah-agents-") as d:
+            (Path(d) / "writer.md").write_text("You are a writer.", encoding="utf-8")
+            s = self._session(agent_path=d)
+            try:
+                ok, msg = s.switch_agent("writer")
+                self.assertTrue(ok, msg)
+                self.assertIn("You are a writer.", s.system_prompt)
+                # a bundled profile is still selectable alongside it
+                ok, msg = s.switch_agent("reviewer")
+                self.assertTrue(ok, msg)
+                ok, msg = s.switch_agent("default")
+                self.assertTrue(ok, msg)
+            finally:
+                s.close()
+
+
 if __name__ == "__main__":
     unittest.main()

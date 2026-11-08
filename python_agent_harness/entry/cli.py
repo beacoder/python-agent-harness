@@ -8,7 +8,7 @@ Commands:
                            runs repeatedly, answer mid-run questions, cancel
   config [--init]          show effective LLM config / write a template file
 
-Custom commands (prompts/commands/*.md) — like init, review,
+Custom commands (prompts/commands/*.md, or paths.command_path) — like init, review,
 sessions, restore and summary/explain — are TUI slash commands only;
 they are NOT registered as CLI subcommands.
 
@@ -136,6 +136,8 @@ def make_session(
         registry=registry,
         context_path=paths.get("context_path"),
         skill_path=paths.get("skill_path"),
+        agent_path=paths.get("agent_path"),
+        command_path=paths.get("command_path"),
         mcp=mcp_config,
         model_profiles=model_profiles,
         default_agent=default_agent,
@@ -305,6 +307,8 @@ def cmd_config(args: argparse.Namespace) -> int:
     print(f"timeout: {settings['timeout']}")
     print(f"context_path: {paths['context_path'] or '(default: <project>/contexts)'}")
     print(f"skill_path: {paths['skill_path'] or '(default: <project>/skills)'}")
+    print(f"agent_path: {paths['agent_path'] or '(unset: bundled prompts/agents only)'}")
+    print(f"command_path: {paths['command_path'] or '(unset: bundled prompts/commands only)'}")
     if mcp_config.servers:
         for name, server in mcp_config.servers.items():
             status = "enabled" if server.enabled else "disabled"

@@ -212,6 +212,14 @@ class Controller:
         return self.session._configured_context_path
 
     @property
+    def configured_agent_path(self) -> str | None:
+        return self.session._configured_agent_path
+
+    @property
+    def configured_command_path(self) -> str | None:
+        return self.session._configured_command_path
+
+    @property
     def startup_warnings(self) -> list[str]:
         return self.session.startup_warnings
 

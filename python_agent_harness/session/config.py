@@ -244,6 +244,8 @@ DEFAULT_LLM: dict = {
 DEFAULT_PATHS: dict = {
     "context_path": None,
     "skill_path": None,
+    "agent_path": None,
+    "command_path": None,
 }
 
 # Sub-agent LLM overrides: every key defaults to None, meaning "inherit
@@ -319,9 +321,11 @@ CONFIG_TEMPLATE = """\
     "env_passthrough": []
   }},
   "paths": {{
-    "_comment": "Optional overrides for context and skill directories. Absolute paths or ~ expansion supported.",
+    "_comment": "Optional overrides for context files, skills, custom agents, and custom commands. Absolute paths or ~ expansion supported. context_path/skill_path replace the project-local default; agent_path/command_path are merged on top of the bundled prompts/ directories, where a same-named configured file wins.",
     "context_path": null,
-    "skill_path": null
+    "skill_path": null,
+    "agent_path": null,
+    "command_path": null
   }},
   "hooks": {{
     "_comment": "Optional shell-command hooks (see README 'Hooks'). Events: tool.before, tool.after, agent.start, agent.end; each a list of {{command, matcher?, timeout?, fail_closed?, env_passthrough?}}. A command runs via /bin/sh -c in the project dir with the event as JSON on stdin. Exit 2 = tool.before: block the call (stderr = reason); tool.after: stderr is feedback appended to the result. agent.start: stdout (exit 0) is context for the turn. agent.end: notification. The payload is model-written (untrusted): never eval it. Secret-looking env vars are removed unless listed in env_passthrough. Keys starting with _ are ignored: copy entries from _examples to enable them.",
@@ -561,9 +565,11 @@ def load_serve_limits(path: str | os.PathLike | None = None) -> tuple[int | None
 def load_paths_config(path: str | os.PathLike | None = None) -> dict:
     """Load paths settings from the config file.
 
-    Returns a dict with ``context_path`` and ``skill_path`` keys.
-    Values are expanded (~ → home) and resolved to absolute paths when
-    set; None means "use default discovery logic".
+    Returns a dict with ``context_path``, ``skill_path``, ``agent_path``,
+    and ``command_path`` keys. Values are expanded (~ → home) and resolved
+    to absolute paths when set; None means "use default discovery logic"
+    (for ``agent_path``/``command_path``: the bundled ``prompts/``
+    directories only, since those are merged rather than replaced).
     """
     settings = dict(DEFAULT_PATHS)
     try:
@@ -573,7 +579,7 @@ def load_paths_config(path: str | os.PathLike | None = None) -> dict:
     paths = data.get("paths") or {}
     if not isinstance(paths, dict):
         return settings
-    for key in ("context_path", "skill_path"):
+    for key in ("context_path", "skill_path", "agent_path", "command_path"):
         val = paths.get(key)
         if isinstance(val, str) and val.strip():
             settings[key] = os.path.abspath(os.path.expanduser(val.strip()))

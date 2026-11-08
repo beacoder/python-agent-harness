@@ -64,6 +64,25 @@ class TestDiscoverAgents(unittest.TestCase):
         with mock.patch.object(Path, "is_dir", return_value=False):
             self.assertEqual(discover_agents(), {})
 
+    def test_configured_agents_dir_merges_over_bundled(self):
+        """paths.agent_path (passed as ``agents_dir``) is layered on top of
+        the bundled prompts/agents/ directory: new agents are added and
+        same-named configured agents override the bundled ones."""
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "external.md").write_text("You are external.", encoding="utf-8")
+            (Path(d) / "reviewer.md").write_text("You are my reviewer.", encoding="utf-8")
+            agents = discover_agents(d)
+        self.assertTrue(Path(agents["external"]).is_absolute())
+        # bundled agent overridden by the configured file
+        self.assertTrue(agents["reviewer"].startswith(os.path.abspath(d)))
+        # other bundled agents survive
+        self.assertIn("jailbreak-deepseek-4-1", agents)
+        self.assertIn("reviewer", discover_agents())
+        self.assertNotIn("external", discover_agents())
+
+    def test_missing_configured_agents_dir_contributes_nothing(self):
+        self.assertEqual(discover_agents("/nonexistent/agents"), discover_agents())
+
     def test_reserved_default_name_skipped(self):
         """A file claiming the reserved name ``default`` is not discovered:
         the built-in agent always wins, so a custom default.md would be

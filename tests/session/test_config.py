@@ -167,6 +167,24 @@ class TestConfigFile(unittest.TestCase):
             )
             self.assertEqual(settings["skill_path"], os.path.abspath("rel/skills"))
 
+    def test_paths_settings_include_agent_and_command_dirs(self):
+        """paths.agent_path / paths.command_path are expanded like the other
+        path settings and default to None (bundled dirs only)."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.json"
+            p.write_text(
+                '{"paths": {"agent_path": "~/agents", "command_path": "rel/cmds"}}',
+                encoding="utf-8",
+            )
+            settings = config.load_paths_config(p)
+            self.assertEqual(
+                settings["agent_path"],
+                os.path.abspath(os.path.expanduser("~/agents")),
+            )
+            self.assertEqual(settings["command_path"], os.path.abspath("rel/cmds"))
+            self.assertIsNone(config.DEFAULT_PATHS["agent_path"])
+            self.assertIsNone(config.DEFAULT_PATHS["command_path"])
+
     def test_paths_empty_values_stay_none(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "config.json"

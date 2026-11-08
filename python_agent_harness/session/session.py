@@ -94,6 +94,8 @@ class Session:
         registry: Registry | None = None,
         context_path: str | None = None,
         skill_path: str | None = None,
+        agent_path: str | None = None,
+        command_path: str | None = None,
         mcp: MCPConfig | None = None,
         mcp_manager: MCPManager | None = None,
         model_profiles: dict[str, dict] | None = None,
@@ -115,6 +117,11 @@ class Session:
         self.alive = True
         self._configured_context_path = context_path
         self._configured_skill_path = skill_path
+        # Custom agent / command directories (paths.agent_path and
+        # paths.command_path in the config file); None = the bundled
+        # prompts/agents and prompts/commands directories.
+        self._configured_agent_path = agent_path
+        self._configured_command_path = command_path
         # Config file path (None = default resolution) — /model re-reads
         # the ``models`` section from it on every invocation
         self.config_path = config_path
@@ -970,8 +977,10 @@ class Session:
     def switch_agent(self, name: str) -> tuple[bool, str]:
         """Switch the main agent's system prompt to a named agent.
 
-        Agent prompt files are discovered from the ``prompts/agents/`` package
-        directory (see ``python_agent_harness.prompts.discover_agents``).
+        Agent prompt files are discovered from the bundled
+        ``prompts/agents/`` directory plus the configured agents directory
+        (``paths.agent_path``, whose files override bundled names); see
+        ``python_agent_harness.prompts.discover_agents``.
         The pseudo-name ``default`` restores the original system prompt
         saved at session construction.  Returns (success, message).
         """
@@ -982,7 +991,7 @@ class Session:
             self._agent_excluded_tools = ()
             return True, "switched to default agent"
 
-        agents = discover_agents()
+        agents = discover_agents(self._configured_agent_path)
         prompt_file = agents.get(name)
         if prompt_file is None:
             available = ", ".join(sorted([RESERVED_AGENT_NAME, *agents.keys()]))

@@ -88,6 +88,14 @@ class CommandMixin:
         arg = arg.strip()
         if cmd == "/exit":
             return True
+        # A command file replaces the builtin slash command of the same
+        # name (configured directory first, then bundled), so /review,
+        # /plan, /help, ... can be redefined by a .md file.  Nothing else
+        # reaches this branch: find_command returns None for a name no
+        # file claims and no builtin prompt command backs.
+        if find_command(cmd[1:], self._controller.configured_command_path) is not None:
+            self._run_slash_command(cmd[1:], arg)
+            return False
         if cmd == "/plan":
             self._controller.switch_to_plan()
             self.console.print(
@@ -103,8 +111,6 @@ class CommandMixin:
             self.console.print(f"saved: {safe_markup(path)}")
         elif cmd == "/summary":
             self._run_summary()
-        elif cmd in ("/init", "/review") or find_command(cmd[1:]) is not None:
-            self._run_slash_command(cmd[1:], arg)
         elif cmd == "/sessions":
             self._run_sessions()
         elif cmd == "/restore":
@@ -121,30 +127,58 @@ class CommandMixin:
         elif cmd == "/agent":
             self._run_agent_command(arg)
         elif cmd == "/help":
-            from ..session.commands import load_custom_commands
+            from ..session.commands import (
+                load_custom_commands,
+                unoverridable_command_names,
+            )
+            from .input import SLASH_COMMANDS
 
-            custom_names = {c.name for c in load_custom_commands()}
+            configured_dir = self._controller.configured_command_path
+            custom_names = {c.name for c in load_custom_commands(configured_dir)}
+            builtin_names = [c.lstrip("/") for c in SLASH_COMMANDS]
+            # A command file replaces the builtin of the same name, so that
+            # name is listed once (in the custom line) instead of twice.
+            builtin = " ".join(f"/{n}" for n in builtin_names if n not in custom_names)
             custom = " ".join(f"/{n}" for n in sorted(custom_names))
-            builtin = "/plan /build /init /review /compact "
-            builtin += "/save /summary /sessions /restore /clear /model /agent /exit"
-            if custom:
-                builtin += f"\n{custom}"
+            overridden = sorted(n for n in custom_names if n in set(builtin_names))
+            notes = ""
+            if overridden:
+                notes += "\noverrides builtin: " + ", ".join(f"{n}.md" for n in overridden)
+            unoverridable = unoverridable_command_names(configured_dir)
+            if unoverridable:
+                notes += "\nignored (cannot override): " + ", ".join(
+                    f"{n}.md" for n in unoverridable
+                )
             explain_line = (
                 "/explain [project] [target]          explain code\n"
                 if "explain" in custom_names
                 else ""
             )
+            # A builtin replaced by a command file no longer has its own
+            # usage: the file's prompt takes the arguments now.
+            init_line = (
+                ""
+                if "init" in custom_names
+                else "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
+            )
+            review_line = (
+                ""
+                if "review" in custom_names
+                else "/review [project] [commit|branch|PR] review code changes\n"
+            )
             self.console.print(
-                builtin + "\n"
-                "/init [project] [--extra TEXT]       create/update AGENTS.md\n"
-                "/review [project] [commit|branch|PR] review code changes\n"
+                builtin
+                + (f"\n{custom}" if custom else "")
+                + "\n"
+                + init_line
+                + review_line
                 + explain_line
                 + "/sessions                            list saved sessions\n"
                 "/restore [path | title | --latest | latest]   restore a saved session (conversation + agent + model)\n"
                 "/model [name]                        switch LLM model profile\n"
                 "/agent [name]                        switch agent system prompt\n"
                 "Ctrl-C cancels the current execution (app stays open); "
-                "Ctrl-D or /exit quits.",
+                "Ctrl-D or /exit quits." + notes,
                 markup=False,
             )
         else:
@@ -198,7 +232,8 @@ class CommandMixin:
         return None, " ".join(parts)
 
     def _run_slash_command(self, name: str, arg: str) -> None:
-        """Run a SessionCommand (/init /review /explain) in this session.
+        """Run a SessionCommand (/init /review /explain, or any command file
+        that replaced a builtin) in this session.
 
         The command's prompt replaces the system prompt for this run
         only; the output streams into the conversation panel and stays
@@ -206,7 +241,7 @@ class CommandMixin:
         different project is given, the session's project dir is
         borrowed for the run (tool cwd) and restored afterwards.
         """
-        cmd = find_command(name)
+        cmd = find_command(name, self._controller.configured_command_path)
         if cmd is None:
             self.console.print(f"[yellow]unknown command: /{safe_markup(name)}[/yellow]")
             return
@@ -556,16 +591,16 @@ class CommandMixin:
             self.console.print(Text(sanitize_terminal(str(msg))))
 
     def _refresh_agent_profiles(self) -> None:
-        """Re-discover agent prompt files from the prompts/agents/ directory.
+        """Re-discover agent prompt files (bundled + configured directory).
 
         Agent files may be added/removed while the TUI is running;
         this re-scans so new agents show up on the next /agent call.
         """
-        self._discovered_agents = discover_agents()
+        self._discovered_agents = discover_agents(self._controller.configured_agent_path)
 
     def _agent_list_names(self) -> list[str]:
         """Names shown by /agent: ``default`` followed by every
-        discovered agent from the prompts/agents/ directory."""
+        discovered agent (bundled + configured directory)."""
         return [RESERVED_AGENT_NAME, *sorted(self._discovered_agents.keys())]
 
     def _agent_switch_by_name(self, name: str) -> None:
@@ -588,7 +623,7 @@ class CommandMixin:
             self.console.print("\n[bold cyan]Available agent profiles:[/bold cyan]")
             if not self._discovered_agents:
                 self.console.print(
-                    "[yellow]  (none found — add .md files to the prompts/agents/ directory to use /agent)[/yellow]"
+                    "  [yellow](none found — add .md files to the agents directory to use /agent)[/yellow]"
                 )
             active_name = getattr(self._controller.session.store, "agent", None)
             for idx, name in enumerate(all_names, 1):
