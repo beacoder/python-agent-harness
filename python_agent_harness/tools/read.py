@@ -35,7 +35,7 @@ class Read(Tool):
 - Default behavior reads up to 2000 lines from the beginning
 - For large files, use offset and limit parameters to read specific sections
 - Recommended to read the whole file by omitting offset/limit when possible
-- Always read beforing - the `Edit` tool will error otherwise
+- Always read before editing - the `Edit` tool will error otherwise
 - Can read multiple files in parallel by making multiple `Read` calls
 """
     description = (
