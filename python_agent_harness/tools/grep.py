@@ -35,7 +35,7 @@ class Grep(Tool):
 
 **How to use `Grep`:**
 - Supports full regex syntax (ripgrep-based)
-- Can specify directory path and glon to narrow scope
+- Can specify directory path and glob to narrow scope
 - Use `context_lines` parameter to see surrounding lines
 - Can perform multiple focused grep searches in parallel
 """
