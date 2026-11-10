@@ -1000,8 +1000,14 @@ class Client:
             {"id": "", "name": "", "arguments": ""},
         )
         fn = tc.get("function") or {}
-        entry["id"] += tc.get("id") or ""
-        entry["name"] += fn.get("name") or ""
+        # id/name are not incremental like arguments: some backends and
+        # proxies resend them in EVERY chunk, and appending blindly made
+        # "ReadRead" (an unknown tool) out of a repeated "Read".  A piece
+        # equal to what is already accumulated is such a repeat and is
+        # skipped; a genuinely split value ("Re" + "ad") still appends.
+        for key, piece in (("id", tc.get("id")), ("name", fn.get("name"))):
+            if isinstance(piece, str) and piece and piece != entry[key]:
+                entry[key] += piece
         frag = fn.get("arguments") or ""
         if isinstance(frag, dict):
             frag = json.dumps(frag, ensure_ascii=False)

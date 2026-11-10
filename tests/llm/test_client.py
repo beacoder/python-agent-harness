@@ -177,6 +177,47 @@ class TestClientStreaming(unittest.TestCase):
         self.assertEqual(msg.tool_calls[0].id, "call_1")
         self.assertEqual(msg.tool_calls[0].arguments, '{"a": 1}')
 
+    def _stream_tool_call(self, chunks: list[dict]) -> Message:
+        """Stream CHUNKS (each a single tool-call delta) and return the message."""
+        fake_openai_server.reset_state()
+        fake_openai_server.STREAM_CHUNKS = [
+            {"choices": [{"delta": {"tool_calls": [tc]}}]} for tc in chunks
+        ]
+        c = make_client()
+        try:
+            msg, _ = c.chat([Message(role="user", content="hi")])
+        finally:
+            c.close()
+            fake_openai_server.reset_state()
+        return msg
+
+    def test_tool_call_repeated_id_and_name_are_not_concatenated(self):
+        """Backends/proxies that resend id and name in EVERY chunk must
+        still yield one call named ``Read`` (not ``ReadReadRead``), with
+        the arguments fragments accumulated as usual."""
+        msg = self._stream_tool_call(
+            [
+                {"index": 0, "id": "call_1", "function": {"name": "Read", "arguments": '{"a"'}},
+                {"index": 0, "id": "call_1", "function": {"name": "Read", "arguments": ": 1"}},
+                {"index": 0, "id": "call_1", "function": {"name": "Read", "arguments": "}"}},
+            ]
+        )
+        self.assertEqual(len(msg.tool_calls), 1)
+        self.assertEqual(msg.tool_calls[0].id, "call_1")
+        self.assertEqual(msg.tool_calls[0].name, "Read")
+        self.assertEqual(msg.tool_calls[0].arguments, '{"a": 1}')
+
+    def test_tool_call_split_name_is_still_joined(self):
+        """A name genuinely split across chunks keeps accumulating."""
+        msg = self._stream_tool_call(
+            [
+                {"index": 0, "id": "call_1", "function": {"name": "Re", "arguments": ""}},
+                {"index": 0, "function": {"name": "ad", "arguments": "{}"}},
+            ]
+        )
+        self.assertEqual([(t.id, t.name) for t in msg.tool_calls], [("call_1", "Read")])
+        self.assertEqual(msg.tool_calls[0].arguments, "{}")
+
     def test_streaming_default_sends_stream_true(self):
         """The default mode is streaming: the request body must carry
         stream=True plus stream_options requesting usage chunks."""
