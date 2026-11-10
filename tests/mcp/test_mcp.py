@@ -109,6 +109,22 @@ class TestMCPConfig(unittest.TestCase):
         with self.assertRaises(ValueError):
             MCPConfig.from_dict({"srv": "npx"})
 
+    def test_validate_rejects_bad_timeout(self):
+        # each would otherwise pass config load and only fail mid-run in
+        # ``time.monotonic() + timeout`` / the SDK read timeout
+        for bad in ("30", True, False, 0, -1, float("nan"), float("inf"), [5]):
+            with self.subTest(timeout=bad), self.assertRaisesRegex(ValueError, "timeout"):
+                MCPConfig.from_dict({"srv": {"command": "x", "timeout": bad}})
+
+    def test_validate_accepts_numeric_or_missing_timeout(self):
+        for ok in (None, 1, 2.5, 600):
+            with self.subTest(timeout=ok):
+                raw: dict = {"command": "x"}
+                if ok is not None:
+                    raw["timeout"] = ok
+                cfg = MCPConfig.from_dict({"srv": raw})
+                self.assertEqual(cfg.servers["srv"].timeout, ok)
+
     def test_empty_config(self):
         self.assertEqual(MCPConfig.from_dict(None).servers, {})
         self.assertEqual(MCPConfig().servers, {})

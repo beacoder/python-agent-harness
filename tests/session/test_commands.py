@@ -14,6 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root
 
 import tests  # noqa: F401,E402  (side-effect: hermetic config, see tests/__init__.py)
+from python_agent_harness.prompts import _git_toplevel
 from python_agent_harness.session import commands
 from python_agent_harness.session.commands import (
     SessionCommand,
@@ -26,10 +27,42 @@ from python_agent_harness.session.commands import (
 
 class TestProjectRoot(unittest.TestCase):
     def test_git_root_returned_when_git_succeeds(self):
-        with mock.patch("subprocess.run") as run:
-            run.return_value = mock.Mock(returncode=0, stdout="/some/git/root\n")
-            self.assertEqual(_project_root("/work/proj"), "/some/git/root")
-        run.assert_called_once()
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, ".git").mkdir()
+            with mock.patch("subprocess.run") as run:
+                run.return_value = mock.Mock(returncode=0, stdout="/some/git/root\n")
+                self.assertEqual(_project_root(d), "/some/git/root")
+            run.assert_called_once()
+
+    def test_git_not_invoked_outside_a_repository(self):
+        # no .git anywhere above: no git subprocess, AGENTS.md/cwd fallback
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch("subprocess.run") as run,
+        ):
+            self.assertEqual(_project_root(d), d)
+        run.assert_not_called()
+
+    def test_nested_agents_md_inside_repo_resolves_to_repo_root(self):
+        # agrees with prompts.core._git_toplevel (project-context loading):
+        # an AGENTS.md in a subdirectory must not shadow the repo root
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve()
+            (root / ".git").mkdir()
+            sub = root / "pkg" / "sub"
+            sub.mkdir(parents=True)
+            (root / "pkg" / "AGENTS.md").write_text("# rules\n", encoding="utf-8")
+            with mock.patch("subprocess.run", side_effect=OSError("git missing")):
+                self.assertEqual(_project_root(str(sub)), str(root))
+                self.assertEqual(_project_root(str(sub)), _git_toplevel(str(sub)))
+
+    def test_agents_md_ancestor_used_outside_repo(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve()
+            (root / "AGENTS.md").write_text("# rules\n", encoding="utf-8")
+            sub = root / "a" / "b"
+            sub.mkdir(parents=True)
+            self.assertEqual(_project_root(str(sub)), str(root))
 
     def test_falls_back_to_dir_with_dot_git_when_git_fails(self):
         with tempfile.TemporaryDirectory() as d:

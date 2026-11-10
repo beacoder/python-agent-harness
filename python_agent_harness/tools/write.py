@@ -89,4 +89,5 @@ class Write(Tool):
         diff_text = unified_diff(old_content, content, path)
         if diff_text:
             ctx.record_diff(diff_text)
-        return f"Created file {filename} in {dir_path}"
+        verb = "Overwrote" if existed else "Created"
+        return f"{verb} file {filename} in {dir_path}"

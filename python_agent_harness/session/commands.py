@@ -21,12 +21,11 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ..prompts import read_prompt_file
+from ..prompts import _git_toplevel, read_prompt_file
 
 PROMPTS_DIR = Path(__file__).parents[1] / "prompts"
 COMMANDS_DIR = PROMPTS_DIR / "commands"
@@ -56,22 +55,19 @@ def _substitute(text: str, path: str, extra: str | None) -> str:
 
 
 def _project_root(cwd: str) -> str:
-    """Best-effort project root (git dir or parent with AGENTS.md)."""
+    """Best-effort project root (git worktree root, else parent with AGENTS.md).
+
+    Inside a git repository this delegates to ``prompts.core._git_toplevel``
+    so slash commands and project-context loading agree on the root.
+    Outside a repository the nearest ancestor holding ``AGENTS.md`` wins,
+    else *cwd* itself.
+    """
     d = Path(cwd).resolve()
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    for parent in [d, *d.parents]:
-        if (parent / "AGENTS.md").exists() or (parent / ".git").exists():
+    ancestors = [d, *d.parents]
+    if any((p / ".git").exists() for p in ancestors):
+        return _git_toplevel(cwd)
+    for parent in ancestors:
+        if (parent / "AGENTS.md").exists():
             return str(parent)
     return cwd
 
@@ -105,7 +101,7 @@ class SessionCommand:
         Used by the TUI slash commands, which run inside the current
         session.
         """
-        cwd = project_dir or _project_root(__import__("os").getcwd())
+        cwd = project_dir or _project_root(os.getcwd())
         prompt = _substitute(read_prompt_file(self.prompt_file), cwd, extra)
         kickoff = self.kickoff
         if "${path}" in kickoff:

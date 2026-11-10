@@ -24,6 +24,7 @@ over this.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -69,6 +70,17 @@ class MCPServerConfig:
                 raise ValueError(f"MCP server {label!r}: stdio transport requires `command`")
         elif not self.url:
             raise ValueError(f"MCP server {label!r}: {self.transport} transport requires `url`")
+        # timeout flows into ``time.monotonic() + timeout`` and the SDK's
+        # read timeout; a string/bool/non-finite value from the JSON config
+        # would otherwise only fail mid-run with an opaque TypeError.
+        # bool is excluded explicitly because it is an int subclass.
+        t = self.timeout
+        if t is not None and (
+            isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) or t <= 0
+        ):
+            raise ValueError(
+                f"MCP server {label!r}: `timeout` must be a positive number of seconds, got {t!r}"
+            )
 
 
 @dataclass

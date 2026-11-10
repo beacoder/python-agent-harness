@@ -19,7 +19,7 @@ from .filesystem import READ_SIZE_LIMIT, _spool
 class Read(Tool):
     name = "Read"
     is_readonly = True
-    instructions = """\
+    instructions = f"""\
 **When to use `Read`:**
 - You need to examine file contents
 - Before editing any file (required)
@@ -32,9 +32,9 @@ class Read(Tool):
 - You want to use shell commands like cat → use `Read` instead
 
 **How to use `Read`:**
-- Default behavior reads up to 2000 lines from the beginning
-- For large files, use offset and limit parameters to read specific sections
-- Recommended to read the whole file by omitting offset/limit when possible
+- Omitting `start_line`/`end_line` reads the whole file (files over {READ_SIZE_LIMIT // 1024} KB require a line range)
+- For large files, use `start_line`/`end_line` to read specific sections
+- Recommended to read the whole file by omitting `start_line`/`end_line` when possible
 - Always read before editing - the `Edit` tool will error otherwise
 - Can read multiple files in parallel by making multiple `Read` calls
 """

@@ -593,6 +593,30 @@ class TestReadTool(unittest.TestCase):
         self.assertNotIn("Traceback", out)
 
 
+class TestReadInstructions(unittest.TestCase):
+    """The instructions land in the system prompt every run, so they must
+    name the real parameters and describe the real default behavior."""
+
+    def test_instructions_name_only_schema_parameters(self):
+        text = Read.instructions
+        props = Read.parameters["properties"]
+        for name in ("start_line", "end_line"):
+            self.assertIn(name, props)
+            self.assertIn(f"`{name}`", text)
+        # parameters that do not exist in the schema must not be suggested
+        for bogus in ("offset", "limit"):
+            self.assertNotIn(bogus, props)
+            self.assertIsNone(re.search(rf"\b{bogus}\b", text), bogus)
+
+    def test_instructions_match_whole_file_default_and_size_limit(self):
+        import python_agent_harness.tools.filesystem as fs
+
+        text = Read.instructions
+        self.assertNotIn("2000 lines", text)
+        self.assertIn("reads the whole file", text)
+        self.assertIn(f"{fs.READ_SIZE_LIMIT // 1024} KB", text)
+
+
 class TestGlobGrepTools(unittest.TestCase):
     """End-to-end Glob/Grep behavior against real backends: the git-aware
     branch (git ls-files / git grep) and the tree / plain-grep fallbacks,
@@ -1022,7 +1046,10 @@ class TestWriteTool(unittest.TestCase):
             with open(path, "w") as f:
                 f.write("old content\n")
             ctx, sess = make_ctx()
-            Write().run({"path": d, "filename": "f.txt", "content": "new content\n"}, ctx)
+            result = Write().run({"path": d, "filename": "f.txt", "content": "new content\n"}, ctx)
+            # an overwrite must not be reported as a creation
+            self.assertIn("Overwrote file f.txt", result)
+            self.assertNotIn("Created file", result)
             self.assertEqual(len(sess.recorded_diffs), 1)
             self.assertIn("-old content", sess.recorded_diffs[0])
             self.assertIn("+new content", sess.recorded_diffs[0])
@@ -1080,7 +1107,7 @@ class TestWriteTool(unittest.TestCase):
                 f.write(b"caf\xe9 l\xe9on\n")
             ctx, sess = make_ctx()
             result = Write().run({"path": d, "filename": "latin1.txt", "content": "new\n"}, ctx)
-            self.assertIn("Created file", result)
+            self.assertIn("Overwrote file", result)
             with open(path, "rb") as f:
                 self.assertEqual(f.read(), b"new\n")
             self.assertEqual(len(sess.recorded_diffs), 1)
@@ -1342,7 +1369,7 @@ class TestWriteEditErrors(unittest.TestCase):
                 {"path": self.tmp.name, "filename": "f.txt", "content": "new\n"},
                 self.ctx,
             )
-        self.assertIn("Created file", out)
+        self.assertIn("Overwrote file", out)
         with open(p) as f:
             self.assertEqual(f.read(), "new\n")
 
