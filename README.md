@@ -102,7 +102,7 @@ Custom commands from `prompts/commands/*.md` and `paths.command_path` are always
 
 ### Custom agents
 
-Agent files are markdown (`.md`) in `prompts/agents/`. Files in `paths.agent_path` are merged on top (a same-named configured agent wins; the rest stay available). Each becomes a switchable profile via `/agent`. Optional YAML frontmatter:
+Agent files are markdown (`.md`) in `prompts/agents/`. Files in `paths.agent_path` are merged on top (a same-named configured agent wins; the rest stay available). Each becomes a switchable profile via `/agent`, except `default`, which cannot be shadowed. Optional YAML frontmatter:
 
 - `name:` — override the agent name (defaults to file stem)
 - `exclude_tools:` — list of tool names to hide. Matches by exact name, glob (`mcp__git__*`), or `__`-delimited prefix (`mcp__git` hides `mcp__git__list_repos` but `Write` does NOT hide `TodoWrite`).
