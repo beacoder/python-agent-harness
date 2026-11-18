@@ -100,6 +100,8 @@ class LLMClient(Protocol):
 
     def abort(self) -> None: ...
 
+    def abort_probe(self) -> None: ...
+
     def close(self) -> None: ...
 
     def set_timeout(self, timeout: float) -> None: ...
@@ -412,10 +414,18 @@ class Client:
         )
         self._config_path = config_path
         self._http = httpx.Client(timeout=timeout, verify=_httpx_verify(self.verify))
+        # The throwaway httpx client owned by an in-flight ``check_health``
+        # probe (None when no probe runs).  It is tracked so ``abort`` can
+        # wake a probe blocked in ``recv``: the probe cannot use
+        # ``self._http`` (it must not disturb a concurrent real request),
+        # so tearing down that pool would not touch it.
+        self._probe_http: httpx.Client | None = None
         # True while the in-flight request was aborted (Ctrl-C): a
         # connection error on an aborted request must NOT be retried —
         # the user asked to stop.  Cleared at the start of each chat()
-        # so a fresh turn may retry normally.
+        # so a fresh turn may retry normally.  ``check_health`` honours it
+        # too: a probe cancelled before it published its client must not
+        # start a request nobody waits on.
         self._aborted = False
         # an explicit log file is inherited by clones so every request
         # of one session (main + all sub-agents) lands in a single log
@@ -489,12 +499,32 @@ class Client:
         details.
         """
         self._aborted = True
+        self.abort_probe()
         old = self._http
         self._http = httpx.Client(timeout=self.timeout, verify=_httpx_verify(self.verify))
         with contextlib.suppress(Exception):  # best effort
             _abort_inflight_sockets(old)
         with contextlib.suppress(Exception):  # best effort
             old.close()
+
+    def abort_probe(self) -> None:
+        """Stop the in-flight ``check_health`` probe, if any (called on cancel).
+
+        Same socket-level wake as ``abort`` (a thread parked in ``recv`` is
+        released by shutting its fd down), but WITHOUT rebuilding the
+        request pool: a probe runs on its own throwaway client that is
+        closed right afterwards, and building a replacement pool costs a
+        CA-bundle load (~70ms) that the cancelled /model listing would pay
+        once per profile — on the path that must be instant.
+        """
+        self._aborted = True
+        probe = self._probe_http
+        if probe is None:
+            return
+        with contextlib.suppress(Exception):  # best effort
+            _abort_inflight_sockets(probe)
+        with contextlib.suppress(Exception):  # best effort
+            probe.close()
 
     def _reset_http(self) -> None:
         """Replace the httpx client with a fresh instance.
@@ -531,9 +561,23 @@ class Client:
         specific model is actually usable: the ``/models`` endpoint can
         be stale, incomplete, or return IDs that differ from what the
         completions endpoint accepts.
+
+        The call runs on a throwaway httpx client (so a probe never
+        disturbs a concurrent real request) which is published as
+        ``_probe_http`` for the duration: ``abort`` uses it to wake a
+        probe blocked in ``recv`` instead of leaving the caller's thread
+        parked until the timeout expires.
         """
+        probe: httpx.Client | None = None
         try:
             with httpx.Client(timeout=timeout, verify=_httpx_verify(self.verify)) as probe:
+                self._probe_http = probe
+                # abort() may have landed before the client was published
+                # (then it had no socket to wake) or right after; either
+                # way, do not start a request the caller already stopped
+                # waiting for — it would block for the whole timeout.
+                if self._aborted:
+                    return False, "aborted"
                 resp = probe.post(
                     f"{self.base_url}/chat/completions",
                     headers=self._headers(stream=False),
@@ -571,8 +615,17 @@ class Client:
             return False, f"HTTP {resp.status_code}"
         except httpx.HTTPError as e:
             return False, f"unreachable: {type(e).__name__}"
-        except OSError as e:
+        except (OSError, RuntimeError) as e:
+            # RuntimeError: abort() closed the probe client just as the
+            # request was about to be sent (httpx refuses a closed client).
+            # Still a "the probe did not answer" outcome, not a crash.
             return False, f"unreachable: {type(e).__name__}"
+        finally:
+            # a probe woken by abort() leaves the same way; either way the
+            # throwaway client must not stay published on the instance (only
+            # clear our own slot: a concurrent probe may have replaced it)
+            if self._probe_http is probe:
+                self._probe_http = None
 
     def _refresh_api_key(
         self,

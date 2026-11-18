@@ -2261,6 +2261,168 @@ class TestCheckHealth(unittest.TestCase):
         (ok, msg), _ = self._probe(side_effect=OSError("ssl"))
         self.assertEqual((ok, msg), (False, "unreachable: OSError"))
 
+    def test_client_closed_by_abort_is_unreachable(self):
+        """abort() may close the probe client between publication and the
+        request; httpx raises RuntimeError for a closed client, which must
+        read as "did not answer" rather than escaping as a crash."""
+        (ok, msg), _ = self._probe(side_effect=RuntimeError("client has been closed"))
+        self.assertEqual((ok, msg), (False, "unreachable: RuntimeError"))
+
+    def test_aborted_client_starts_no_probe_request(self):
+        """A probe cancelled before it published its client has no socket to
+        wake: it must bail out instead of blocking for the whole timeout."""
+        c = Client(base_url="http://h/v1", api_key="k", model="m")
+        try:
+            c.abort()
+            with mock.patch.object(httpx.Client, "post") as post:
+                self.assertEqual(c.check_health(), (False, "aborted"))
+            post.assert_not_called()
+        finally:
+            c.close()
+
+    def test_probe_client_is_published_only_while_probing(self):
+        """abort() reaches the probe through ``_probe_http``, so it must be
+        set during the call and cleared whatever the outcome."""
+        seen: list[object] = []
+        c = Client(base_url="http://h/v1", api_key="k", model="m")
+
+        def post(client_self, *a, **kw):
+            seen.append(c._probe_http)
+            return httpx.Response(200, json={})
+
+        try:
+            with mock.patch.object(httpx.Client, "post", autospec=True, side_effect=post):
+                self.assertEqual(c.check_health(), (True, "ok"))
+            self.assertTrue(seen and seen[0] is not None, "probe client not published")
+            self.assertIsNone(c._probe_http)  # cleared afterwards
+        finally:
+            c.close()
+
+    def test_concurrent_probe_does_not_clear_another_probes_slot(self):
+        """``_probe_http`` is a single slot: a probe finishing late must not
+        unpublish the client a still-running probe needs abort() to reach."""
+        import threading
+
+        c = Client(base_url="http://h/v1", api_key="k", model="m")
+        first_in_post = threading.Event()
+        second_in_post = threading.Event()
+        release_second = threading.Event()
+        published: list[object] = []
+        slot_after_first_finished: list[object] = []
+
+        def post(client_self, *a, **kw):
+            published.append(c._probe_http)
+            if len(published) == 1:  # first probe: return once the other published
+                first_in_post.set()
+                second_in_post.wait(timeout=5)
+            else:  # second probe: hold the slot until the first one has finished
+                second_in_post.set()
+                release_second.wait(timeout=5)
+            return httpx.Response(200, json={})
+
+        def run():
+            c.check_health()
+
+        try:
+            with mock.patch.object(httpx.Client, "post", autospec=True, side_effect=post):
+                first = threading.Thread(target=run, daemon=True)
+                second = threading.Thread(target=run, daemon=True)
+                first.start()
+                self.assertTrue(first_in_post.wait(timeout=5))
+                second.start()
+                self.assertTrue(second_in_post.wait(timeout=5))
+                first.join(timeout=5)
+                self.assertFalse(first.is_alive())
+                # the first probe is leaving while the second still owns the slot
+                slot_after_first_finished.append(c._probe_http)
+                release_second.set()
+                second.join(timeout=5)
+                self.assertFalse(second.is_alive())
+        finally:
+            release_second.set()
+            c.close()
+        self.assertIsNotNone(
+            slot_after_first_finished[0], "the finished probe cleared the other's slot"
+        )
+        self.assertIsNone(c._probe_http)  # the last probe cleared its own on the way out
+
+    def test_abort_probe_skips_the_pool_rebuild(self):
+        """The cancel path must not pay a CA-bundle load per profile: a probe
+        client is throwaway, so abort_probe wakes it without a new pool."""
+        c = Client(base_url="http://h/v1", api_key="k", model="m")
+        try:
+            before = c._http
+            with mock.patch.object(httpx.Client, "close") as close:
+                c.abort_probe()  # no probe in flight: nothing to wake
+            close.assert_not_called()
+            self.assertIs(c._http, before)  # same pool object, not rebuilt
+            self.assertTrue(c._aborted)
+        finally:
+            c.close()
+
+    def test_abort_probe_wakes_and_closes_the_probe_client(self):
+        """abort_probe reaches the published probe: the socket is shut down
+        (waking recv) and the throwaway client closed."""
+        c = Client(base_url="http://h/v1", api_key="k", model="m")
+        probe = httpx.Client()
+        c._probe_http = probe
+        try:
+            with (
+                mock.patch("python_agent_harness.llm.client._abort_inflight_sockets") as shutdown,
+                mock.patch.object(httpx.Client, "close", autospec=True) as close,
+            ):
+                c.abort_probe()
+        finally:
+            probe.close()
+            c.close()
+        self.assertEqual(shutdown.call_args.args[0], probe)
+        self.assertIs(close.call_args.args[0], probe)  # the probe, not the main pool
+        self.assertIs(c._probe_http, probe)  # check_health's finally clears it
+
+    def test_abort_wakes_a_probe_blocked_in_recv(self):
+        """A probe parked in recv must not outlive Ctrl-C: abort() shuts its
+        socket down the same way it does for a real request."""
+        import threading as _threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        started = _threading.Event()
+
+        class StallHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                self.rfile.read(length or b"{}")
+                started.set()
+                time.sleep(60)  # never answers: the probe blocks in recv
+
+            def log_message(self, *a):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), StallHandler)
+        server.daemon_threads = True
+        _threading.Thread(target=server.serve_forever, daemon=True).start()
+        host, port = server.server_address
+        c = Client(base_url=f"http://{host}:{port}/v1", api_key="k", model="m", timeout=60.0)
+        result: list[tuple[bool, str]] = []
+
+        def probe():
+            result.append(c.check_health(timeout=60.0))
+
+        t = _threading.Thread(target=probe, daemon=True)
+        t.start()
+        try:
+            self.assertTrue(started.wait(timeout=5), "probe never reached the server")
+            time.sleep(0.3)  # the probe is now parked in recv
+            c.abort()  # what the TUI does when Ctrl-C cancels the listing
+            t.join(timeout=5)
+            self.assertFalse(t.is_alive(), "probe still blocked after abort()")
+        finally:
+            server.shutdown()
+            c.close()
+        self.assertEqual(len(result), 1)
+        self.assertFalse(result[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1527,9 +1527,9 @@ class TestModelHealthProbe(unittest.TestCase):
             tui._probe_model_availability(["default"]), {"default": (False, "no model")}
         )
 
-    def test_probe_shares_one_deadline(self):
-        """A hung backend is reported as ``timeout`` once the shared
-        budget expires — the wait does not grow with the profile count."""
+    def test_probe_deadline_scales_with_profile_count(self):
+        """Budget is ``per-profile × count`` and all probes share it, so a
+        hung backend is reported as ``timeout`` once it expires."""
         import threading
         import time
 
@@ -1541,17 +1541,58 @@ class TestModelHealthProbe(unittest.TestCase):
             return True, "ok"
 
         with (
-            mock.patch("python_agent_harness.tui.commands.config.MODEL_HEALTH_TIMEOUT", 0.2),
+            mock.patch(
+                "python_agent_harness.tui.commands.config.MODEL_HEALTH_TIMEOUT_PER_PROFILE", 0.1
+            ),
             mock.patch("python_agent_harness.llm.client.Client.check_health", hang),
         ):
             start = time.monotonic()
             res = tui._probe_model_availability(["default", "deepseek", "inherit"])
             elapsed = time.monotonic() - start
         release.set()
+        # 3 profiles × 0.1s: bounded by the scaled budget, not by count × RTT
         self.assertLess(elapsed, 1.0)
         self.assertEqual(set(res.values()), {(False, "timeout")})
 
-    def test_probe_passes_timeout_to_check_health(self):
+    def test_probe_keeps_partial_results_in_into(self):
+        """A caller interrupted by Ctrl-C keeps the probes that finished."""
+        import threading
+        import time
+
+        tui, _ = self._tui()
+        release = threading.Event()
+
+        def check(client_self, timeout=15.0):
+            if client_self.model == "deepseek-chat":
+                return True, "ok"
+            release.wait(5)
+            return False, "slow"
+
+        from python_agent_harness.tui.commands import _ProbeResults
+
+        partial = _ProbeResults()
+        with mock.patch("python_agent_harness.llm.client.Client.check_health", check):
+            t = threading.Thread(
+                target=tui._probe_model_availability,
+                args=(["default", "deepseek", "inherit"], partial),
+                daemon=True,
+            )
+            t.start()
+            # read while the other probes are still blocked, as the
+            # cancelled listing does
+            deadline = time.monotonic() + 5
+            while "deepseek" not in partial.snapshot() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            snapshot = partial.snapshot()
+        release.set()
+        t.join(timeout=5)
+        self.assertEqual(snapshot, {"deepseek": (True, "ok")})
+        # once the probes finish, the collector holds every result
+        self.assertEqual(partial.snapshot()["deepseek"], (True, "ok"))
+        self.assertEqual(set(partial.snapshot()), {"default", "deepseek", "inherit"})
+        self.assertEqual(len(partial), 3)
+
+    def test_probe_passes_scaled_timeout_to_check_health(self):
         tui, _ = self._tui()
         seen: list[float] = []
 
@@ -1560,11 +1601,13 @@ class TestModelHealthProbe(unittest.TestCase):
             return True, "ok"
 
         with (
-            mock.patch("python_agent_harness.tui.commands.config.MODEL_HEALTH_TIMEOUT", 3.0),
+            mock.patch(
+                "python_agent_harness.tui.commands.config.MODEL_HEALTH_TIMEOUT_PER_PROFILE", 3.0
+            ),
             mock.patch("python_agent_harness.llm.client.Client.check_health", record),
         ):
-            tui._probe_model_availability(["default"])
-        self.assertEqual(seen, [3.0])
+            tui._probe_model_availability(["default", "deepseek"])
+        self.assertEqual(seen, [6.0, 6.0])
 
     def test_model_list_shows_health_status(self):
         tui, buf = self._tui()
@@ -1589,7 +1632,7 @@ class TestModelHealthProbe(unittest.TestCase):
         # the progress tip goes to the status bar, not into the listing
         self.assertEqual(
             rws.call_args.kwargs["status_text"],
-            " ⏳ Checking health of 4 profile(s) (up to 6s)...",
+            " ⏳ Checking health of 4 profile(s) (up to 12s, Ctrl-C to cancel)...",
         )
         listing = out[out.index("Available model profiles") :]
         self.assertNotIn("Checking health", listing)
@@ -1597,9 +1640,9 @@ class TestModelHealthProbe(unittest.TestCase):
         self.assertIn("✗ HTTP 404: model not found", out)
         self.assertIn("deepseek-chat @ https://ds/v1", out)
 
-    def test_model_list_health_cancelled(self):
-        """Ctrl-C during the probe lists the profiles without a health
-        column, even when the worker finishes while the rows print."""
+    def test_model_list_health_cancelled_keeps_checked_rows(self):
+        """Ctrl-C stops the wait, but the profiles already probed keep their
+        health column — even when the worker finishes while rows print."""
         import threading
 
         tui, buf = self._tui()
@@ -1608,19 +1651,24 @@ class TestModelHealthProbe(unittest.TestCase):
         release = threading.Event()
         finished = threading.Event()
 
-        def slow_probe(names):
-            release.wait(5)
+        def slow_probe(names, into=None):
+            assert into is not None
+            into.record("default", (True, "ok"))  # finished before the Ctrl-C
+            release.wait(5)  # the remaining probes are still in flight
             finished.set()
-            return {n: (True, "ok") for n in names}
+            for n in names:
+                into.record(n, (False, "late"))
+            return into.snapshot()
 
         real_print = tui.console.print
 
-        def print_and_release(*args, **kwargs):
-            # let the worker finish before anything prints, i.e. after the
-            # Ctrl-C but before the listing reads the result
-            release.set()
-            finished.wait(5)
-            real_print(*args, **kwargs)
+        def print_and_release(renderable="", *args, **kwargs):
+            # let the worker finish after the Ctrl-C but before the listing
+            # snapshots the results
+            if "health check cancelled" not in str(renderable):
+                release.set()
+                finished.wait(5)
+            real_print(renderable, *args, **kwargs)
 
         with (
             mock.patch(
@@ -1636,10 +1684,139 @@ class TestModelHealthProbe(unittest.TestCase):
         out = buf.getvalue()
         self.assertTrue(finished.is_set())
         self.assertIn("health check cancelled", out)
+        self.assertIn("1 of 4 profile(s) checked before the cancel", out)
+        self.assertIn("✓", out)  # the probe that finished is kept
+        self.assertIn("deepseek-chat @ https://ds/v1\n", out)
+        self.assertNotIn("✗", out)  # unprobed rows carry no status
+        self.assertEqual(tui.status, " auto-save failed")
+
+    def test_model_list_health_cancelled_before_any_result(self):
+        """Ctrl-C before a single probe answered: no health column at all,
+        and the note says so."""
+        import threading
+
+        tui, buf = self._tui()
+        release = threading.Event()
+
+        def slow_probe(names, into=None):
+            release.wait(5)  # still in flight when the Ctrl-C arrives
+            return {}
+
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config",
+                return_value=dict(tui.session.model_profiles),
+            ),
+            mock.patch.object(tui, "_probe_model_availability", side_effect=slow_probe),
+            mock.patch.object(tui._data_event, "wait", side_effect=KeyboardInterrupt),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_model_command("")
+        release.set()
+        out = buf.getvalue()
+        self.assertIn("0 of 4 profile(s) checked before the cancel", out)
         self.assertIn("deepseek-chat @ https://ds/v1\n", out)
         self.assertNotIn("✓", out)
         self.assertNotIn("✗", out)
-        self.assertEqual(tui.status, " auto-save failed")
+
+    def test_cancelled_probes_are_aborted(self):
+        """Ctrl-C must abort the probe clients, not leave them parked in
+        recv until their timeout: threads cannot be killed, sockets can.
+
+        The probe-specific ``abort_probe`` is used (not ``abort``): it skips
+        the pool rebuild that would cost a CA-bundle load per profile."""
+        import threading
+        import time
+
+        tui, _ = self._tui()
+        release = threading.Event()
+
+        def hang(client_self, timeout=15.0):
+            release.wait(5)
+            return False, "slow"
+
+        def run_and_cancel(worker, **kwargs):
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            time.sleep(0.3)  # every probe has created (and tracked) its client
+            return True  # as if _run_with_status caught KeyboardInterrupt
+
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config",
+                return_value=dict(tui.session.model_profiles),
+            ),
+            mock.patch("python_agent_harness.llm.client.Client.check_health", hang),
+            mock.patch("python_agent_harness.llm.client.Client.abort") as abort,
+            mock.patch("python_agent_harness.llm.client.Client.abort_probe") as abort_probe,
+            mock.patch.object(tui, "_run_with_status", side_effect=run_and_cancel),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_model_command("")
+        release.set()
+        # one abort per profile, all after the cancel
+        self.assertEqual(abort_probe.call_count, 4)
+        abort.assert_not_called()  # no pool rebuild on the cancel path
+
+    def test_probe_results_untrack_finished_clients(self):
+        """Only in-flight probes are aborted: a finished one must not be
+        re-aborted (the client is closed right after it untracks)."""
+        from python_agent_harness.tui.commands import _ProbeResults
+
+        r = _ProbeResults()
+        client = mock.Mock()
+        r.track(client)
+        r.untrack(client)
+        r.abort_all()
+        client.abort_probe.assert_not_called()
+        # a fresh run: this collector has not been aborted yet
+        r = _ProbeResults()
+        r.track(client)
+        r.abort_all()
+        client.abort_probe.assert_called_once_with()
+        # untracking an unknown client is a no-op, not an error
+        r.untrack(mock.Mock())
+
+    def test_probe_tracked_after_cancel_is_aborted_at_once(self):
+        """A probe that starts after the cancel must not run to its timeout:
+        tracking it raises the abort immediately (the slot would otherwise
+        be published too late for abort_all to reach)."""
+        from python_agent_harness.tui.commands import _ProbeResults
+
+        r = _ProbeResults()
+        first, late = mock.Mock(), mock.Mock()
+        r.track(first)
+        r.abort_all()
+        first.abort_probe.assert_called_once_with()
+        r.track(late)
+        late.abort_probe.assert_called_once_with()
+        first.abort_probe.assert_called_once_with()  # the earlier abort is not repeated
+        r.untrack(late)  # it is still tracked, so it can still be dropped
+
+    def test_cancelled_note_omitted_when_all_profiles_answered(self):
+        """A Ctrl-C that lands after the last probe finished must not claim
+        that some profiles are left unprobed."""
+        tui, buf = self._tui()
+        health = {n: (True, "ok") for n in ("default", "deepseek", "inherit", "nomodel")}
+
+        def run_then_cancel(worker, **kwargs):
+            worker()  # every probe completed before the interrupt landed
+            return True
+
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config",
+                return_value=dict(tui.session.model_profiles),
+            ),
+            mock.patch.object(tui, "_probe_model_availability", return_value=health),
+            mock.patch.object(tui, "_run_with_status", side_effect=run_then_cancel),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_model_command("")
+        out = buf.getvalue()
+        self.assertNotIn("before the cancel", out)
+        self.assertNotIn("unprobed", out)
+        self.assertIn("✓", out)  # the completed results are still shown
 
     def test_model_list_status_bar_is_transient_and_restored(self):
         """The progress bar is erased afterwards (no frozen frame left
@@ -1668,7 +1845,7 @@ class TestModelHealthProbe(unittest.TestCase):
         tui, _ = self._tui()
         tui.status = " done"
 
-        def probe(names):
+        def probe(names, into=None):
             tui._on_log("MCP: [srv] crashed")
             return {}
 

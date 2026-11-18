@@ -7,6 +7,7 @@ command execution (/init /review /explain), /model switching,
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import threading
@@ -42,6 +43,69 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from ..entry.controller import Controller
+    from ..llm.client import LLMClient
+
+
+class _ProbeResults:
+    """Thread-safe sink for the /model health probes.
+
+    Probes run in parallel threads and record as each one finishes, so an
+    interrupted listing keeps what was already checked.  A plain dict is
+    not enough: the listing snapshots the results while a straggler may
+    still be inserting, and an unguarded read of a mutating dict can raise
+    "dictionary changed size during iteration" (or return a torn copy).
+
+    It also tracks the probe clients so ``abort_all`` can wake the ones
+    still blocked: Python threads cannot be killed, and a probe parked in
+    ``recv`` would otherwise outlive the Ctrl-C until its timeout expired.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._results: dict[str, tuple[bool, str]] = {}
+        self._clients: list[LLMClient] = []
+        self._aborted = False
+
+    def track(self, client: LLMClient) -> None:
+        with self._lock:
+            self._clients.append(client)
+            aborted = self._aborted
+        if aborted:
+            # the cancel already happened: a probe that starts now would
+            # otherwise run to its full timeout with nobody waiting on it
+            with contextlib.suppress(Exception):  # best effort
+                client.abort_probe()
+
+    def untrack(self, client: LLMClient) -> None:
+        """Drop a finished probe so a later cancel does not abort it again."""
+        with self._lock, contextlib.suppress(ValueError):
+            self._clients.remove(client)
+
+    def record(self, name: str, outcome: tuple[bool, str]) -> None:
+        with self._lock:
+            self._results[name] = outcome
+
+    def snapshot(self) -> dict[str, tuple[bool, str]]:
+        with self._lock:
+            return dict(self._results)
+
+    def abort_all(self) -> None:
+        """Abort every probe client still in flight (best effort).
+
+        Uses ``abort_probe`` rather than ``abort``: a probe client is
+        throwaway, so the pool rebuild ``abort`` performs would be pure
+        latency (one CA-bundle load per profile) on the Ctrl-C path.
+        """
+        with self._lock:
+            self._aborted = True
+            clients = list(self._clients)
+        for client in clients:
+            with contextlib.suppress(Exception):
+                client.abort_probe()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._results)
 
 
 class CommandMixin:
@@ -524,28 +588,46 @@ class CommandMixin:
             settings.get("model"),
         )
 
-    def _probe_model_availability(self, names: list[str]) -> dict[str, tuple[bool, str]]:
+    @staticmethod
+    def _model_health_budget(count: int) -> float:
+        """Total wait for *count* profiles: the per-profile budget scaled by
+        the profile count (never zero, so an empty list still short-circuits)."""
+        return config.MODEL_HEALTH_TIMEOUT_PER_PROFILE * max(1, count)
+
+    def _probe_model_availability(
+        self,
+        names: list[str],
+        into: _ProbeResults | None = None,
+    ) -> dict[str, tuple[bool, str]]:
         """Probe each profile's backend in parallel.
 
         Returns ``{name: (available, message)}``.  Each probe creates a
         temporary Client (to reuse CA-bundle resolution) and calls
-        ``check_health()``.  ``config.MODEL_HEALTH_TIMEOUT`` bounds the
-        total wait: httpx timeouts are per phase (and DNS is unbounded),
-        so a shared deadline is what keeps the listing responsive.
+        ``check_health()``.  The budget is
+        ``config.MODEL_HEALTH_TIMEOUT_PER_PROFILE`` per profile, so a
+        longer list waits proportionally longer for slow backends; httpx
+        timeouts are per phase (and DNS is unbounded), so a shared
+        deadline is what keeps the listing responsive.
+
+        *into* lets a caller that can be interrupted (Ctrl-C) keep the
+        probes that already finished: each probe records into it as it
+        completes, so it holds partial results when this method is
+        abandoned by its waiting thread.
         """
         from ..llm.client import Client
 
-        timeout = config.MODEL_HEALTH_TIMEOUT
-        results: dict[str, tuple[bool, str]] = {}
+        timeout = self._model_health_budget(len(names))
+        results = _ProbeResults() if into is None else into
         threads: list[threading.Thread] = []
 
         def probe(name: str) -> None:
             # any exception would kill the thread silently (row shows a bogus
             # "timeout") and print a traceback over the status bar
             try:
-                results[name] = probe_one(name)
+                outcome = probe_one(name)
             except Exception as e:  # noqa: BLE001 - reported in the row
-                results[name] = (False, f"error: {type(e).__name__}")
+                outcome = (False, f"error: {type(e).__name__}")
+            results.record(name, outcome)
 
         def probe_one(name: str) -> tuple[bool, str]:
             base_url, api_key, model = self._resolve_profile_endpoint(name)
@@ -561,9 +643,11 @@ class CommandMixin:
                 verify=verify,
                 config_path=self._controller.config_path,
             )
+            results.track(client)
             try:
                 return client.check_health(timeout=timeout)
             finally:
+                results.untrack(client)
                 client.close()
 
         deadline = time.monotonic() + timeout
@@ -573,9 +657,10 @@ class CommandMixin:
             t.start()
         for t in threads:
             t.join(timeout=max(0.0, deadline - time.monotonic()))
-        # snapshot: a probe still running past the deadline must not
-        # mutate the dict handed back to the caller
-        return {name: results.get(name, (False, "timeout")) for name in names}
+        # a probe past the deadline is still running: the fill-in below keeps
+        # the returned mapping total without touching its shared collector
+        snapshot = results.snapshot()
+        return {name: snapshot.get(name, (False, "timeout")) for name in names}
 
     def _run_model_command(self, arg: str) -> None:
         """Handle /model command for switching LLM profiles."""
@@ -591,25 +676,41 @@ class CommandMixin:
             ) or self._controller.client.base_url
 
             # probe before printing so the status bar's Live region never
-            # interleaves with the listing; Ctrl-C skips the health column
-            result: dict[str, dict[str, tuple[bool, str]]] = {}
+            # interleaves with the listing; Ctrl-C abandons the wait but
+            # keeps the rows probed so far
+            progress = _ProbeResults()
+            finished: dict[str, dict[str, tuple[bool, str]]] = {}
 
             def worker() -> None:
-                # one assignment: a worker finishing after Ctrl-C must not
-                # change the dict while the rows are being printed
-                result["health"] = self._probe_model_availability(all_names)
+                # probes record into PROGRESS as they finish; only the final
+                # (total) mapping is published here, so a worker outliving a
+                # Ctrl-C never mutates what the rows read
+                finished["health"] = self._probe_model_availability(all_names, into=progress)
 
+            budget = self._model_health_budget(len(all_names))
             cancelled = self._run_with_status(
                 worker,
                 status_text=(
                     f" ⏳ Checking health of {len(all_names)} profile(s) "
-                    f"(up to {config.MODEL_HEALTH_TIMEOUT:g}s)..."
+                    f"(up to {budget:g}s, Ctrl-C to cancel)..."
                 ),
                 cancel_message="health check cancelled",
                 transient=True,
                 restore_status=True,
             )
-            health = {} if cancelled else result.get("health", {})
+            # a completed run reports every profile (unreached ones as
+            # "timeout"); an interrupted one only the profiles that answered
+            health = finished["health"] if "health" in finished else progress.snapshot()
+            if cancelled:
+                # wake the probes still blocked in recv: a thread cannot be
+                # killed, so aborting their sockets is what stops them from
+                # lingering until the budget expires
+                progress.abort_all()
+            if cancelled and len(health) < len(all_names):
+                self.console.print(
+                    f"[dim]{len(health)} of {len(all_names)} profile(s) checked "
+                    "before the cancel — the rest are unprobed.[/dim]"
+                )
 
             self.console.print("\n[bold cyan]Available model profiles:[/bold cyan]")
             if not self._controller.model_profiles:

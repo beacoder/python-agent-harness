@@ -56,6 +56,9 @@ class FakeClient:
     def abort(self):
         pass
 
+    def abort_probe(self):
+        pass
+
     def close(self):
         pass
 
