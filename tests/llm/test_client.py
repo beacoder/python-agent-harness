@@ -2176,5 +2176,91 @@ class TestClientCancelCheck(unittest.TestCase):
             c.close()
 
 
+class TestCheckHealth(unittest.TestCase):
+    """``check_health`` probes the client's own model and maps failures."""
+
+    def _probe(self, response=None, side_effect=None):
+        c = Client(base_url="http://h/v1", api_key="k", model="real-model")
+        with mock.patch.object(
+            httpx.Client, "post", return_value=response, side_effect=side_effect
+        ) as post:
+            result = c.check_health()
+        c.close()
+        return result, post
+
+    def test_ok_sends_configured_model(self):
+        (ok, msg), post = self._probe(httpx.Response(200, json={}))
+        self.assertEqual((ok, msg), (True, "ok"))
+        self.assertEqual(post.call_args.args[0], "http://h/v1/chat/completions")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "real-model")
+
+    def test_sends_no_token_limit(self):
+        """Reasoning models reject ``max_tokens``: the probe sends no limit."""
+        _, post = self._probe(httpx.Response(200, json={}))
+        body = post.call_args.kwargs["json"]
+        self.assertNotIn("max_tokens", body)
+        self.assertNotIn("max_completion_tokens", body)
+
+    def test_redirect_is_not_healthy(self):
+        resp = httpx.Response(302, headers={"Location": "https://sso/login"})
+        (ok, msg), _ = self._probe(resp)
+        self.assertEqual((ok, msg), (False, "HTTP 302"))
+
+    def test_rate_limited(self):
+        (ok, msg), _ = self._probe(httpx.Response(429, json={"error": "slow down"}))
+        self.assertEqual((ok, msg), (False, "rate limited (429)"))
+
+    def test_200_with_error_body_is_not_healthy(self):
+        resp = httpx.Response(200, json={"error": {"message": "upstream model unavailable"}})
+        (ok, msg), _ = self._probe(resp)
+        self.assertEqual((ok, msg), (False, "HTTP 200: upstream model unavailable"))
+
+    def test_200_non_json_body_is_healthy(self):
+        (ok, msg), _ = self._probe(httpx.Response(200, text="ok"))
+        self.assertEqual((ok, msg), (True, "ok"))
+
+    def test_502_is_not_auth_error(self):
+        """502 may be in AUTH_REFRESH_STATUS_CODES, but for a probe it
+        means the backend is down."""
+        with mock.patch.object(config, "AUTH_REFRESH_STATUS_CODES", [401, 502]):
+            (ok, msg), _ = self._probe(httpx.Response(502, text="bad gateway"))
+        self.assertEqual((ok, msg), (False, "HTTP 502"))
+
+    def test_error_dict_message(self):
+        resp = httpx.Response(404, json={"error": {"message": "model not found"}})
+        (ok, msg), _ = self._probe(resp)
+        self.assertFalse(ok)
+        self.assertEqual(msg, "HTTP 404: model not found")
+
+    def test_error_string_message(self):
+        (ok, msg), _ = self._probe(httpx.Response(400, json={"error": "bad model"}))
+        self.assertEqual((ok, msg), (False, "HTTP 400: bad model"))
+
+    def test_top_level_message(self):
+        (ok, msg), _ = self._probe(httpx.Response(400, json={"message": "nope"}))
+        self.assertEqual((ok, msg), (False, "HTTP 400: nope"))
+
+    def test_non_json_body(self):
+        (ok, msg), _ = self._probe(httpx.Response(500, text="<html>"))
+        self.assertEqual((ok, msg), (False, "HTTP 500"))
+
+    def test_non_dict_json_body(self):
+        (ok, msg), _ = self._probe(httpx.Response(500, json=["x"]))
+        self.assertEqual((ok, msg), (False, "HTTP 500"))
+
+    def test_auth_error(self):
+        for code in (401, 403):
+            (ok, msg), _ = self._probe(httpx.Response(code, json={}))
+            self.assertEqual((ok, msg), (False, f"auth error ({code})"))
+
+    def test_unreachable(self):
+        (ok, msg), _ = self._probe(side_effect=httpx.ConnectError("refused"))
+        self.assertEqual((ok, msg), (False, "unreachable: ConnectError"))
+
+    def test_os_error(self):
+        (ok, msg), _ = self._probe(side_effect=OSError("ssl"))
+        self.assertEqual((ok, msg), (False, "unreachable: OSError"))
+
+
 if __name__ == "__main__":
     unittest.main()
