@@ -183,6 +183,10 @@ API_RETRY_MAX = 3  # max attempts per request (initial + retries)
 API_RETRY_BASE_DELAY = 1.0  # base backoff (seconds), doubled per attempt
 API_RETRY_MAX_DELAY = 30.0  # per-attempt backoff cap (seconds)
 
+# Wall-clock budget (seconds) for the /model listing's health probes;
+# all profiles are probed in parallel, so this bounds the whole wait.
+MODEL_HEALTH_TIMEOUT = 6.0
+
 # HTTP status codes that should trigger auth-refresh (key re-read from
 # config/env) instead of being treated as transient retryable errors.
 # 401 is always included (standard "Unauthorized").  Some API gateways
