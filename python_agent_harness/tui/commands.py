@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shlex
 import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit import PromptSession
@@ -48,7 +49,7 @@ class CommandMixin:
 
     Expects the host class to provide: ``_controller``, ``console``,
     ``conversation_history``, ``_history_dirty``, ``_data_event``,
-    ``agent_running``, ``status``, ``_current_tool``, ``_start_agent``,
+    ``agent_running``, ``status``, ``lock``, ``_current_tool``, ``_start_agent``,
     ``_on_notify``, ``_status_bar``, ``_flush``, ``_render_frame``.
     """
 
@@ -61,6 +62,7 @@ class CommandMixin:
         _data_event: threading.Event
         agent_running: bool
         status: str
+        lock: threading.Lock
         _current_tool: str
         _round_times: list[float]
 
@@ -366,34 +368,54 @@ class CommandMixin:
         *,
         status_text: str,
         cancel_message: str,
-    ) -> None:
+        transient: bool = False,
+        restore_status: bool = False,
+    ) -> bool:
         """Run *worker* in a background thread with status bar updates.
 
         Sets the status bar to *status_text*, renders the spinner while
         the worker is in flight, and handles KeyboardInterrupt with
-        *cancel_message*.  Used by /compact and /summary to avoid
+        *cancel_message*.  Used by /compact, /summary and /model to avoid
         duplicating the thread + Live boilerplate.
+
+        TRANSIENT erases the status bar once the worker finishes instead
+        of leaving its last frame in the scrollback.  RESTORE_STATUS puts
+        back the status that was showing before (e.g. a previous run's
+        error) instead of clearing it.  Returns True when cancelled.
         """
-        self.status = status_text
+        with self.lock:
+            previous_status = self.status
+            self.status = status_text
         self._current_tool = ""
         self.agent_running = True
         self._data_event.clear()
 
+        cancelled = False
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
         try:
             if self.console.is_dumb_terminal:
-                while thread.is_alive():
+                # no cursor control: reprint only when the text changes,
+                # not on every spinner tick
+                printed = None
+                while True:
+                    with self.lock:
+                        current = self.status
+                    if current != printed:
+                        self.console.print(self._status_bar())
+                        self._flush()
+                        printed = current
+                    if not thread.is_alive():
+                        break
                     self._data_event.wait(timeout=0.1)
                     self._data_event.clear()
-                    self.console.print(self._status_bar())
-                    self._flush()
             else:
                 with Live(
                     self._status_bar(),
                     console=self.console,
                     refresh_per_second=30,
                     screen=False,
+                    transient=transient,
                 ) as live:
                     while thread.is_alive():
                         self._data_event.wait(timeout=0.1)
@@ -401,12 +423,20 @@ class CommandMixin:
                         live.update(self._status_bar())
                         self._flush()
         except KeyboardInterrupt:
+            cancelled = True
             self.console.print(f"\n[dim]{cancel_message}[/dim]")
             self._flush()
         finally:
             self.agent_running = False
-            self.status = ""
+            with self.lock:
+                # only undo our own status: a background _on_log (e.g. an
+                # MCP error) set during the run must survive
+                if not restore_status:
+                    self.status = ""
+                elif self.status == status_text:
+                    self.status = previous_status
             self._data_event.set()
+        return cancelled
 
     def _run_compact(self) -> None:
         """Compact the current conversation directly."""
@@ -473,6 +503,80 @@ class CommandMixin:
         else:
             self.console.print(f"[red]{safe_markup(msg)}[/red]")
 
+    def _resolve_profile_endpoint(self, name: str) -> tuple[str, str | None, str | None]:
+        """Resolve the effective (base_url, api_key, model) for a profile name.
+
+        Mirrors Session.switch_model's merge logic: start from the
+        main llm settings, overlay the profile's non-None keys.
+        """
+        settings = dict(self._controller.llm_settings or {})
+        for key in ("base_url", "api_key"):
+            settings.setdefault(key, getattr(self._controller.client, key, None))
+        settings.setdefault("model", self._controller.model)
+        if name != "default":
+            profile = self._controller.model_profiles.get(name, {})
+            for key in ("base_url", "api_key", "model"):
+                if profile.get(key) is not None:
+                    settings[key] = profile[key]
+        return (
+            str(settings.get("base_url") or "").rstrip("/"),
+            settings.get("api_key"),
+            settings.get("model"),
+        )
+
+    def _probe_model_availability(self, names: list[str]) -> dict[str, tuple[bool, str]]:
+        """Probe each profile's backend in parallel.
+
+        Returns ``{name: (available, message)}``.  Each probe creates a
+        temporary Client (to reuse CA-bundle resolution) and calls
+        ``check_health()``.  ``config.MODEL_HEALTH_TIMEOUT`` bounds the
+        total wait: httpx timeouts are per phase (and DNS is unbounded),
+        so a shared deadline is what keeps the listing responsive.
+        """
+        from ..llm.client import Client
+
+        timeout = config.MODEL_HEALTH_TIMEOUT
+        results: dict[str, tuple[bool, str]] = {}
+        threads: list[threading.Thread] = []
+
+        def probe(name: str) -> None:
+            # any exception would kill the thread silently (row shows a bogus
+            # "timeout") and print a traceback over the status bar
+            try:
+                results[name] = probe_one(name)
+            except Exception as e:  # noqa: BLE001 - reported in the row
+                results[name] = (False, f"error: {type(e).__name__}")
+
+        def probe_one(name: str) -> tuple[bool, str]:
+            base_url, api_key, model = self._resolve_profile_endpoint(name)
+            if not base_url:
+                return False, "no base_url"
+            if not model:
+                return False, "no model"
+            verify = getattr(self._controller.client, "verify", None)
+            client = Client(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                verify=verify,
+                config_path=self._controller.config_path,
+            )
+            try:
+                return client.check_health(timeout=timeout)
+            finally:
+                client.close()
+
+        deadline = time.monotonic() + timeout
+        for name in names:
+            t = threading.Thread(target=probe, args=(name,), daemon=True)
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
+        # snapshot: a probe still running past the deadline must not
+        # mutate the dict handed back to the caller
+        return {name: results.get(name, (False, "timeout")) for name in names}
+
     def _run_model_command(self, arg: str) -> None:
         """Handle /model command for switching LLM profiles."""
         self._refresh_model_profiles()
@@ -486,26 +590,53 @@ class CommandMixin:
                 "base_url"
             ) or self._controller.client.base_url
 
+            # probe before printing so the status bar's Live region never
+            # interleaves with the listing; Ctrl-C skips the health column
+            result: dict[str, dict[str, tuple[bool, str]]] = {}
+
+            def worker() -> None:
+                # one assignment: a worker finishing after Ctrl-C must not
+                # change the dict while the rows are being printed
+                result["health"] = self._probe_model_availability(all_names)
+
+            cancelled = self._run_with_status(
+                worker,
+                status_text=(
+                    f" ⏳ Checking health of {len(all_names)} profile(s) "
+                    f"(up to {config.MODEL_HEALTH_TIMEOUT:g}s)..."
+                ),
+                cancel_message="health check cancelled",
+                transient=True,
+                restore_status=True,
+            )
+            health = {} if cancelled else result.get("health", {})
+
             self.console.print("\n[bold cyan]Available model profiles:[/bold cyan]")
             if not self._controller.model_profiles:
                 self.console.print(
                     "[yellow]  (none configured — add a 'models' section to use /model)[/yellow]"
                 )
+
             for idx, name in enumerate(all_names, 1):
                 if name == "default":
                     marker = " *" if current_model == default_model else ""
-                    self.console.print(
-                        f"  [cyan]{idx})[/cyan] default{marker} — "
-                        f"{safe_markup(default_model)} @ {safe_markup(default_base_url)}"
-                    )
+                    model_name = default_model
+                    base_url = default_base_url
                 else:
                     profile = self._controller.model_profiles[name]
                     model_name = profile.get("model", "(inherited)")
                     base_url = profile.get("base_url", "(inherited)")
                     marker = " *" if model_name == current_model else ""
-                    self.console.print(
-                        f"  [cyan]{idx})[/cyan] {safe_markup(name)}{marker} — {safe_markup(model_name)} @ {safe_markup(base_url)}"
+                status = ""
+                if name in health:
+                    available, msg = health[name]
+                    status = (
+                        "  [green]✓[/green]" if available else f"  [red]✗ {safe_markup(msg)}[/red]"
                     )
+                self.console.print(
+                    f"  [cyan]{idx})[/cyan] {safe_markup(name)}{marker} — "
+                    f"{safe_markup(model_name)} @ {safe_markup(base_url)}{status}"
+                )
 
             total_count = len(all_names)
             self.console.print(f"\n[dim]Current: {safe_markup(current_model)}[/dim]")
