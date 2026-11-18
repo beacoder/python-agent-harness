@@ -108,6 +108,9 @@ class FakeClient:
     ):
         return Message(role="assistant", content="SYNC-OK"), Usage()
 
+    def check_health(self, timeout=15.0):
+        return True, "ok"
+
 
 # static conformance: pyright fails here if FakeClient drifts from the
 # LLMClient interface the agent loop depends on (a signature change in
