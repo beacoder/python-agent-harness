@@ -104,6 +104,8 @@ class LLMClient(Protocol):
 
     def set_timeout(self, timeout: float) -> None: ...
 
+    def check_health(self, timeout: float = 15.0) -> tuple[bool, str]: ...
+
 
 # serializes appends to the shared LLM log file: concurrent sub-agents
 # (each with its own client but ONE shared log_path, see Client.clone)
@@ -517,6 +519,60 @@ class Client:
         """
         self.timeout = timeout
         self._reset_http()
+
+    def check_health(self, timeout: float = 15.0) -> tuple[bool, str]:
+        """Minimal probe: send a tiny chat completion to verify the model works.
+
+        Returns ``(available, message)``.  Does not retry — this is a
+        probe, not a request the user is waiting on.  Uses a temporary
+        httpx client so it never interferes with the main pool.
+
+        A chat completion request is the only reliable way to verify a
+        specific model is actually usable: the ``/models`` endpoint can
+        be stale, incomplete, or return IDs that differ from what the
+        completions endpoint accepts.
+        """
+        try:
+            with httpx.Client(timeout=timeout, verify=_httpx_verify(self.verify)) as probe:
+                resp = probe.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self._headers(stream=False),
+                    # no token limit: reasoning models reject ``max_tokens``
+                    # (they want ``max_completion_tokens``), and chat() sends
+                    # none by default either
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": False,
+                    },
+                )
+            try:
+                body = resp.json()
+            except ValueError:
+                body = None
+            # 3xx is not success: redirects aren't followed, so an SSO or
+            # captive-portal redirect must not read as a working model
+            if 200 <= resp.status_code < 300:
+                # some gateways report failures as 200 + {"error": ...}
+                err = _error_text(body) if isinstance(body, dict) else None
+                if err:
+                    return False, f"HTTP {resp.status_code}: {err[:80]}"
+                return True, "ok"
+            # not AUTH_REFRESH_STATUS_CODES: it may include 502, which here
+            # means the backend is down, not that the key expired
+            if resp.status_code in (401, 403):
+                return False, f"auth error ({resp.status_code})"
+            if resp.status_code == 429:
+                return False, "rate limited (429)"
+            if isinstance(body, dict):
+                msg = _error_text(body) or body.get("message")
+                if msg:
+                    return False, f"HTTP {resp.status_code}: {str(msg)[:80]}"
+            return False, f"HTTP {resp.status_code}"
+        except httpx.HTTPError as e:
+            return False, f"unreachable: {type(e).__name__}"
+        except OSError as e:
+            return False, f"unreachable: {type(e).__name__}"
 
     def _refresh_api_key(
         self,
