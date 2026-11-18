@@ -1038,6 +1038,37 @@ class TestTuiCommandsExtra(unittest.TestCase):
             tui._run_with_status(worker, status_text=" ⏳ working", cancel_message="cancelled")
         self.assertTrue(done.is_set())
         self.assertFalse(tui.agent_running)
+        # spinner ticks don't reprint an unchanged status line
+        self.assertEqual(buf.getvalue().count("working"), 1)
+
+    def test_run_with_status_dumb_terminal_reprints_on_change(self):
+        import threading
+
+        from rich.console import Console
+
+        tui, buf = make_tui()
+        changed = threading.Event()
+
+        def worker() -> None:
+            with tui.lock:
+                tui.status = " ⏳ phase two"
+            tui._data_event.set()
+            changed.wait(2)
+
+        def wait(timeout=None):
+            changed.set()
+            return True
+
+        with (
+            mock.patch.object(
+                Console, "is_dumb_terminal", new_callable=mock.PropertyMock, return_value=True
+            ),
+            mock.patch.object(tui._data_event, "wait", side_effect=wait),
+        ):
+            tui._run_with_status(worker, status_text=" ⏳ phase one", cancel_message="x")
+        out = buf.getvalue()
+        self.assertEqual(out.count("phase two"), 1)
+        self.assertEqual(tui.status, "")
 
     def test_run_with_status_keyboard_interrupt_reports_cancel(self):
         import time as _time
@@ -1414,6 +1445,259 @@ class TestTuiCommandsExtra(unittest.TestCase):
             with mock.patch.object(tui.session, "switch_model", side_effect=RuntimeError("boom")):
                 tui._run_restore(path)
         self.assertIn("could not restore model: boom", buf.getvalue())
+
+
+class TestModelHealthProbe(unittest.TestCase):
+    """``/model`` health probes must target each profile's own model."""
+
+    def _tui(self):
+        tui, buf = make_tui()
+        tui.session.llm_settings = {
+            "model": "gpt-5-mini",
+            "base_url": "https://default/v1/",
+            "api_key": "default-key",
+        }
+        tui.session.model_profiles = {
+            "deepseek": {"model": "deepseek-chat", "base_url": "https://ds/v1"},
+            "inherit": {"model": "other-model"},
+            "nomodel": {"base_url": "https://nm/v1"},
+        }
+        return tui, buf
+
+    def test_resolve_default(self):
+        tui, _ = self._tui()
+        self.assertEqual(
+            tui._resolve_profile_endpoint("default"),
+            ("https://default/v1", "default-key", "gpt-5-mini"),
+        )
+
+    def test_resolve_profile_overrides_and_inherits(self):
+        tui, _ = self._tui()
+        self.assertEqual(
+            tui._resolve_profile_endpoint("deepseek"),
+            ("https://ds/v1", "default-key", "deepseek-chat"),
+        )
+        self.assertEqual(
+            tui._resolve_profile_endpoint("inherit"),
+            ("https://default/v1", "default-key", "other-model"),
+        )
+        # profile without a model inherits the main llm model
+        self.assertEqual(tui._resolve_profile_endpoint("nomodel")[2], "gpt-5-mini")
+
+    def test_resolve_falls_back_to_session_model(self):
+        tui, _ = make_tui()
+        tui.session.llm_settings = {}
+        self.assertEqual(
+            tui._resolve_profile_endpoint("default"),
+            ("http://127.0.0.1:1/v1", "x", "fake"),
+        )
+
+    def test_probe_uses_each_profiles_model(self):
+        tui, _ = self._tui()
+        probed: list[tuple[str, str]] = []
+
+        def fake_check(client_self, timeout=15.0):
+            probed.append((client_self.base_url, client_self.model))
+            return client_self.model != "other-model", "x"
+
+        with mock.patch("python_agent_harness.llm.client.Client.check_health", fake_check):
+            res = tui._probe_model_availability(["default", "deepseek", "inherit"])
+        self.assertCountEqual(
+            probed,
+            [
+                ("https://default/v1", "gpt-5-mini"),
+                ("https://ds/v1", "deepseek-chat"),
+                ("https://default/v1", "other-model"),
+            ],
+        )
+        self.assertTrue(res["default"][0])
+        self.assertTrue(res["deepseek"][0])
+        self.assertFalse(res["inherit"][0])
+
+    def test_probe_missing_base_url_or_model(self):
+        tui, _ = make_tui()
+        tui.session.llm_settings = {"base_url": "", "model": "m"}
+        tui.session.client.base_url = ""
+        self.assertEqual(
+            tui._probe_model_availability(["default"]), {"default": (False, "no base_url")}
+        )
+        tui.session.llm_settings = {"base_url": "https://x/v1", "model": ""}
+        tui.session.model = ""
+        self.assertEqual(
+            tui._probe_model_availability(["default"]), {"default": (False, "no model")}
+        )
+
+    def test_probe_shares_one_deadline(self):
+        """A hung backend is reported as ``timeout`` once the shared
+        budget expires — the wait does not grow with the profile count."""
+        import threading
+        import time
+
+        tui, _ = self._tui()
+        release = threading.Event()
+
+        def hang(client_self, timeout=15.0):
+            release.wait(5)
+            return True, "ok"
+
+        with (
+            mock.patch("python_agent_harness.tui.commands.config.MODEL_HEALTH_TIMEOUT", 0.2),
+            mock.patch("python_agent_harness.llm.client.Client.check_health", hang),
+        ):
+            start = time.monotonic()
+            res = tui._probe_model_availability(["default", "deepseek", "inherit"])
+            elapsed = time.monotonic() - start
+        release.set()
+        self.assertLess(elapsed, 1.0)
+        self.assertEqual(set(res.values()), {(False, "timeout")})
+
+    def test_probe_passes_timeout_to_check_health(self):
+        tui, _ = self._tui()
+        seen: list[float] = []
+
+        def record(client_self, timeout=15.0):
+            seen.append(timeout)
+            return True, "ok"
+
+        with (
+            mock.patch("python_agent_harness.tui.commands.config.MODEL_HEALTH_TIMEOUT", 3.0),
+            mock.patch("python_agent_harness.llm.client.Client.check_health", record),
+        ):
+            tui._probe_model_availability(["default"])
+        self.assertEqual(seen, [3.0])
+
+    def test_model_list_shows_health_status(self):
+        tui, buf = self._tui()
+        profiles = dict(tui.session.model_profiles)
+        health = {
+            "default": (True, "ok"),
+            "deepseek": (False, "HTTP 404: model not found"),
+            "inherit": (True, "ok"),
+            "nomodel": (True, "ok"),
+        }
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config",
+                return_value=profiles,
+            ),
+            mock.patch.object(tui, "_probe_model_availability", return_value=health),
+            mock.patch.object(tui, "_run_with_status", wraps=tui._run_with_status) as rws,
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_model_command("")
+        out = buf.getvalue()
+        # the progress tip goes to the status bar, not into the listing
+        self.assertEqual(
+            rws.call_args.kwargs["status_text"],
+            " ⏳ Checking health of 4 profile(s) (up to 6s)...",
+        )
+        listing = out[out.index("Available model profiles") :]
+        self.assertNotIn("Checking health", listing)
+        self.assertEqual(tui.status, " idle")  # pre-probe status restored
+        self.assertIn("✗ HTTP 404: model not found", out)
+        self.assertIn("deepseek-chat @ https://ds/v1", out)
+
+    def test_model_list_health_cancelled(self):
+        """Ctrl-C during the probe lists the profiles without a health
+        column, even when the worker finishes while the rows print."""
+        import threading
+
+        tui, buf = self._tui()
+        profiles = dict(tui.session.model_profiles)
+        tui.status = " auto-save failed"
+        release = threading.Event()
+        finished = threading.Event()
+
+        def slow_probe(names):
+            release.wait(5)
+            finished.set()
+            return {n: (True, "ok") for n in names}
+
+        real_print = tui.console.print
+
+        def print_and_release(*args, **kwargs):
+            # let the worker finish before anything prints, i.e. after the
+            # Ctrl-C but before the listing reads the result
+            release.set()
+            finished.wait(5)
+            real_print(*args, **kwargs)
+
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config",
+                return_value=profiles,
+            ),
+            mock.patch.object(tui, "_probe_model_availability", side_effect=slow_probe),
+            mock.patch.object(tui._data_event, "wait", side_effect=KeyboardInterrupt),
+            mock.patch.object(tui.console, "print", side_effect=print_and_release),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_model_command("")
+        out = buf.getvalue()
+        self.assertTrue(finished.is_set())
+        self.assertIn("health check cancelled", out)
+        self.assertIn("deepseek-chat @ https://ds/v1\n", out)
+        self.assertNotIn("✓", out)
+        self.assertNotIn("✗", out)
+        self.assertEqual(tui.status, " auto-save failed")
+
+    def test_model_list_status_bar_is_transient_and_restored(self):
+        """The progress bar is erased afterwards (no frozen frame left
+        above the listing) and the previous status comes back."""
+        from rich.live import Live
+
+        tui, _ = self._tui()
+        profiles = dict(tui.session.model_profiles)
+        tui.status = " error: boom"
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config",
+                return_value=profiles,
+            ),
+            mock.patch.object(tui, "_probe_model_availability", return_value={}),
+            mock.patch("python_agent_harness.tui.commands.Live", wraps=Live) as live,
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_model_command("")
+        self.assertTrue(live.call_args.kwargs["transient"])
+        self.assertEqual(tui.status, " error: boom")
+
+    def test_status_set_during_probe_is_not_overwritten(self):
+        """A background ``_on_log`` (e.g. an MCP error) that lands while
+        the probe runs survives the restore."""
+        tui, _ = self._tui()
+        tui.status = " done"
+
+        def probe(names):
+            tui._on_log("MCP: [srv] crashed")
+            return {}
+
+        with (
+            mock.patch(
+                "python_agent_harness.tui.commands.config.load_models_config",
+                return_value=dict(tui.session.model_profiles),
+            ),
+            mock.patch.object(tui, "_probe_model_availability", side_effect=probe),
+            mock.patch("builtins.input", return_value=""),
+        ):
+            tui._run_model_command("")
+        self.assertEqual(tui.status, " MCP: [srv] crashed")
+
+    def test_probe_exception_is_reported_in_row(self):
+        """Exceptions outside httpx.HTTPError (InvalidURL, a missing CA
+        file in Client()) are reported, not left to kill the thread."""
+        import httpx
+
+        tui, _ = self._tui()
+        with mock.patch(
+            "python_agent_harness.llm.client.Client.check_health",
+            side_effect=httpx.InvalidURL("bad"),
+        ):
+            res = tui._probe_model_availability(["deepseek"])
+        self.assertEqual(res, {"deepseek": (False, "error: InvalidURL")})
+        tui.session.client.verify = "/nonexistent/ca.pem"
+        res = tui._probe_model_availability(["deepseek"])
+        self.assertEqual(res, {"deepseek": (False, "error: FileNotFoundError")})
 
 
 if __name__ == "__main__":
