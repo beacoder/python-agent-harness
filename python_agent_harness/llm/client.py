@@ -553,9 +553,13 @@ class Client:
     def check_health(self, timeout: float = 15.0) -> tuple[bool, str]:
         """Minimal probe: send a tiny chat completion to verify the model works.
 
-        Returns ``(available, message)``.  Does not retry — this is a
-        probe, not a request the user is waiting on.  Uses a temporary
-        httpx client so it never interferes with the main pool.
+        Returns ``(available, message)``.  Does not retry transient
+        errors — this is a probe, not a request the user is waiting on —
+        except a 401: the key may have expired and an external refresh
+        process may write a new one, so the key is re-read (bounded by
+        *timeout*) and the probe retried once, mirroring ``chat()``'s
+        ``AuthExpiredError`` handling.  Uses a temporary httpx client so
+        it never interferes with the main pool.
 
         A chat completion request is the only reliable way to verify a
         specific model is actually usable: the ``/models`` endpoint can
@@ -568,28 +572,24 @@ class Client:
         probe blocked in ``recv`` instead of leaving the caller's thread
         parked until the timeout expires.
         """
-        probe: httpx.Client | None = None
         try:
-            with httpx.Client(timeout=timeout, verify=_httpx_verify(self.verify)) as probe:
-                self._probe_http = probe
-                # abort() may have landed before the client was published
-                # (then it had no socket to wake) or right after; either
-                # way, do not start a request the caller already stopped
-                # waiting for — it would block for the whole timeout.
-                if self._aborted:
+            resp = self._probe_request(timeout)
+            if resp is None:
+                return False, "aborted"
+            if resp.status_code == 401:
+                # the key may have expired and an external refresh process
+                # may write a new one: re-read it (bounded by the probe
+                # budget) and retry once, mirroring chat()'s AuthExpiredError handling.
+                if self._refresh_api_key(
+                    cancel_check=lambda: self._aborted,
+                    timeout=timeout,
+                    poll_interval=1.0,
+                ):
+                    resp = self._probe_request(timeout)
+                    if resp is None:
+                        return False, "aborted"
+                elif self._aborted:
                     return False, "aborted"
-                resp = probe.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=self._headers(stream=False),
-                    # no token limit: reasoning models reject ``max_tokens``
-                    # (they want ``max_completion_tokens``), and chat() sends
-                    # none by default either
-                    json={
-                        "model": self.model,
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "stream": False,
-                    },
-                )
             try:
                 body = resp.json()
             except ValueError:
@@ -620,12 +620,39 @@ class Client:
             # request was about to be sent (httpx refuses a closed client).
             # Still a "the probe did not answer" outcome, not a crash.
             return False, f"unreachable: {type(e).__name__}"
-        finally:
-            # a probe woken by abort() leaves the same way; either way the
-            # throwaway client must not stay published on the instance (only
-            # clear our own slot: a concurrent probe may have replaced it)
-            if self._probe_http is probe:
-                self._probe_http = None
+
+    def _probe_request(self, timeout: float) -> httpx.Response | None:
+        """Send one probe request on a throwaway client.
+
+        Returns the response, or None if the probe was aborted before it
+        could start.  The client is published as ``_probe_http`` for the
+        duration so ``abort`` can wake it, and cleared again afterwards
+        (only our own slot: a concurrent probe may have replaced it).
+        """
+        with httpx.Client(timeout=timeout, verify=_httpx_verify(self.verify)) as probe:
+            self._probe_http = probe
+            # abort() may have landed before the client was published
+            # (then it had no socket to wake) or right after; either
+            # way, do not start a request the caller already stopped
+            # waiting for — it would block for the whole timeout.
+            if self._aborted:
+                return None
+            try:
+                return probe.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self._headers(stream=False),
+                    # no token limit: reasoning models reject ``max_tokens``
+                    # (they want ``max_completion_tokens``), and chat() sends
+                    # none by default either
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": False,
+                    },
+                )
+            finally:
+                if self._probe_http is probe:
+                    self._probe_http = None
 
     def _refresh_api_key(
         self,
