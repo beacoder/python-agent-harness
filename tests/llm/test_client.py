@@ -2179,11 +2179,14 @@ class TestClientCancelCheck(unittest.TestCase):
 class TestCheckHealth(unittest.TestCase):
     """``check_health`` probes the client's own model and maps failures."""
 
-    def _probe(self, response=None, side_effect=None):
+    def _probe(self, response=None, side_effect=None, refresh=False):
         c = Client(base_url="http://h/v1", api_key="k", model="real-model")
-        with mock.patch.object(
-            httpx.Client, "post", return_value=response, side_effect=side_effect
-        ) as post:
+        with (
+            mock.patch.object(
+                httpx.Client, "post", return_value=response, side_effect=side_effect
+            ) as post,
+            mock.patch.object(c, "_refresh_api_key", return_value=refresh),
+        ):
             result = c.check_health()
         c.close()
         return result, post
@@ -2252,6 +2255,81 @@ class TestCheckHealth(unittest.TestCase):
         for code in (401, 403):
             (ok, msg), _ = self._probe(httpx.Response(code, json={}))
             self.assertEqual((ok, msg), (False, f"auth error ({code})"))
+
+    def test_401_refreshes_key_and_retries(self):
+        """A 401 re-reads the key and retries the probe once with it."""
+        c = Client(base_url="http://h/v1", api_key="k", model="m")
+        responses = iter([httpx.Response(401, json={}), httpx.Response(200, json={})])
+        with (
+            mock.patch.object(
+                httpx.Client, "post", side_effect=lambda *a, **kw: next(responses)
+            ) as post,
+            mock.patch.object(c, "_refresh_api_key", return_value=True) as refresh,
+        ):
+            self.assertEqual(c.check_health(), (True, "ok"))
+        self.assertEqual(post.call_count, 2)
+        refresh.assert_called_once()
+        c.close()
+
+    def test_401_retry_still_401_reports_auth_error(self):
+        c = Client(base_url="http://h/v1", api_key="k", model="m")
+        with (
+            mock.patch.object(
+                httpx.Client, "post", return_value=httpx.Response(401, json={})
+            ) as post,
+            mock.patch.object(c, "_refresh_api_key", return_value=True),
+        ):
+            self.assertEqual(c.check_health(), (False, "auth error (401)"))
+        self.assertEqual(post.call_count, 2)
+        c.close()
+
+    def test_401_no_refresh_no_retry(self):
+        """Key unchanged after the refresh wait: fail immediately, no
+        second request with the same expired key."""
+        c = Client(base_url="http://h/v1", api_key="k", model="m")
+        with (
+            mock.patch.object(
+                httpx.Client, "post", return_value=httpx.Response(401, json={})
+            ) as post,
+            mock.patch.object(c, "_refresh_api_key", return_value=False) as refresh,
+        ):
+            self.assertEqual(c.check_health(), (False, "auth error (401)"))
+        self.assertEqual(post.call_count, 1)
+        refresh.assert_called_once()
+        # the refresh wait must be bounded by the probe budget, not the
+        # 30 s chat() default — a /model listing must stay responsive
+        self.assertEqual(refresh.call_args.kwargs["timeout"], 15.0)
+        c.close()
+
+    def test_403_does_not_refresh(self):
+        """403 is a permission failure, not an expired key: no refresh,
+        no retry."""
+        c = Client(base_url="http://h/v1", api_key="k", model="m")
+        with (
+            mock.patch.object(
+                httpx.Client, "post", return_value=httpx.Response(403, json={})
+            ) as post,
+            mock.patch.object(c, "_refresh_api_key") as refresh,
+        ):
+            self.assertEqual(c.check_health(), (False, "auth error (403)"))
+        self.assertEqual(post.call_count, 1)
+        refresh.assert_not_called()
+        c.close()
+
+    def test_401_refresh_aborted_reports_aborted(self):
+        """Ctrl-C during the refresh wait: the probe reports aborted
+        instead of starting a retry nobody waits on."""
+        c = Client(base_url="http://h/v1", api_key="k", model="m")
+        with (
+            mock.patch.object(
+                httpx.Client, "post", return_value=httpx.Response(401, json={})
+            ) as post,
+            mock.patch.object(c, "_refresh_api_key", return_value=False) as refresh,
+        ):
+            refresh.side_effect = lambda **kw: (c.abort_probe(), False)[1]
+            self.assertEqual(c.check_health(), (False, "aborted"))
+        self.assertEqual(post.call_count, 1)
+        c.close()
 
     def test_unreachable(self):
         (ok, msg), _ = self._probe(side_effect=httpx.ConnectError("refused"))
