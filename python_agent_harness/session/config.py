@@ -409,6 +409,23 @@ def _read_config(path: str | os.PathLike | None = None) -> dict:
     return data
 
 
+def _object_section(data: dict, key: str, path: str | os.PathLike | None = None) -> dict:
+    """Return section ``key`` of ``data``, requiring it to be an object.
+
+    Absent and null both mean "unset" (``{}``).  Any other value raises
+    ValueError, including the falsy ones: ``"llm": []`` must not be
+    mistaken for "no llm section", because it would silently drop the
+    user's endpoint and key and re-resolve them from the defaults plus
+    environment instead of reporting the broken file.
+    """
+    section = data.get(key)
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        raise ValueError(f"config file {_config_path(path)}: {key} must be an object")
+    return section
+
+
 def load_llm_config(path: str | os.PathLike | None = None) -> dict:
     """Resolve LLM settings: code defaults < config file < environment.
 
@@ -417,9 +434,7 @@ def load_llm_config(path: str | os.PathLike | None = None) -> dict:
     """
     settings = dict(DEFAULT_LLM)
     data = _read_config(path)
-    llm = data.get("llm") or {}
-    if not isinstance(llm, dict):
-        raise ValueError(f"config file {_config_path(path)}: llm must be an object")
+    llm = _object_section(data, "llm", path)
     for key in (
         "base_url",
         "api_key",
@@ -452,9 +467,7 @@ def load_subagent_overrides(path: str | os.PathLike | None = None) -> dict:
     """
     overrides = dict(DEFAULT_SUBAGENT_LLM)
     data = _read_config(path)
-    sub = data.get("subagent_llm") or {}
-    if not isinstance(sub, dict):
-        raise ValueError(f"config file {_config_path(path)}: subagent_llm must be an object")
+    sub = _object_section(data, "subagent_llm", path)
     for key in DEFAULT_SUBAGENT_LLM:
         if key in sub and sub[key] is not None:
             overrides[key] = sub[key]
@@ -521,18 +534,16 @@ def _load_limits(
 
     Shared by the ``headless`` and ``serve`` sections, which carry the
     same two keys with the same semantics.  A missing file/section or
-    unreadable JSON yields ``(None, None)``; a malformed section or
-    non-numeric value raises ValueError so config errors surface at
-    session start.  Values <= 0 disable the respective budget (same as
-    null/absent).
+    unreadable JSON yields ``(None, None)``; a malformed section
+    (including a non-object such as ``[]``) or non-numeric value raises
+    ValueError so config errors surface at session start.  Values <= 0
+    disable the respective budget (same as null/absent).
     """
     try:
         data = _read_config(path)
     except ValueError:
         return (None, None)
-    section = data.get(section_name) or {}
-    if not isinstance(section, dict):
-        raise ValueError(f"config file {_config_path(path)}: {section_name} must be an object")
+    section = _object_section(data, section_name, path)
 
     def _numeric(key: str) -> float | None:
         val = section.get(key)

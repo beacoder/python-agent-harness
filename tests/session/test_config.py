@@ -832,5 +832,89 @@ class TestServeLimitsConfig(unittest.TestCase):
         self.assertIn('"serve"', config.CONFIG_TEMPLATE)
 
 
+class TestNonObjectSections(unittest.TestCase):
+    """A section that is present but not an object is an error, not "unset".
+
+    Falsy values are the trap: ``"llm": []`` used to be read as "no llm
+    section", which dropped the configured endpoint and key and
+    re-resolved both from the defaults and the environment — silently
+    sending traffic (and a real key) to api.openai.com.
+    """
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in ENV_KEYS}
+        for k in ENV_KEYS:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _write(self, content: str) -> str:
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_falsy_llm_section_rejected(self):
+        for value in ("[]", '""', "0", "false"):
+            with self.subTest(value=value):
+                path = self._write(f'{{"llm": {value}}}')
+                with self.assertRaises(ValueError) as ctx:
+                    config.load_llm_config(path)
+                self.assertIn("llm must be an object", str(ctx.exception))
+
+    def test_truthy_non_object_llm_section_rejected(self):
+        for value in ("[1]", '"x"', "1"):
+            with self.subTest(value=value):
+                path = self._write(f'{{"llm": {value}}}')
+                with self.assertRaises(ValueError) as ctx:
+                    config.load_llm_config(path)
+                self.assertIn("llm must be an object", str(ctx.exception))
+
+    def test_falsy_llm_section_does_not_fall_back_to_public_endpoint(self):
+        """The reported worst case: a dropped section plus an env key."""
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        path = self._write('{"llm": []}')
+        with self.assertRaises(ValueError):
+            config.load_llm_config(path)
+
+    def test_falsy_subagent_section_rejected(self):
+        for value in ("[]", '""', "0", "false"):
+            with self.subTest(value=value):
+                path = self._write(f'{{"subagent_llm": {value}}}')
+                for loader in (
+                    config.load_subagent_overrides,
+                    config.load_subagent_llm_config,
+                ):
+                    with self.assertRaises(ValueError) as ctx:
+                        loader(path)
+                    self.assertIn("subagent_llm must be an object", str(ctx.exception))
+
+    def test_falsy_headless_section_rejected(self):
+        for value in ("[]", '""', "0", "false"):
+            with self.subTest(value=value):
+                path = self._write(f'{{"headless": {value}}}')
+                with self.assertRaises(ValueError) as ctx:
+                    config.load_headless_limits(path)
+                self.assertIn("headless must be an object", str(ctx.exception))
+
+    def test_falsy_serve_section_rejected(self):
+        path = self._write('{"serve": []}')
+        with self.assertRaises(ValueError) as ctx:
+            config.load_serve_limits(path)
+        self.assertIn("serve must be an object", str(ctx.exception))
+
+    def test_null_sections_still_mean_unset(self):
+        path = self._write('{"llm": null, "subagent_llm": null, "headless": null}')
+        self.assertEqual(config.load_llm_config(path)["base_url"], config.DEFAULT_LLM["base_url"])
+        self.assertEqual(config.load_subagent_overrides(path), {})
+        self.assertEqual(config.load_headless_limits(path), (None, None))
+
+
 if __name__ == "__main__":
     unittest.main()
