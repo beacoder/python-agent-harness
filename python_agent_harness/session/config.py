@@ -444,26 +444,16 @@ def load_llm_config(path: str | os.PathLike | None = None) -> dict:
     return settings
 
 
-def load_subagent_llm_config(
-    path: str | os.PathLike | None = None,
-    main: dict | None = None,
-) -> dict:
-    """Resolve sub-agent LLM settings; unset keys inherit ``main``.
+def load_subagent_overrides(path: str | os.PathLike | None = None) -> dict:
+    """Return only the sub-agent settings the config explicitly sets.
 
-    Mirrors gptel-agent-harness-subagent-model: sub-agents
-    (the Agent tool) use their own LLM when configured, otherwise the
-    main agent's.  Precedence: ``main`` settings < config file
-    ``subagent_llm`` object < referenced ``models`` profile (when
-    ``subagent_llm.profile`` is set) < OPENAI_SUBAGENT_* environment
-    variables.  A referenced profile's keys win over explicit
-    ``subagent_llm`` keys; keys the profile leaves unset still inherit
-    the main settings.
-
-    Returns a fully resolved settings dict (same keys as
-    `load_llm_config`) that callers can use to build a sub-agent
-    Client; when no override is set anywhere it equals ``main``.
+    Same precedence as `load_subagent_llm_config`, but keys left unset
+    are absent instead of resolved against the main settings.  Callers
+    that must keep inheriting the main value *at use time* (the
+    per-request options, which follow a /model switch) need this: a
+    value resolved once at session start would pin the previous
+    model's setting.
     """
-    main = dict(main) if main else dict(DEFAULT_LLM)
     overrides = dict(DEFAULT_SUBAGENT_LLM)
     data = _read_config(path)
     sub = data.get("subagent_llm") or {}
@@ -501,9 +491,30 @@ def load_subagent_llm_config(
         if val:
             overrides[key] = val
     overrides.pop("profile", None)
-    for key, val in overrides.items():
-        if val is not None:
-            main[key] = val
+    return {k: v for k, v in overrides.items() if v is not None}
+
+
+def load_subagent_llm_config(
+    path: str | os.PathLike | None = None,
+    main: dict | None = None,
+) -> dict:
+    """Resolve sub-agent LLM settings; unset keys inherit ``main``.
+
+    Mirrors gptel-agent-harness-subagent-model: sub-agents
+    (the Agent tool) use their own LLM when configured, otherwise the
+    main agent's.  Precedence: ``main`` settings < config file
+    ``subagent_llm`` object < referenced ``models`` profile (when
+    ``subagent_llm.profile`` is set) < OPENAI_SUBAGENT_* environment
+    variables.  A referenced profile's keys win over explicit
+    ``subagent_llm`` keys; keys the profile leaves unset still inherit
+    the main settings.
+
+    Returns a fully resolved settings dict (same keys as
+    `load_llm_config`) that callers can use to build a sub-agent
+    Client; when no override is set anywhere it equals ``main``.
+    """
+    main = dict(main) if main else dict(DEFAULT_LLM)
+    main.update(load_subagent_overrides(path))
     return main
 
 
