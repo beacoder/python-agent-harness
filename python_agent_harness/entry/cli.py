@@ -53,7 +53,16 @@ def make_session(
     # (so a CLI/caller model override is inherited too when the
     # subagent_llm model is unset)
     settings["model"] = model
-    subagent_settings = config.load_subagent_llm_config(config_path, main=settings)
+    # One config read for both views: the fully resolved settings (to
+    # decide whether the sub-agent needs its own client) and the
+    # explicit overrides only (per-request options must stay "unset =
+    # inherit the main value at use time" — a value resolved here would
+    # pin the model active at session start, so a later /model switch
+    # would keep sending the previous model's reasoning_effort, which
+    # the new backend rejects).
+    subagent_overrides = config.load_subagent_overrides(config_path)
+    subagent_settings = dict(settings)
+    subagent_settings.update(subagent_overrides)
     client = Client(
         base_url=settings["base_url"],
         api_key=settings["api_key"],
@@ -128,11 +137,13 @@ def make_session(
         stream=effective_stream,
         supports_image_input=settings["supports_image_input"],
         subagent_client=subagent_client,
-        subagent_temperature=subagent_settings["temperature"],
-        subagent_max_tokens=subagent_settings["max_tokens"],
-        subagent_reasoning_effort=subagent_settings["reasoning_effort"],
-        subagent_stream=(effective_stream if stream is not None else subagent_settings["stream"]),
-        subagent_supports_image_input=subagent_settings["supports_image_input"],
+        subagent_temperature=subagent_overrides.get("temperature"),
+        subagent_max_tokens=subagent_overrides.get("max_tokens"),
+        subagent_reasoning_effort=subagent_overrides.get("reasoning_effort"),
+        subagent_stream=(
+            effective_stream if stream is not None else subagent_overrides.get("stream")
+        ),
+        subagent_supports_image_input=subagent_overrides.get("supports_image_input"),
         registry=registry,
         context_path=paths.get("context_path"),
         skill_path=paths.get("skill_path"),
