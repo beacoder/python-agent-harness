@@ -134,21 +134,19 @@ class Session:
         # (see run_subagent) so concurrent sub-agents never share a
         # Client's pool/abort state.
         self.subagent_client = subagent_client or client
-        self.subagent_temperature = (
-            temperature if subagent_temperature is None else subagent_temperature
-        )
-        self.subagent_max_tokens = (
-            max_tokens if subagent_max_tokens is None else subagent_max_tokens
-        )
-        self.subagent_reasoning_effort = (
-            reasoning_effort if subagent_reasoning_effort is None else subagent_reasoning_effort
-        )
-        self.subagent_stream = stream if subagent_stream is None else subagent_stream
-        self.subagent_supports_image_input = (
-            supports_image_input
-            if subagent_supports_image_input is None
-            else subagent_supports_image_input
-        )
+        # Explicit subagent_llm overrides (None = inherit the main
+        # value).  Kept so switch_model can re-derive the inherited
+        # ones: a profile switch changes the main model, and a stale
+        # inherited value (e.g. reasoning_effort="medium" left over
+        # from the previous model) would be sent to the new backend.
+        self._subagent_overrides = {
+            "temperature": subagent_temperature,
+            "max_tokens": subagent_max_tokens,
+            "reasoning_effort": subagent_reasoning_effort,
+            "stream": subagent_stream,
+            "supports_image_input": subagent_supports_image_input,
+        }
+        self._apply_subagent_inheritance()
 
         self.registry = registry or Registry()
         # MCP (Model Context Protocol) integration: an optional adapter
@@ -902,6 +900,33 @@ class Session:
     # ------------------------------------------------------------------
     # model switching
     # ------------------------------------------------------------------
+    def _apply_subagent_inheritance(self) -> None:
+        """Re-derive the sub-agent per-request options from the main ones.
+
+        Every option the config left unset inherits the main agent's
+        value, so it must be recomputed whenever the main values change
+        (see switch_model) — otherwise the sub-agent keeps sending the
+        previous model's options.
+        """
+        overrides = self._subagent_overrides
+        self.subagent_temperature = (
+            self.temperature if overrides["temperature"] is None else overrides["temperature"]
+        )
+        self.subagent_max_tokens = (
+            self.max_tokens if overrides["max_tokens"] is None else overrides["max_tokens"]
+        )
+        self.subagent_reasoning_effort = (
+            self.reasoning_effort
+            if overrides["reasoning_effort"] is None
+            else overrides["reasoning_effort"]
+        )
+        self.subagent_stream = self.stream if overrides["stream"] is None else overrides["stream"]
+        self.subagent_supports_image_input = (
+            self.supports_image_input
+            if overrides["supports_image_input"] is None
+            else overrides["supports_image_input"]
+        )
+
     def switch_model(self, name: str) -> tuple[bool, str]:
         """Switch to a named LLM profile.
 
@@ -972,6 +997,8 @@ class Session:
         self.reasoning_effort = merged["reasoning_effort"]
         self.stream = merged["stream"]
         self.supports_image_input = merged["supports_image_input"]
+        # the sub-agent inherits these unless subagent_llm overrode them
+        self._apply_subagent_inheritance()
         return True, f"switched to {name} ({self.model})"
 
     def switch_agent(self, name: str) -> tuple[bool, str]:
