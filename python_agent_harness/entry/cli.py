@@ -242,8 +242,6 @@ def cmd_headless(args: argparse.Namespace) -> int:
         if prompt is None:
             prompt = sys.stdin.read()
         runner = run_headless_jsonl if getattr(args, "json", False) else run_headless
-        # Unattended budgets: explicit flags win over the config file's
-        # headless section (0/negative disables the budget entirely).
         max_rounds, timeout = _resolve_budgets(args, config.load_headless_limits(args.config))
         return runner(
             session,
@@ -268,9 +266,6 @@ def cmd_serve(args: argparse.Namespace) -> int:
     try:
         from .server import run_serve
 
-        # Per-run budgets: explicit flags win over the config file's
-        # serve section (0/negative disables).  Applied to EACH submit
-        # — the process is resident, so every run gets a fresh budget.
         max_rounds, timeout = _resolve_budgets(args, config.load_serve_limits(args.config))
         return run_serve(
             session,
@@ -358,7 +353,6 @@ def cmd_config(args: argparse.Namespace) -> int:
         f"reasoning_effort={subagent_settings['reasoning_effort']} "
         f"stream={subagent_settings['stream']} timeout={subagent_settings['timeout']}"
     )
-    # Show model profiles for /model command
     model_profiles = config.load_models_config(args.path)
     if model_profiles:
         print("models:")
@@ -368,7 +362,6 @@ def cmd_config(args: argparse.Namespace) -> int:
             print(f"  {name}: model={model_name}, base_url={base_url}")
     else:
         print("models: (none configured — add a 'models' section to use /model)")
-    # Show context-window overrides
     context_windows = config.load_context_windows_config(args.path)
     if context_windows:
         print("context_windows:")
@@ -376,7 +369,6 @@ def cmd_config(args: argparse.Namespace) -> int:
             print(f"  {pattern}: {size}")
     else:
         print("context_windows: (none configured — built-in table in config.py applies)")
-    # Show default agent
     default_agent = config.load_default_agent(args.path)
     print(f"default_agent: {default_agent or '(default: agent.md)'}")
     max_rounds, timeout = config.load_headless_limits(args.path)

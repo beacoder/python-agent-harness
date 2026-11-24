@@ -80,8 +80,6 @@ class Question(Tool):
         else:
             return "Error: questions must be an array"
 
-        # containment boundary: a failure in the interactive prompt
-        # becomes an error string for the model, never a crash
         try:
             return ctx.ask_questions(questions)
         except Exception as e:  # noqa: BLE001 - error string for the model

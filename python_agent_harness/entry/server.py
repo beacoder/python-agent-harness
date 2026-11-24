@@ -141,12 +141,9 @@ from .headless import (
 
 DEFAULT_ANSWER_TIMEOUT = 0.0  # wait forever for a host answer
 
-# Named features advertised on the ``ready`` line.  ``protocol_version``
-# alone is a single integer a host can only accept or reject wholesale;
-# these let it discover what this build actually supports and adapt,
-# instead of inferring a feature's absence from events that never
-# arrive.  Add a capability when behaviour a host can branch on is
-# introduced; never repurpose an existing name.
+# Named features advertised on the ``ready`` line.  Add a capability
+# when behaviour a host can branch on is introduced; never repurpose
+# an existing name.
 CAPABILITIES = (
     "submit",  # run a prompt
     "answer",  # deliver a mid-run answer to an ask
@@ -497,9 +494,8 @@ class AgentServer:
         self.err = err if err is not None else sys.stderr
         self.answer_timeout = answer_timeout
         # Per-run budgets (None = unlimited), applied to EVERY submit.
-        # The process is resident, so these bound each run rather than
-        # the process lifetime.  Held here — not taken off the wire —
-        # so a driving host cannot raise its own ceiling.
+        # Held here — not taken off the wire — so a driving host cannot
+        # raise its own ceiling.
         self.max_rounds = max_rounds
         self.timeout = timeout
         self.view: ServerView | None = None
@@ -623,18 +619,13 @@ class AgentServer:
         # Per-run budget: Controller.submit derives budget_top_level
         # from max_rounds being set, so passing it is what opts this
         # run into a finite round cap (default None = unlimited, the
-        # interactive behavior).  A tripped budget unwinds the agent
-        # loop normally, so the run still ends with a result line
-        # carrying errors[].code = "budget"/"timeout" and real usage.
+        # interactive behavior).
         handle = self.controller.submit(
             prompt,
             max_rounds=self.max_rounds,
             timeout=self.timeout,
         )
         if self._cancel_pending.is_set():
-            # A cancel op landed before submit() — submit cleared the
-            # session cancel event at run start, so re-apply it now
-            # (the run must unwind; TUI parity for a Ctrl-C at turn start).
             self._cancel_pending.clear()
             self.session.cancel()
         model = self.session.model

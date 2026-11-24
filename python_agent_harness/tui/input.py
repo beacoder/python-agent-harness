@@ -265,7 +265,7 @@ class SlashCompleter(Completer):
                     yield Completion(cmd, start_position=-len(text))
                 if cmds:
                     return
-                yield from self._complete_paths(text)  # absolute path
+                yield from self._complete_paths(text)
                 return
             arg = text.split(" ", 1)[1]
             if arg.startswith("@"):
@@ -275,7 +275,6 @@ class SlashCompleter(Completer):
             return
         token = text.rsplit(" ", 1)[-1] if " " in text else text
         if token.startswith("@"):
-            # @file reference: complete the path after @
             yield from self._complete_paths(token[1:])
         elif token.startswith("~") or "/" in token:
             yield from self._complete_paths(token)

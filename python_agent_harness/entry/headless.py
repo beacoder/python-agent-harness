@@ -361,9 +361,6 @@ def run_headless(
         return 1
     answer = final_answer_text(session)
     if answer:
-        # api_safe: the answer carries whatever the conversation carried
-        # (a restored non-UTF-8 session), and a strict-UTF-8 stdout
-        # raised UnicodeEncodeError here — losing the result line.
         view.out.write(api_safe(answer) + "\n")
         view.out.flush()
     return 1 if view.errors else 0

@@ -30,10 +30,6 @@ class PendingToolResult:
     starts its background work (e.g. a spawned process) and returns
     immediately, then delivers the final result string later via
     ``deliver`` — so the wait never blocks the sequential tool loop.
-
-    ``deliver`` is idempotent (first delivery wins, late duplicates are
-    no-ops — mirroring the gptel-agent FSM's idempotent-result advice);
-    ``wait`` blocks until the result has been delivered.
     """
 
     def __init__(self) -> None:
@@ -41,11 +37,17 @@ class PendingToolResult:
         self._result: str | None = None
 
     def deliver(self, result: str) -> None:
+        """Deliver the final result.
+
+        First delivery wins and later duplicates are no-ops (mirrors the
+        gptel-agent FSM's idempotent-result advice).
+        """
         if not self._event.is_set():
             self._result = result
             self._event.set()
 
     def wait(self) -> str:
+        """Block until the result has been delivered."""
         self._event.wait()
         return self._result or ""
 
@@ -186,11 +188,10 @@ class Tool(ABC):
     # them concurrently via a thread pool instead of one-at-a-time,
     # since none can depend on another's side effects.
     is_readonly: bool = False
-    # NB: Tool is an ABC, not a dataclass, so this is a plain class-level
-    # default (never mutated in place — every concrete tool overrides it
-    # with its own schema).  It must be a real dict: a dataclasses.field()
-    # sentinel here would silently become the "parameters" of any tool
-    # that forgot to override it and then fail JSON serialization.
+    # Plain class-level default (Tool is an ABC, not a dataclass): it must
+    # be a real dict, because a dataclasses.field() sentinel here would
+    # silently become the "parameters" of any tool that forgot to override
+    # it and then fail JSON serialization.
     parameters: dict[str, Any] = {}
 
     @abstractmethod

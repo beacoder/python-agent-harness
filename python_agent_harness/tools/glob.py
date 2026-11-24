@@ -79,9 +79,6 @@ class GlobTool(Tool):
     }
 
     def run(self, args: dict, ctx: ToolContext) -> str:
-        # Mirrors `gptel-agent-harness-tools--glob': `git ls-files' inside a
-        # git repository (fast, .gitignore-respecting), `tree' as a fallback
-        # outside git.
         pattern = args.get("pattern") or ""
         if not pattern:
             return "Error: pattern must not be empty"

@@ -6,13 +6,6 @@ state (``messages`` / ``pending`` / ``info``) through the loop
 reference.  Tool calls are always executed and delivered via the
 loop's ``_execute_tool_call`` / ``_deliver_tool_result`` methods so
 subclass or test overrides of those methods keep working.
-
-When every call in a round is readonly (``Tool.is_readonly = True``),
-the round is dispatched concurrently via a thread pool: readonly tools
-only read state, so none can depend on another's side effects, and
-running them in parallel reduces latency for read-heavy rounds (e.g.
-the model reading several files at once).  Mixed rounds (any
-non-readonly tool) fall back to the original sequential dispatch.
 """
 
 from __future__ import annotations
@@ -53,15 +46,7 @@ def sanitize_tool_result(result: object) -> str:
 
 
 class ToolRunner:
-    """Runs and delivers tool calls for one agent loop.
-
-    Mirrors gptel's `gptel--handle-tool-use': synchronous tools
-    (Read, Edit, Glob, ...) execute ONE AT A TIME, in call order;
-    asynchronous tools (Bash, Agent — those whose ``run`` returns a
-    ``PendingToolResult``) are dispatched in line and run concurrently
-    in the background, their results awaited afterwards, again in
-    original call order.
-    """
+    """Runs and delivers tool calls for one agent loop."""
 
     def __init__(self, loop: Any) -> None:
         self.loop = loop
@@ -263,10 +248,6 @@ class ToolRunner:
         appended by the WAIT state.  Results land in
         ``self.info["tool_result"]`` and are delivered by the TRET
         state in original tool-call order.
-
-        Synchronous tools run ONE AT A TIME in model-emitted order
-        (gptel-style); asynchronous tools (Bash, Agent) are dispatched
-        in line and run concurrently in the background.
         """
         loop = self.loop
         pending = list(loop.pending)

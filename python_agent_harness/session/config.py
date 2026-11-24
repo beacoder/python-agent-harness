@@ -180,8 +180,8 @@ TEMPERATURE = 0.0
 # per-request attempt budget and delay bounds live here; a Client
 # instance can override them per call.
 API_RETRY_MAX = 3  # max attempts per request (initial + retries)
-API_RETRY_BASE_DELAY = 1.0  # base backoff (seconds), doubled per attempt
-API_RETRY_MAX_DELAY = 30.0  # per-attempt backoff cap (seconds)
+API_RETRY_BASE_DELAY = 1.0  # base backoff in seconds, doubled per attempt
+API_RETRY_MAX_DELAY = 30.0  # per-attempt backoff cap in seconds
 
 # Per-profile wall-clock budget (seconds) for the /model listing's health
 # probes.  The listing's total budget is
@@ -215,7 +215,7 @@ SUBAGENT_MAX_ROUNDS = 60
 SUBAGENT_EXCLUDED_TOOLS = ("Agent", "Question", "PlanExit", "TodoWrite")
 
 # ---- TUI preview limits -------------------------------------------------------
-TOOL_RESULT_PREVIEW_LINES = 5  # max lines of a tool result shown in the TUI
+TOOL_RESULT_PREVIEW_LINES = 5
 TOOL_RESULT_PREVIEW_CHARS = 500  # max chars of that preview (long single lines)
 
 # Per-argument value cap for a tool call the user expanded: the full
@@ -258,10 +258,6 @@ DEFAULT_PATHS: dict = {
 
 # Sub-agent LLM overrides: every key defaults to None, meaning "inherit
 # the main LLM setting" (mirrors gptel-agent-harness-subagent-model).
-# agent's LLM.  ``profile`` references a named profile from the
-# ``models`` section: its settings are applied on top of any explicit
-# subagent_llm keys (profile wins), and unset keys still inherit the
-# main LLM settings.
 DEFAULT_SUBAGENT_LLM: dict = {
     "profile": None,
     "base_url": None,

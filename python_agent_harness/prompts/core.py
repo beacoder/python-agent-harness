@@ -475,8 +475,7 @@ def _is_mode_reminder_text(text: str) -> bool:
 
     Content-based: the plan.md / plan-mode.md / build-switch.md prompts
     all start with the <system-reminder> tag, and the plan-exit approval
-    notice has a fixed format — the same checks the TUI uses, which also
-    cover restored sessions where the ``injected`` flag is lost.
+    notice has a fixed format.
     """
     from ..io.text_filter import is_mode_reminder_text
 
@@ -735,8 +734,8 @@ def discover_agents(agents_dir: str | os.PathLike | None = None) -> dict[str, st
     The bundled ``prompts/agents/`` profiles are always discovered.  When
     *agents_dir* is set (``paths.agent_path`` in the config file), its
     files are layered on top: a configured agent overrides a bundled one
-    of the same name, and the rest of the bundled profiles stay
-    available.  A missing configured directory contributes nothing.
+    of the same name.  A missing configured directory contributes
+    nothing.
     """
     agents = _scan_agents_dir(AGENTS_DIR)
     if agents_dir:

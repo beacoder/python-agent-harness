@@ -66,10 +66,6 @@ def unified_diff(
     for line in diff:
         out.append(line)
         if line[:1] in ("-", "+", " ") and not line.endswith("\n"):
-            # a content line at EOF without a trailing newline: difflib
-            # emits it bare, which would corrupt the joined text; mark
-            # it like git does so the diff round-trips (the Edit tool's
-            # diff mode parses markers and applies them)
             out.append("\n\\ No newline at end of file\n")
     return "".join(out)
 

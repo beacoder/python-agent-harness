@@ -240,8 +240,6 @@ def _apply_section(section: _Section, cwd: str, fallback_path: str | None) -> tu
             file_lines = f.readlines()
     except OSError as e:
         return False, f"cannot read {target}: {e}"
-    # Match every hunk against the ORIGINAL content first; only write
-    # when all matched (a failed hunk leaves the file untouched).
     plan: list[tuple[_Hunk, int]] = []
     for hunk in section.hunks:
         pos = _match_hunk(hunk, file_lines)

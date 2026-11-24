@@ -30,11 +30,8 @@ from ..prompts import _git_toplevel, read_prompt_file
 PROMPTS_DIR = Path(__file__).parents[1] / "prompts"
 COMMANDS_DIR = PROMPTS_DIR / "commands"
 
-# Custom command files take precedence over the builtin slash commands (see
-# ``find_command``), so a configured ``review.md`` replaces ``/review``.  The
-# one exception is ``/exit``: it is the only way out of an interactive
-# session, so a command file may not shadow it.  Such a file is skipped and
-# ``/help`` reports it instead of silently dropping it.
+# ``/exit`` is the only way out of an interactive session, so a command
+# file may not shadow it.
 UNOVERRIDABLE_COMMAND_NAMES = frozenset({"exit"})
 
 

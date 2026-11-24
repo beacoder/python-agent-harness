@@ -356,13 +356,9 @@ def parse_saved_body(body: str) -> list:
             messages.append(Message(role=role, content=content))
 
     for line in body.splitlines():
-        # Check for a role header: **user**: ... or **assistant**: ...
         header = split_role_header(line)
         if header is not None:
             role, rest = header
-            # Save the previous block (tool blocks lose their
-            # tool_call_id/name; system blocks would duplicate the
-            # live system prompt the client prepends per request)
             if current_role is not None and current_role not in ("tool", "system"):
                 _flush(current_role, current_lines)
             current_role = role
@@ -370,7 +366,7 @@ def parse_saved_body(body: str) -> list:
             continue
         current_lines.append(unescape_role_header(line))
 
-    # Don't forget the last block (tool/system blocks dropped, see above)
+    # flush the last block
     if current_role is not None and current_role not in ("tool", "system"):
         _flush(current_role, current_lines)
 
@@ -384,20 +380,18 @@ def find_session_by_title(query: str) -> str | None:
     and the derived title.  Returns the most recent match, or None.
     """
     query_lower = query.lower()
-    # Strip .md from query if present, for cleaner substring matching
     query_stem = query_lower[:-3] if query_lower.endswith(".md") else query_lower
-    files = SessionPersistence.list_sessions()  # already sorted by mtime desc
+    files = SessionPersistence.list_sessions()
     for f in files:
         basename = os.path.basename(f)
         basename_lower = basename.lower()
-        # Exact basename match (with or without .md)
         if basename_lower == query_lower or basename_lower == query_lower + ".md":
             return f
-        # Substring match against filename (minus .md)
+        # substring match against the filename
         name_part = basename[:-3] if basename.endswith(".md") else basename
         if query_stem in name_part.lower():
             return f
-        # Match against derived title (dashes → spaces)
+        # match against the derived title
         title = title_from_filename(f)
         if title and query_stem in title.lower():
             return f

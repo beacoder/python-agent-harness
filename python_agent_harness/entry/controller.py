@@ -311,7 +311,7 @@ class Controller:
         # from a previous run so a finished task's todos don't stay
         # pinned into the next task.
         self.clear_todos()
-        # A new top-level run starts here: invalidate any worker still
+        # Invalidate any worker still
         # unwinding from a previous run — from this point on it is stale
         # and must never touch shared state.  Bump before clearing the
         # event so there is no instant where an old worker sees "not
@@ -361,7 +361,6 @@ class Controller:
             return text, cleaned_text.strip() or "(attachment)", [], warnings
         cleaned_text, attachments, errors = parse_at_references(text, str(self.project_dir))
         if errors and not attachments and not cleaned_text.strip():
-            # All references failed and nothing else to send
             return None, "", errors, []
         # Build the user message: multimodal if there are attachments,
         # plain text otherwise (preserving the existing text-only path).
@@ -372,7 +371,6 @@ class Controller:
             for att in attachments:
                 parts.append(att.part)
             user_msg = Message(role="user", content=parts)
-            # The display text is the user-facing text (without image data)
             display_text = (
                 cleaned_text.strip()
                 or f"({len(attachments)} image attachment{'s' if len(attachments) != 1 else ''})"

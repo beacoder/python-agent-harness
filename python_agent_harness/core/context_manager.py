@@ -42,9 +42,6 @@ class ContextManager:
         )
         loop.session.calibrator.last_raw_estimate = raw
         calibrated = loop.session.calibrator.calibrate(raw)
-        # Prefer the client's window (config overrides -> patterns ->
-        # default, resolved per access); fall back to the static
-        # resolver for clients without the property (test doubles).
         client = loop.session.client
         window = getattr(client, "context_window", None)
         if window is None:

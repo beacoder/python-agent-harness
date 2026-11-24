@@ -137,7 +137,6 @@ class Edit(Tool):
             return "Error: Required argument `new_str' missing"
         old = args.get("old_str")
         diffp = args.get("diff")
-        # gptel: string mode when `diff` is false OR `old_str` is provided.
         if diffp is False or old is not None:
             # `is True`, not bool(): a model that sends the string "false"
             # (or 0) must not be read as "replace every occurrence" --

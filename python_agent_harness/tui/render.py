@@ -1070,13 +1070,12 @@ class RenderMixin:
         mode = self._controller.plan_mode.mode.value
         mode_style = "bold yellow" if mode == "plan" else "bold green"
         mode_display = f" [{mode.upper()}]"
-        # Active agent profile: the store holds None for the built-in
-        # default agent, so "default" is what the bar reports there.
-        # It is shown unconditionally — a switch to the default agent
-        # (or a restored session) must be visible too, otherwise the
-        # bar cannot tell the user which prompt is in effect.
         agent_name = getattr(self._controller.session.store, "agent", None)
         custom_agent = bool(agent_name)
+        # Shown unconditionally: the store holds None for the built-in
+        # default agent, and a switch to the default agent (or a restored
+        # session) must still be visible, or the bar cannot tell the user
+        # which prompt is in effect.
         display_name = str(agent_name or RESERVED_AGENT_NAME)
         # The name is an agent file's frontmatter ``name:`` (or its stem)
         # and is otherwise unvalidated: sanitize it like every other

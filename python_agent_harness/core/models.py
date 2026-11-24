@@ -107,7 +107,6 @@ class ImagePart:
         return {"type": "image_url", "image_url": {"url": self._data_url}}
 
 
-# Type alias for the individual parts a Message.content list may contain.
 ContentPart = Union[TextPart, ImagePart, str, "dict[str, Any]"]
 
 

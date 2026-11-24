@@ -785,8 +785,7 @@ class Session:
         merges it ahead of the real answer, so it is stripped here or
         the first 50 chars of the reasoning would become the session
         name.  The session temperature is passed so the title request
-        matches the buffer settings (elisp parity) instead of the API
-        default.
+        matches the buffer settings instead of the API default.
         """
         store = self.store
         if store.title or store.title_pending:

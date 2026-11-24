@@ -666,8 +666,6 @@ class CommandMixin:
         """Handle /model command for switching LLM profiles."""
         self._refresh_model_profiles()
         if not arg:
-            # List all models: the original default plus every profile
-            # currently in the config file
             all_names = self._model_list_names()
             current_model = self._controller.model or "(unknown)"
             default_model = (self._controller.llm_settings or {}).get("model") or current_model
@@ -745,13 +743,11 @@ class CommandMixin:
                 f"[dim]Type a number (1-{total_count}) to switch, or enter a model name directly[/dim]\n"
             )
 
-            # Prompt user for selection
             try:
                 selection = input("Select model: ").strip()
                 if not selection:
                     return
 
-                # Check if selection is a number
                 if selection.isascii() and selection.isdigit():
                     idx = int(selection) - 1
                     if 0 <= idx < len(all_names):
@@ -765,7 +761,6 @@ class CommandMixin:
                             f"[red]Invalid selection: {safe_markup(selection)}. Choose 1-{len(all_names)}[/red]"
                         )
                 else:
-                    # Treat as model name
                     self._model_switch_by_name(selection)
             except EOFError:
                 pass
@@ -773,7 +768,6 @@ class CommandMixin:
                 self.console.print("\n[dim]cancelled[/dim]")
             return
 
-        # Check if arg is a number
         if arg.strip().isascii() and arg.strip().isdigit():
             all_names = self._model_list_names()
             idx = int(arg.strip()) - 1
@@ -791,7 +785,6 @@ class CommandMixin:
                     f"[red]Invalid selection: {safe_markup(arg)}. Choose 1-{len(all_names)}[/red]"
                 )
             return
-        # Switch to named model
         self._model_switch_by_name(arg)
 
     def _run_summary(self) -> None:

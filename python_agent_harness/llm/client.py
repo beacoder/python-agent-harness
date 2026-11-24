@@ -234,11 +234,8 @@ def _log_llm_interaction(
     if not log_file:
         return
     try:
-        # Build the entry in the same format as the conversation:
-        # { "model": ..., "messages": [...all messages including response...] }
         messages = list(payload.get("messages", []))
 
-        # Append the assistant response
         resp: dict[str, Any] = {"role": "assistant"}
         if response_msg.text():
             resp["content"] = response_msg.text()
@@ -427,8 +424,6 @@ class Client:
         # too: a probe cancelled before it published its client must not
         # start a request nobody waits on.
         self._aborted = False
-        # an explicit log file is inherited by clones so every request
-        # of one session (main + all sub-agents) lands in a single log
         self.log_path = (
             log_path
             if log_path is not None
@@ -577,9 +572,6 @@ class Client:
             if resp is None:
                 return False, "aborted"
             if resp.status_code == 401:
-                # the key may have expired and an external refresh process
-                # may write a new one: re-read it (bounded by the probe
-                # budget) and retry once, mirroring chat()'s AuthExpiredError handling.
                 if self._refresh_api_key(
                     cancel_check=lambda: self._aborted,
                     timeout=timeout,
@@ -715,8 +707,6 @@ class Client:
         reasoning_effort: str | None = None,
         supports_image_input: bool = False,
     ) -> dict[str, Any]:
-        # When the target model does not accept image input, strip
-        # ImagePart from message content to avoid API errors.
         if not supports_image_input:
             messages = [_strip_image_parts(m) for m in messages]
         msgs = [m.to_api() for m in messages]

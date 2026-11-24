@@ -37,8 +37,6 @@ class PlanExit(Tool):
     parameters = {"type": "object", "properties": {}}
 
     def run(self, args: dict, ctx: ToolContext) -> str:
-        # containment boundary: a failure in the approval prompt
-        # becomes an error string for the model, never a crash
         try:
             return ctx.plan_exit()
         except Exception as e:  # noqa: BLE001 - error string for the model

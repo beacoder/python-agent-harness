@@ -112,28 +112,17 @@ class AgentLoop:
             # round budget: an interactive TUI run still runs until the
             # model finishes or the user aborts
             self.max_rounds = max_rounds
-        # Optional wall-clock budget for unattended runs (None = off)
         self.timeout = timeout
         self.pending: list[ToolCall] = []
         self.error: str | None = None
         self.harness_injected: bool = False
         self.supervisor = Supervisor(session)
-        # extracted machinery (no logic changes): tool execution and
-        # context/compaction live in tool_runner.py / context_manager.py;
-        # the loop delegates to them and keeps the FSM state
         self._tool_runner = ToolRunner(self)
         self._context_manager = ContextManager(self)
-        # FSM state: `state` is the current state, `info` the per-round
-        # context read by the transition-table predicates, `history`
-        # the states visited so far (newest last), `rounds` the number
-        # of WAIT visits (sub-agent budget), and `result` the final
-        # return value recorded by the terminal state's handler.
         self.state = self.WAIT
         self.info: dict[str, Any] = {}
         self.history: list[str] = []
         self.rounds = 0
-        # Thread-local wall-clock deadline bookkeeping: sub-agent loops
-        # run in their own threads, so a shared attribute would race
         self._local = threading.local()
         self.terminal_text: str | None = None
         self.result: str | None = None

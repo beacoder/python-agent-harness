@@ -219,11 +219,6 @@ def parse_at_references(
 
     for match in pattern.finditer(text):
         raw_path = match.group(1)
-        # Strip trailing sentence/closing punctuation from the path
-        # token: "@file.png." / "@file.png," / "(@file.png)" must
-        # resolve "file.png", not "file.png." / "file.png," / "file.png)".
-        # The stripped characters are left in the text (the replacement
-        # below only swaps the @ + path token).
         stripped = raw_path.rstrip(".,;:!?)]}>\"'")
         if not stripped:
             continue
@@ -235,13 +230,6 @@ def parse_at_references(
             # can see what failed
             continue
         attachments.append(result)
-        # Replace the @path token.  For image attachments, the image
-        # bytes are already in an ImagePart — leaving the file path in
-        # the text causes some models to try reading the file with
-        # tools, so replace it with a generic [image] placeholder.
-        # For text attachments, keep the path (it provides context for
-        # the inlined content).  The trailing punctuation stripped
-        # above stays in the text.
         full_match = match.group(0)
         if isinstance(result.part, ImagePart):
             replacements.append((full_match, full_match.replace("@" + stripped, "[image]", 1)))
@@ -259,8 +247,7 @@ def _has_image_signature(data: bytes, media_type: str) -> bool:
     """True when DATA's magic bytes match MEDIA_TYPE's signature.
 
     Any of the type's signatures matching at its offset is enough
-    (e.g. GIF87a or GIF89a for image/gif).  A file shorter than the
-    signature offset+length can never match.
+    (e.g. GIF87a or GIF89a for image/gif).
     """
     signatures = _IMAGE_SIGNATURES.get(media_type)
     if not signatures:
@@ -290,7 +277,6 @@ def _validate_and_create(resolved: str, display_path: str) -> ParsedAttachment |
     ext = Path(resolved).suffix.lower()
     basename = os.path.basename(resolved)
 
-    # Image files
     if ext in IMAGE_EXTENSIONS:
         size = os.path.getsize(resolved)
         if size > MAX_IMAGE_SIZE:
@@ -312,7 +298,6 @@ def _validate_and_create(resolved: str, display_path: str) -> ParsedAttachment |
             resolved, ImagePart(data=data, media_type=media_type, path=resolved)
         )
 
-    # Text files
     if ext in TEXT_EXTENSIONS or basename in TEXT_BASENAMES or not ext:
         size = os.path.getsize(resolved)
         if size > MAX_TEXT_SIZE:
@@ -328,7 +313,6 @@ def _validate_and_create(resolved: str, display_path: str) -> ParsedAttachment |
             return AttachmentError(display_path, f"cannot read file: {e}")
         return ParsedAttachment(resolved, TextPart(text=content))
 
-    # Unknown extension: try to read as text
     size = os.path.getsize(resolved)
     if size > MAX_TEXT_SIZE:
         return AttachmentError(

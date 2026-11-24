@@ -10,12 +10,6 @@ model can be overridden (see config).  Results flow back to the
 parent as a single tool result string.  Errors are contained: an
 unexpected sub-agent response becomes an error string fed to the parent,
 never a crash.
-
-Tool execution mirrors gptel: synchronous tools (Read, Edit, ...) run
-ONE AT A TIME in model-emitted order, while asynchronous tools — Agent
-and Bash — are dispatched in line and run concurrently in the
-background.  Each sub-agent is fully isolated (own loop, own history,
-own stream), so independent tasks can be delegated in parallel.
 """
 
 from __future__ import annotations
@@ -101,8 +95,7 @@ class AgentTool(Tool):
         pending = PendingToolResult()
 
         def worker() -> None:
-            # containment boundary: a sub-agent failure becomes an error
-            # string for the parent, never a crash in the delivery thread
+            """Run the sub-agent loop; deliver an error string on failure."""
             try:
                 result = ctx.run_subagent(description, prompt)
             except Exception as e:  # noqa: BLE001 - error string for the parent
