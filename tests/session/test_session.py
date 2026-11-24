@@ -1142,6 +1142,34 @@ class TestModelSwitching(unittest.TestCase):
         self.assertEqual(session.calibrator.factor, 1.0)
         self.assertIsNone(session.calibrator.last_raw_estimate)
 
+    def test_switch_model_reinherits_subagent_options(self):
+        """A /model switch must re-derive the sub-agent options that
+        inherit the main ones: a stale inherited reasoning_effort (the
+        previous model's) is rejected by the new backend."""
+        session = RecordingSession(
+            model_profiles={"deepseek": {"model": "deepseek-v4-flash", "reasoning_effort": "high"}}
+        )
+        session.reasoning_effort = "medium"
+        session._apply_subagent_inheritance()
+        self.assertEqual(session.subagent_reasoning_effort, "medium")
+        success, _ = session.switch_model("deepseek")
+        self.assertTrue(success)
+        self.assertEqual(session.reasoning_effort, "high")
+        self.assertEqual(session.subagent_reasoning_effort, "high")
+
+    def test_switch_model_keeps_explicit_subagent_options(self):
+        """An explicit subagent_llm option must survive a /model switch
+        instead of being overwritten by the new main value."""
+        session = RecordingSession(
+            model_profiles={"deepseek": {"model": "deepseek-v4-flash", "reasoning_effort": "high"}}
+        )
+        session._subagent_overrides["reasoning_effort"] = "low"
+        session._apply_subagent_inheritance()
+        success, _ = session.switch_model("deepseek")
+        self.assertTrue(success)
+        self.assertEqual(session.reasoning_effort, "high")
+        self.assertEqual(session.subagent_reasoning_effort, "low")
+
     def test_switch_model_preserves_conversation_history(self):
         """Switching models does not clear conversation history."""
         from python_agent_harness.core.models import Message
