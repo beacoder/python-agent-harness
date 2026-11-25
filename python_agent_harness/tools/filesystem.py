@@ -32,6 +32,7 @@ full output remains readable via the Read tool.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import os
 import shutil  # noqa: F401  (mock target for tests)
@@ -50,6 +51,14 @@ from ..session.config import MAX_OUTPUT_CHARS as MAX_OUTPUT
 SPOOL_LINES = 50  # preview lines kept when results are spilled
 READ_SIZE_LIMIT = 400 * 1024  # whole-file reads above this are refused
 # (mirrors gptel-agent-read-file-size-threshold)
+
+# Prefix every spool file carries, so a later run can recognise files a
+# previous, uncleanly-exited run left behind.
+SPOOL_PREFIX = "python-agent-harness-"
+
+# A spool file is read within the run that created it, so one older than this
+# cannot belong to a live session.
+SPOOL_MAX_AGE_S = 24 * 60 * 60
 
 _spooled_files: list[str] = []  # temp files created by _spool, cleaned
 # up by cleanup_spooled_files on session close
@@ -91,7 +100,7 @@ def _spool(text: str, label: str) -> str:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     try:
         fd, temp_file = tempfile.mkstemp(
-            prefix=f"python-agent-harness-{label}-{stamp}-",
+            prefix=f"{SPOOL_PREFIX}{label}-{stamp}-",
             suffix=".txt",
             dir=_spool_dir(),
         )
@@ -127,6 +136,15 @@ def _spool(text: str, label: str) -> str:
     )
 
 
+def _remove_tracked(paths: list[str]) -> None:
+    for path in paths:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
 def cleanup_spooled_files() -> None:
     """Delete all tracked spooled temp files (best effort).
 
@@ -138,12 +156,63 @@ def cleanup_spooled_files() -> None:
     with _spooled_files_lock:
         paths = _spooled_files[:]
         _spooled_files.clear()
-    for path in paths:
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-        except OSError:
-            pass
+    _remove_tracked(paths)
+
+
+def _cleanup_at_exit() -> None:
+    """``atexit`` wrapper: never block interpreter shutdown.
+
+    A daemon tool thread can still hold ``_spooled_files_lock`` when the
+    interpreter exits (a Bash/Agent worker mid-``_spool``).  ``threading.Lock``
+    is not reentrant and daemon threads are frozen, not joined, at shutdown, so
+    a plain ``cleanup_spooled_files()`` would block forever and hang the
+    process.  Skip the tracked-file pass in that case: the age-based sweep on
+    the next start collects those files anyway.
+    """
+    if not _spooled_files_lock.acquire(timeout=1.0):
+        return
+    try:
+        paths = _spooled_files[:]
+        _spooled_files.clear()
+    finally:
+        _spooled_files_lock.release()
+    _remove_tracked(paths)
+
+
+def sweep_stale_spooled_files(max_age_s: float = SPOOL_MAX_AGE_S) -> int:
+    """Delete spool files left behind by earlier, uncleanly-exited runs.
+
+    ``cleanup_spooled_files`` only knows the files THIS process created, so a
+    SIGKILL, an OOM kill or a crash strands every spool file it had written.
+    This sweeps the spool dir by name and age instead, which needs no
+    bookkeeping from the dead process.
+
+    Returns the number of files removed.  Never raises: a sweep failure must
+    not stop a session from starting.
+    """
+    removed = 0
+    try:
+        directory = _spool_dir()
+        cutoff = time.time() - max_age_s
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if not entry.name.startswith(SPOOL_PREFIX):
+                    continue
+                try:
+                    # one stat: is_file() would stat again
+                    st = entry.stat(follow_symlinks=False)
+                    if not stat.S_ISREG(st.st_mode) or st.st_mtime > cutoff:
+                        continue
+                    os.remove(entry.path)
+                    removed += 1
+                except OSError:
+                    continue  # raced with another sweep, or not ours to remove
+    except OSError:
+        return removed
+    return removed
+
+
+atexit.register(_cleanup_at_exit)
 
 
 def _natnump(n: object) -> TypeGuard[int]:
@@ -276,8 +345,11 @@ __all__ = [
     "MAX_OUTPUT",
     "READ_SIZE_LIMIT",
     "SPOOL_LINES",
+    "SPOOL_MAX_AGE_S",
+    "SPOOL_PREFIX",
     "atomic_write_text",
     "cleanup_spooled_files",
+    "sweep_stale_spooled_files",
     "_fix_patch_headers",
     "_git_glob_results",
     "_git_root",
