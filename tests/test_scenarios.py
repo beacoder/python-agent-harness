@@ -285,9 +285,10 @@ class TestScenarioNudging(unittest.TestCase):
         session.tools_enabled = True
         session.client.script = ["a", "b", "c"]
         loop = AgentLoop(session, messages=[Message(role="user", content="task")])
+        loop.supervisor.max_nudges = 2
         result = loop.run()
         self.assertEqual(result, "c")
-        self.assertEqual(loop.supervisor.nudge_count, config.MAX_NUDGES)
+        self.assertEqual(loop.supervisor.nudge_count, 2)
         self.assertFalse(loop.supervisor.can_nudge())
         self.assertEqual(
             [m.text() for m in loop.messages if m.role == "user" and m.injected],
