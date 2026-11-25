@@ -146,8 +146,8 @@ class TestAgentFSM(unittest.TestCase):
         session = RecordingSession()
         session.client.script = ["a", "b", "c"]
         loop = AgentLoop(session, messages=[Message(role="user", content="hi")])
-        with mock.patch("python_agent_harness.session.config.MAX_NUDGES", 2):
-            self.assertEqual(loop.run(), "c")
+        loop.supervisor.max_nudges = 2
+        self.assertEqual(loop.run(), "c")
         self.assertEqual(loop.state, AgentLoop.DONE)
         self.assertEqual(loop.supervisor.nudge_count, 2)
         self.assertEqual(
