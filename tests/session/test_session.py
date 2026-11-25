@@ -98,6 +98,33 @@ class TestSessionInteractive(unittest.TestCase):
         self.assertEqual(session.ask_questions([{"question": "q"}]), "answer")
 
 
+class TestSpoolSweepOnStartup(unittest.TestCase):
+    """Session construction must sweep spool files stranded by an earlier
+    run that died without unwinding (SIGKILL / OOM / crash).  Without the
+    call in __init__ nothing ever collects them: cleanup_spooled_files only
+    knows this process's files, and atexit never ran for the dead one."""
+
+    def test_session_init_sweeps_stale_spool_files(self):
+        import time
+
+        import python_agent_harness.tools.filesystem as fs
+
+        with tempfile.TemporaryDirectory(prefix="pah-spool-") as d:
+            stale = os.path.join(d, fs.SPOOL_PREFIX + "grep-stale.txt")
+            with open(stale, "w") as f:
+                f.write("x")
+            old = time.time() - (fs.SPOOL_MAX_AGE_S + 3600)
+            os.utime(stale, (old, old))
+
+            with mock.patch.object(fs, "_spool_dir", lambda: d):
+                RecordingSession()
+
+            self.assertFalse(
+                os.path.exists(stale),
+                "Session.__init__ did not sweep a stale spool file",
+            )
+
+
 class TestPlanModeGuard(unittest.TestCase):
     """Plan-mode tool guard: Bash always blocked, other writes blocked
     unless they target the plan file."""
