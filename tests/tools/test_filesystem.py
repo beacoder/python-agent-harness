@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -379,6 +380,86 @@ class TestSpool(unittest.TestCase):
         leftovers = [n for n in os.listdir(self.tmp.name) if "python-agent-harness-" in n]
         self.assertEqual(leftovers, [], f"orphaned spool files: {leftovers}")
         self.assertEqual(self.fs._spooled_files, [])
+
+    def test_sweep_removes_stale_spool_files_only(self):
+        """A run killed without unwinding (SIGKILL / OOM / crash) never
+        reaches Session.close, so its spool files are stranded.  The
+        startup sweep must remove those by name+age, while leaving a
+        concurrent process's young files and unrelated files alone."""
+        old = os.path.join(self.tmp.name, self.fs.SPOOL_PREFIX + "grep-old.txt")
+        young = os.path.join(self.tmp.name, self.fs.SPOOL_PREFIX + "grep-young.txt")
+        unrelated = os.path.join(self.tmp.name, "unrelated.txt")
+        for p in (old, young, unrelated):
+            with open(p, "w") as f:
+                f.write("x")
+        stale = time.time() - (self.fs.SPOOL_MAX_AGE_S + 3600)
+        os.utime(old, (stale, stale))
+
+        removed = self.fs.sweep_stale_spooled_files()
+
+        self.assertEqual(removed, 1)
+        self.assertFalse(os.path.exists(old), "stale spool file not swept")
+        self.assertTrue(os.path.exists(young), "a live session's file was swept")
+        self.assertTrue(os.path.exists(unrelated), "an unrelated file was swept")
+
+    def test_sweep_never_raises_on_unreadable_dir(self):
+        """A sweep failure must not stop a session from starting."""
+        self.fs._spool_dir = lambda: "/dev/null/definitely-not-a-dir"
+        self.assertEqual(self.fs.sweep_stale_spooled_files(), 0)
+
+    def test_cleanup_is_registered_with_atexit(self):
+        """Session.close is not reached on an unhandled exception or a
+        crash in a non-Python thread; atexit is the last-resort hook.
+
+        Asserted behaviourally in a subprocess: the child spools a file
+        and exits WITHOUT calling cleanup, so the file survives only if
+        the atexit hook is missing.
+        """
+        script = (
+            "import sys, re, os\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r})\n"
+            "import tests\n"
+            "import python_agent_harness.tools.filesystem as fs\n"
+            f"fs._spool_dir = lambda: {self.tmp.name!r}\n"
+            "out = fs._spool('line\\n' * 10000, 'grep')\n"
+            'print(re.search(r\'file_path="([^"]+)"\', out).group(1))\n'
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        path = proc.stdout.strip()
+        self.assertTrue(path, proc.stdout)
+        self.assertFalse(
+            os.path.exists(path),
+            "atexit did not clean the spool file: it is not registered",
+        )
+
+    def test_atexit_does_not_hang_when_lock_is_held(self):
+        """A daemon tool thread can still hold _spooled_files_lock at
+        interpreter exit (a Bash/Agent worker mid-_spool).  threading.Lock
+        is not reentrant and daemon threads are frozen, not joined, at
+        shutdown, so a plain cleanup_spooled_files() in atexit would block
+        forever and hang the process.  The hook must give up instead."""
+        script = (
+            "import sys, threading, time\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r})\n"
+            "import tests\n"
+            "import python_agent_harness.tools.filesystem as fs\n"
+            "def holder():\n"
+            "    with fs._spooled_files_lock:\n"
+            "        time.sleep(30)\n"
+            "threading.Thread(target=holder, daemon=True).start()\n"
+            "time.sleep(0.2)\n"
+        )
+        # A hang shows up as the timeout expiring, not as a non-zero exit.
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("atexit hook deadlocked on _spooled_files_lock")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_grep_out_formats_backend_errors(self):
         """A failing backend (exit code >= 2) must surface as an explicit
