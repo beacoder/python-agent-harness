@@ -371,6 +371,7 @@ def cmd_config(args: argparse.Namespace) -> int:
         print("context_windows: (none configured — built-in table in config.py applies)")
     default_agent = config.load_default_agent(args.path)
     print(f"default_agent: {default_agent or '(default: agent.md)'}")
+    print(f"supervision.max_nudges: {config.load_max_nudges(args.path)}")
     max_rounds, timeout = config.load_headless_limits(args.path)
     if max_rounds is None and timeout is None:
         print(
