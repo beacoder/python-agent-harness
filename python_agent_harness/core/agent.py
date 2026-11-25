@@ -64,6 +64,7 @@ class _SupervisorSession(Protocol):
 
     alive: bool
     compacting: bool
+    config_path: str | None
 
 
 class AgentLoop:
@@ -840,6 +841,7 @@ class Supervisor:
     def __init__(self, session: _SupervisorSession) -> None:
         self.session = session
         self.nudge_count = 0
+        self.max_nudges = config.load_max_nudges(getattr(session, "config_path", None))
 
     # -- helpers -----------------------------------------------------------
     @property
@@ -852,7 +854,7 @@ class Supervisor:
         A dead session can never record nudges, so without this guard
         the machine could loop forever on terminal responses.
         """
-        return self.alive and self.nudge_count < config.MAX_NUDGES
+        return self.alive and self.nudge_count < self.max_nudges
 
     def inject_nudge(self) -> bool:
         """Increment the nudge counter. Returns True on success; never raises.
