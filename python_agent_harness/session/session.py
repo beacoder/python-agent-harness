@@ -29,7 +29,7 @@ from ..prompts import RESERVED_AGENT_NAME, _tool_excluded, discover_agents, inde
 from ..session import config
 from ..tools import Registry, ToolContext
 from ..tools.base import PendingToolResult, resolve_path
-from ..tools.filesystem import cleanup_spooled_files
+from ..tools.filesystem import cleanup_spooled_files, sweep_stale_spooled_files
 from ..tools.mcp import mcp_tools_from_manager
 from .hooks import HookRunner
 
@@ -159,6 +159,8 @@ class Session:
         self.calibrator = TokenCalibrator()
         self.plan_mode = PlanMode(project_dir)
         self.tool_ctx = ToolContext(self)
+        # Collect spool files stranded by a run that died without unwinding.
+        sweep_stale_spooled_files()
         self._tool_diffs: dict[str, str] = {}
         self._tool_diffs_lock = threading.Lock()
         # thread-local: sub-agents each execute tools in their own
