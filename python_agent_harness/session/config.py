@@ -32,7 +32,9 @@ CONTEXT_WINDOWS: list[tuple[str, int]] = [
 DEFAULT_CONTEXT_WINDOW = 128_000
 
 # ---- completion supervision ----------------------------------------------
-MAX_NUDGES = 2
+# Nudges per tool round; the budget resets on every tool round (see
+# AgentLoop._handle_tool), so the effective cap is MAX_NUDGES x tool rounds.
+MAX_NUDGES = 1
 NUDGE_MESSAGE = (
     "Review the original user request and the Task Completion Rules in the context. "
     "Verify whether all completion criteria are satisfied. "
@@ -295,6 +297,10 @@ CONFIG_TEMPLATE = """\
   "context_windows": {{
     "_comment": "Optional per-model context-window overrides (tokens). Keys are model names or substrings (e.g. deepseek-v4 = 1000000); matched in file order, first match wins. Overrides the built-in CONTEXT_WINDOWS table in config.py. Remove this section to use the built-in table.",
     "deepseek-v4": 1000000
+  }},
+  "supervision": {{
+    "_comment": "Completion supervision: how many times the harness nudges the model back to work when it stops with a terminal answer. The budget is PER TOOL ROUND (it resets on every tool round), so the effective cap is max_nudges x tool rounds. Default 1 suits a model that rarely stops early; raise it for a weaker model, or set 0 to disable. Each nudge costs one extra LLM round.",
+    "max_nudges": 1
   }},
   "subagent_llm": {{
     "_comment": "Optional overrides for sub-agent (Agent tool) requests, e.g. a cheaper model. Every key is optional; unset keys inherit the main llm settings above. Set 'profile' to a name from the 'models' section to reuse a model profile (profile settings win over explicit keys below).",
@@ -568,6 +574,32 @@ def load_headless_limits(path: str | os.PathLike | None = None) -> tuple[int | N
     ``_load_limits`` for the shared parsing contract.
     """
     return _load_limits("headless", path)
+
+
+def load_max_nudges(path: str | os.PathLike | None = None) -> int:
+    """Nudges per tool round from the config file's ``supervision`` object.
+
+    ``0`` disables supervision.  A missing file/section or unreadable JSON
+    yields ``MAX_NUDGES``; a malformed section or a non-integer value raises
+    ValueError so config errors surface at session start.
+    """
+    try:
+        data = _read_config(path)
+    except ValueError:
+        return MAX_NUDGES
+    section = _object_section(data, "supervision", path)
+    val = section.get("max_nudges")
+    if val is None:
+        return MAX_NUDGES
+    if isinstance(val, bool) or not isinstance(val, int):
+        raise ValueError(
+            f"config file {_config_path(path)}: supervision.max_nudges must be an integer"
+        )
+    if val < 0:
+        raise ValueError(
+            f"config file {_config_path(path)}: supervision.max_nudges must not be negative"
+        )
+    return val
 
 
 def load_serve_limits(path: str | os.PathLike | None = None) -> tuple[int | None, float | None]:
