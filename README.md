@@ -130,6 +130,9 @@ All LLM settings live in `~/.config/python-agent-harness/config.json`. Environme
   "context_windows": {
     "deepseek-v4": 1000000
   },
+  "supervision": {
+    "max_nudges": 1
+  },
   "paths": {
     "context_path": null,
     "skill_path": null,
@@ -157,6 +160,7 @@ All LLM settings live in `~/.config/python-agent-harness/config.json`. Environme
 - **`llm`** — main LLM config. Optional keys: `temperature`, `max_tokens`, `timeout`, `reasoning_effort`, `stream`, `supports_image_input`. `run --no-stream` overrides `stream`. `supports_image_input` (default `false`) controls whether `@path` images are sent or stripped.
 - **`models`** — named LLM profiles for `/model` switching. Partial settings; unset keys inherit from `llm`. `default` restores the main config.
 - **`context_windows`** — per-model context-window overrides (tokens). Keys are model names or substrings; first match wins. Overrides `CONTEXT_WINDOWS` in `config.py`.
+- **`supervision.max_nudges`** — completion-supervision budget: how many times the harness nudges the model back to work when it stops with a terminal answer. The budget is **per tool round** (it resets on every tool round), so the effective cap is `max_nudges × tool rounds`. Default `1`, which suits a model that rarely stops early; raise it for a weaker model that keeps stopping before the work is done, or set `0` to disable supervision. Each nudge costs one extra LLM round (a full history re-send), so a high value is expensive.
 - **`subagent_llm`** — LLM config for `Agent` tool. Unset values inherit from `llm`. Set `profile` to reuse a `models` entry. Precedence: profile > `subagent_llm` > `llm` > env vars.
 - **`default_agent`** — agent name to use at session start (must exist in the discovered agent set: bundled `prompts/agents/` plus `paths.agent_path`). `null` = built-in default.
 - **`paths.context_path` / `paths.skill_path`** — locations for context files and skills. Default: project-local `contexts/` and `skills/`.
