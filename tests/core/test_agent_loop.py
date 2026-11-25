@@ -859,6 +859,9 @@ class TestAgentLoop(unittest.TestCase):
             side_effect=fake_estimate,
         ):
             loop = AgentLoop(session, messages=[Message(role="user", content="long task")])
+            # budget 2: the first two terminal answers must be nudged away
+            # before compaction resets the budget for the third
+            loop.supervisor.max_nudges = 2
             result = loop.run()
         self.assertEqual(result, "done")
         self.assertEqual(loop.messages[0].role, "user")
