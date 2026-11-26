@@ -537,7 +537,8 @@ class TestCompactedMessages(unittest.TestCase):
 
 class TestAssembleToolInstructions(unittest.TestCase):
     """Tests for assemble_tool_instructions and load_agent_prompt's
-    {{TOOL_INSTRUCTIONS}} placeholder substitution."""
+    tool-guidance injection (the shared policy + tool blocks are always
+    appended via the tool-usage fragment)."""
 
     def test_none_dict_returns_empty(self):
         self.assertEqual(assemble_tool_instructions(None), "")
@@ -637,46 +638,10 @@ class TestAssembleToolInstructions(unittest.TestCase):
         self.assertIn(r"\s+", result)
         self.assertIn(r"\w+", result)
 
-    def test_placeholder_substituted_when_tool_instructions_given(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / "agent.md"
-            path.write_text(
-                "# Role\n\n{{TOOL_INSTRUCTIONS}}\n\n# End",
-                encoding="utf-8",
-            )
-            result = load_agent_prompt(path, tool_instructions={"Read": "Read files."})
-        self.assertIsNotNone(result)
-        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", result)
-        self.assertIn('<tool name="Read">', result)
-        self.assertIn("Read files.", result)
-
-    def test_placeholder_removed_when_no_tool_instructions(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / "agent.md"
-            path.write_text(
-                "# Role\n\n{{TOOL_INSTRUCTIONS}}\n\n# End",
-                encoding="utf-8",
-            )
-            result = load_agent_prompt(path, tool_instructions=None)
-        self.assertIsNotNone(result)
-        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", result)
-        self.assertNotIn("<tool name=", result)
-
-    def test_placeholder_removed_when_empty_dict(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = Path(d) / "agent.md"
-            path.write_text(
-                "# Role\n\n{{TOOL_INSTRUCTIONS}}\n\n# End",
-                encoding="utf-8",
-            )
-            result = load_agent_prompt(path, tool_instructions={})
-        self.assertIsNotNone(result)
-        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", result)
-
     def test_excluded_tools_passed_to_load_agent_prompt(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "agent.md"
-            path.write_text("{{TOOL_INSTRUCTIONS}}", encoding="utf-8")
+            path.write_text("You are a test agent.", encoding="utf-8")
             result = load_agent_prompt(
                 path,
                 tool_instructions={"Read": "read", "Agent": "agent"},
@@ -686,35 +651,117 @@ class TestAssembleToolInstructions(unittest.TestCase):
         self.assertIn('<tool name="Read">', result)
         self.assertNotIn('<tool name="Agent">', result)
 
-    def test_tool_instructions_substituted_before_skills(self):
-        """{{TOOL_INSTRUCTIONS}} is resolved before {{SKILLS}} so that
+    def test_tool_blocks_resolved_before_skills(self):
+        """Tool blocks are assembled before {{SKILLS}} is resolved so that
         a tool whose instructions contain {{SKILLS}} (the Skill tool)
         has the placeholder resolved correctly."""
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "agent.md"
-            path.write_text("{{TOOL_INSTRUCTIONS}}", encoding="utf-8")
+            path.write_text("You are a test agent.", encoding="utf-8")
             result = load_agent_prompt(
                 path,
                 skill_dir=None,
                 tool_instructions={"Skill": "Skills: {{SKILLS}}"},
             )
         self.assertIsNotNone(result)
-        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", result)
         self.assertNotIn("{{SKILLS}}", result)
         self.assertIn("Skills:", result)
         self.assertIn(_SKILLS_FALLBACK, result)
 
-    def test_bundled_agent_md_has_placeholder(self):
-        """The bundled agent.md must contain the {{TOOL_INSTRUCTIONS}}
-        placeholder (not hardcoded tool blocks)."""
-        text = config.DEFAULT_AGENT_PROMPT_FILE.read_text(encoding="utf-8")
-        self.assertIn("{{TOOL_INSTRUCTIONS}}", text)
+    def test_custom_agent_gets_policy_and_tool_blocks_appended(self):
+        """A custom agent file must receive the shared tool-usage policy
+        and the assembled tool instruction blocks (incl. the Skill
+        listing) — switching agents must not silently drop tool guidance
+        or skills."""
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "custom.md"
+            path.write_text("# Role\nYou are a custom agent.\n", encoding="utf-8")
+            result = load_agent_prompt(
+                path,
+                tool_instructions={"Read": "Read files.", "Skill": "Skills: {{SKILLS}}"},
+            )
+        self.assertIsNotNone(result)
+        self.assertIn("# Tool usage policy", result)
+        self.assertIn("# Tool usage instructions", result)
+        self.assertIn('<tool name="Read">', result)
+        self.assertIn('<tool name="Skill">', result)
+        self.assertIn(_SKILLS_FALLBACK, result)
+        self.assertLess(
+            result.index("You are a custom agent."), result.index("# Tool usage policy")
+        )
 
-    def test_bundled_subagent_md_has_placeholder(self):
-        """The bundled subagent.md must contain the {{TOOL_INSTRUCTIONS}}
-        placeholder (not hardcoded tool blocks)."""
+    def test_appended_tool_blocks_honor_excluded_tools(self):
+        """The auto-appended tool blocks honor *excluded_tools*."""
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "custom.md"
+            path.write_text("You are a custom agent.\n", encoding="utf-8")
+            result = load_agent_prompt(
+                path,
+                tool_instructions={"Read": "Read files.", "Bash": "Run commands."},
+                excluded_tools=("Bash",),
+            )
+        self.assertIsNotNone(result)
+        self.assertIn('<tool name="Read">', result)
+        self.assertNotIn('<tool name="Bash">', result)
+
+    def test_fragment_appended_without_tool_instructions(self):
+        """Without tool instructions the shared fragment is still appended
+        (both headers present); the placeholder resolves to empty so no
+        <tool name=...> blocks appear.  In practice callers always pass a
+        non-empty registry, so the empty-instructions case is a test-only
+        edge."""
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "custom.md"
+            path.write_text("You are a custom agent.\n", encoding="utf-8")
+            result = load_agent_prompt(path)
+        self.assertIsNotNone(result)
+        self.assertIn("# Tool usage policy", result)
+        self.assertIn("# Tool usage instructions", result)
+        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", result)
+        self.assertNotIn("<tool name=", result)
+
+    def test_bundled_tool_usage_policy_file_present(self):
+        """The shared policy fragment must exist and be non-empty — it is
+        the source of truth for the tool guidance every agent gets."""
+        from python_agent_harness.prompts import _TOOL_USAGE_POLICY_FILE
+
+        self.assertTrue(_TOOL_USAGE_POLICY_FILE.is_file())
+        self.assertIn("# Tool usage policy", _TOOL_USAGE_POLICY_FILE.read_text(encoding="utf-8"))
+
+    def test_bundled_agent_md_has_no_tool_section(self):
+        """The bundled agent.md must NOT hardcode a tool-usage section or
+        the {{TOOL_INSTRUCTIONS}} placeholder — it relies on the shared
+        auto-injection, same as custom agents."""
+        text = config.DEFAULT_AGENT_PROMPT_FILE.read_text(encoding="utf-8")
+        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", text)
+        self.assertNotIn("# Tool usage policy", text)
+        self.assertNotIn("# Tool usage instructions", text)
+
+    def test_bundled_subagent_md_has_no_tool_section(self):
+        """The bundled subagent.md must NOT hardcode a tool-usage section
+        or the {{TOOL_INSTRUCTIONS}} placeholder — it relies on the shared
+        auto-injection, same as custom agents."""
         text = config.DEFAULT_SUBAGENT_PROMPT_FILE.read_text(encoding="utf-8")
-        self.assertIn("{{TOOL_INSTRUCTIONS}}", text)
+        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", text)
+        self.assertNotIn("# Tool usage policy", text)
+        self.assertNotIn("# Tool usage instructions", text)
+
+    def test_bundled_agents_get_shared_policy_on_load(self):
+        """Loading the bundled agent.md / subagent.md must yield the shared
+        tool-usage policy and the assembled tool blocks (auto-injected),
+        so both use the same guidance as custom agents."""
+        from python_agent_harness.tools import default_registry
+
+        ti = default_registry().tool_instructions()
+        for prompt_file in (
+            config.DEFAULT_AGENT_PROMPT_FILE,
+            config.DEFAULT_SUBAGENT_PROMPT_FILE,
+        ):
+            result = load_agent_prompt(prompt_file, tool_instructions=ti)
+            self.assertIsNotNone(result)
+            self.assertIn("# Tool usage policy", result)
+            self.assertIn("# Tool usage instructions", result)
+            self.assertIn('<tool name="Read">', result)
 
     def test_bundled_prompts_no_hardcoded_tool_blocks(self):
         """Neither bundled prompt should contain hardcoded <tool name=...>
