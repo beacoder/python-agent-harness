@@ -46,6 +46,7 @@ def read_prompt_file(name: str) -> str:
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n?", re.DOTALL)
 _SKILLS_PLACEHOLDER_RE = re.compile(r"\{\{\s*SKILLS\s*\}\}")
 _TOOL_INSTRUCTIONS_PLACEHOLDER_RE = re.compile(r"\{\{\s*TOOL_INSTRUCTIONS\s*\}\}")
+_TOOL_USAGE_POLICY_FILE = PROMPTS_DIR / "tool-usage-policy.md"
 _SKILLS_FALLBACK = (
     "Invoke with a skill name and optional args; the tool reports an "
     "error if no matching skill is found."
@@ -197,17 +198,20 @@ def load_agent_prompt(
     """Load an opencode-style agent prompt file, or None if unavailable.
 
     Strips the YAML frontmatter header (name/description/tools) since
-    that metadata isn't part of the prompt text, substitutes the
-    ``{{TOOL_INSTRUCTIONS}}`` placeholder with per-tool instruction
-    blocks assembled from *tool_instructions* (filtered by
-    *excluded_tools*), and substitutes the ``{{SKILLS}}`` placeholder
-    with the discovered skill listing from *skill_dir* (or a static
-    fallback if no skills are found).
+    that metadata isn't part of the prompt text.
 
-    The ``{{TOOL_INSTRUCTIONS}}`` substitution happens before
-    ``{{SKILLS}}``: a tool's instructions may itself contain
-    ``{{SKILLS}}`` (the Skill tool does), so the skills placeholder is
-    resolved last to catch it wherever it appears.
+    Tool guidance is injected uniformly so switching profiles never
+    silently drops it: the shared fragment (``tool-usage-policy.md``) is
+    always appended, carrying the ``{{TOOL_INSTRUCTIONS}}`` placeholder,
+    which is then substituted with per-tool instruction blocks (assembled
+    from *tool_instructions*, filtered by *excluded_tools*).  The
+    ``{{SKILLS}}`` placeholder is substituted with the discovered skill
+    listing from *skill_dir* (or a static fallback if no skills are found).
+
+    ``{{TOOL_INSTRUCTIONS}}`` is resolved before ``{{SKILLS}}``: a tool's
+    instructions may itself contain ``{{SKILLS}}`` (the Skill tool does),
+    so the skills placeholder is resolved last to catch it wherever it
+    appears.
 
     Missing files, unreadable files, and empty files all resolve to None
     so callers can fall back cleanly to no system prompt.
@@ -220,6 +224,14 @@ def load_agent_prompt(
     except OSError:
         return None
     text = strip_frontmatter(text)
+    if not text.strip():
+        return None
+    try:
+        fragment = _TOOL_USAGE_POLICY_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        fragment = ""
+    if fragment:
+        text = text.rstrip() + "\n\n" + fragment
     tool_blocks = assemble_tool_instructions(tool_instructions, excluded_tools)
     # Use a lambda replacement to avoid re.sub interpreting backslashes
     # in tool instruction text (e.g. regex examples like \s, \w) as
@@ -406,9 +418,9 @@ def assemble_agent_prompt(
     ``subagent._subagent_system_prompt``).  ``context_path`` overrides
     the default context directory discovery.
 
-    *agent_prompt* is already fully resolved (``{{TOOL_INSTRUCTIONS}}``
-    and ``{{SKILLS}}`` substituted by ``load_agent_prompt``); this
-    function only layers context and rules around it.
+    *agent_prompt* is already fully resolved (tool guidance injected and
+    ``{{SKILLS}}`` substituted by ``load_agent_prompt``); this function
+    only layers context and rules around it.
     Returns None if every part is empty/missing.
     """
     parts: list[str] = []
