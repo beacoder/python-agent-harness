@@ -12,7 +12,6 @@ from python_agent_harness.core.token_estimator import (
     context_window_for,
     estimate_payload_tokens,
     estimate_tokens,
-    is_cjk_char,
     payload_text,
 )
 
@@ -38,7 +37,6 @@ class TestTokenizer(unittest.TestCase):
         self.assertEqual(estimate_tokens("abcdefgh"), 2)
 
     def test_cjk_estimate(self):
-        self.assertTrue(is_cjk_char("中"))
         self.assertEqual(estimate_tokens("中文"), 1)
         # mixed: 8 latin (2 tok) + 2 cjk (1 tok)
         self.assertEqual(estimate_tokens("abcdefgh中文"), 3)

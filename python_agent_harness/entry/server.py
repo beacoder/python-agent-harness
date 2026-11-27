@@ -409,18 +409,6 @@ class ServerView(JsonlView):
         if state is not None:
             state.event.set()
 
-    def reset_for_run(self, run_id: str | None) -> None:
-        """Re-arm the view for a new run: fresh seq counter, new run_id."""
-        with self._lock:
-            self._buffer = []
-            self._seq = 0
-            self._sealed = False
-        self._cancelled.clear()
-        self.run_id = run_id
-        self._deltas.reset()
-        with self._pending_lock:
-            self._abandoned = False
-
     # -- HeadlessView overrides -------------------------------------------------
 
     def confirm(self, prompt: str) -> bool:
@@ -449,15 +437,6 @@ class ServerView(JsonlView):
             }
         )
         return self._wait_answer(state)
-
-    # -- test seam ------------------------------------------------------------
-
-    def take_pending(self) -> _AskState | None:
-        """Detach the pending ask state (test inspection hook)."""
-        with self._pending_lock:
-            state = self._pending
-            self._pending = None
-        return state
 
 
 class AgentServer:

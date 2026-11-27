@@ -70,26 +70,6 @@ BACKSPACE = "\x7f"
 LEFT_BUTTON = 0
 
 
-def parse_events(data: bytes) -> list[tuple[int, int, int, str]]:
-    """Complete mouse reports in DATA as ``(button, column, row, kind)``.
-
-    ``kind`` is ``"press"`` for the terminal's ``M`` suffix and
-    ``"release"`` for ``m``.  Coordinates are 1-based, exactly as the
-    terminal sent them.
-    """
-    events = []
-    for m in _SGR.finditer(data):
-        events.append(
-            (
-                int(m.group(1)),
-                int(m.group(2)),
-                int(m.group(3)),
-                "press" if m.group(4) == b"M" else "release",
-            )
-        )
-    return events
-
-
 def is_left_click(button: int) -> bool:
     """True for a plain left-button press.
 

@@ -897,7 +897,8 @@ class TestServerView(unittest.TestCase):
     def test_confirm_true_and_false(self):
         out = io.StringIO()
         view = ServerView(out=out, err=io.StringIO(), run_id="r1")
-        self.assertIsNone(view.take_pending())
+        with view._pending_lock:
+            self.assertIsNone(view._pending)
         result: dict = {}
 
         def _confirm() -> None:
@@ -991,22 +992,6 @@ class TestServerView(unittest.TestCase):
         out = io.StringIO()
         view = ServerView(out=out, err=io.StringIO(), run_id="r1", answer_timeout=0.2)
         self.assertEqual(view.ask([{"question": "q?"}]), "Unanswered")
-
-    def test_reset_for_run_renumbers(self):
-        out = io.StringIO()
-        view = ServerView(out=out, err=io.StringIO(), run_id="r1")
-        view.emit_start("p1", [])
-        view.on_delta("x")
-        view.reset_for_run("r2")
-        # events before the next emit_start are buffered (pre-start
-        # contract), so arm run 2 before emitting again
-        view.emit_start("p2", [])
-        view.on_delta("y")
-        lines = [json.loads(line) for line in out.getvalue().splitlines() if line]
-        self.assertEqual([line["seq"] for line in lines], [1, 2, 1, 2])
-        self.assertEqual([line.get("run_id") for line in lines], ["r1", "r1", "r2", "r2"])
-        self.assertEqual(lines[0]["prompt"], "p1")
-        self.assertEqual(lines[2]["prompt"], "p2")
 
     def test_answer_without_pending_is_noop(self):
         out = io.StringIO()

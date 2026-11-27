@@ -14,19 +14,7 @@ import re
 from ..session import config
 from .models import extract_reasoning
 
-
-def is_cjk_char(c: str) -> bool:
-    """Return True if C is a CJK or full-width character."""
-    cp = ord(c)
-    return (
-        0x3000 <= cp <= 0x9FFF  # CJK + kana + punctuation
-        or 0xF900 <= cp <= 0xFAFF  # CJK compat ideographs
-        or 0xFF00 <= cp <= 0xFFEF  # full-width forms
-        or 0x20000 <= cp <= 0x2FA1F  # CJK extensions B-F
-    )
-
-
-# The same ranges as `is_cjk_char`, as a single compiled character class.
+# The CJK/full-width ranges, as a single compiled character class.
 # Scanning for CJK runs in C (the regex engine) instead of a per-character
 # Python loop, so large payloads count CJK chars much faster.
 _CJK_RE = re.compile(r"[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef\U00020000-\U0002fa1f]")

@@ -40,17 +40,17 @@ def _tool_call_message(tool_id="1", name="Bash", command="ls -la"):
 class TestMouseParsing(unittest.TestCase):
     def test_parse_sgr_press_and_release(self):
         data = b"\x1b[<0;12;7M\x1b[<0;12;7m"
-        events = mouse_mod.parse_events(data)
+        events, _, _ = mouse_mod.split(data)
         self.assertEqual(events, [(0, 12, 7, "press"), (0, 12, 7, "release")])
 
     def test_parse_ignores_non_mouse_input(self):
         """Typed text and other escapes never look like a click."""
-        self.assertEqual(mouse_mod.parse_events(b"hello"), [])
-        self.assertEqual(mouse_mod.parse_events(b"\x1b[A"), [])
+        self.assertEqual(mouse_mod.split(b"hello")[0], [])
+        self.assertEqual(mouse_mod.split(b"\x1b[A")[0], [])
 
     def test_parse_large_coordinates(self):
         """SGR (1006) reports columns/rows beyond the X10 limit."""
-        events = mouse_mod.parse_events(b"\x1b[<0;300;120M")
+        events, _, _ = mouse_mod.split(b"\x1b[<0;300;120M")
         self.assertEqual(events, [(0, 300, 120, "press")])
 
     def test_is_left_click_excludes_wheel_and_drag(self):
