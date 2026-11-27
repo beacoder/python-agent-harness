@@ -323,6 +323,25 @@ class CommandMixin:
         cwd, prompt, kickoff = cmd.prepare(
             project_dir=project or self._controller.project_dir, extra=extra
         )
+        # The command prompt is already-loaded text (${path}/$ARGUMENTS
+        # substituted by prepare()), so inject tool guidance directly.
+        # NOTE: excluded_tools is () — under an /agent profile with
+        # exclude_tools: frontmatter, tool_specs() filters those tools
+        # at runtime, so the prompt can document tools the model can't
+        # call (deliberate: commands may escape the persona; revisit
+        # prompt+runtime together if that changes).
+        from ..prompts import inject_tool_guidance
+
+        session = self._controller.session
+        prompt = inject_tool_guidance(
+            prompt,
+            skill_dir=getattr(session, "_skill_dir", None),
+            tool_instructions=(
+                session.registry.tool_instructions()
+                if getattr(session, "registry", None) is not None
+                else None
+            ),
+        )
         if self.conversation_history or self._controller.last_messages:
             # The commands' kickoffs ("Proceed with the task described
             # in your instructions.") assume a fresh conversation: the

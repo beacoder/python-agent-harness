@@ -231,6 +231,33 @@ class TestTuiCommands(unittest.TestCase):
         self.assertFalse(tui._handle_slash("/bogus"))
         self.assertIn("unknown command", buf.getvalue())
 
+    def test_slash_command_system_prompt_gets_tool_guidance(self):
+        """Like agent prompts, the command's system prompt gets the
+        tool-usage-policy fragment with the per-tool instruction
+        blocks and the skills listing (inject_tool_guidance), so a
+        command running with the full toolset actually sees the tool
+        guidance."""
+        tui, _ = make_tui()
+        captured = {}
+
+        def fake_start(text, system=None, restore=None):
+            captured["system"] = system
+
+        with mock.patch.object(tui, "_start_agent", side_effect=fake_start):
+            tui._handle_slash("/explain client.py")
+        system = captured["system"]
+        # the command's own prompt text is preserved
+        self.assertIn("explain the code", system)
+        # tool-usage-policy fragment appended
+        self.assertIn("# Tool usage policy", system)
+        self.assertIn("# Tool usage instructions", system)
+        # per-tool instruction blocks present (registered tools only)
+        self.assertIn('<tool name="Read">', system)
+        self.assertIn('<tool name="Skill">', system)
+        # skills placeholder inside the Skill tool's instructions resolved
+        self.assertNotIn("{{SKILLS}}", system)
+        self.assertNotIn("{{TOOL_INSTRUCTIONS}}", system)
+
     def test_help_lists_command_slashes(self):
         tui, buf = make_tui()
         tui._handle_slash("/help")

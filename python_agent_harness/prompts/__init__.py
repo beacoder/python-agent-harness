@@ -33,6 +33,7 @@ from .core import (  # noqa: F401
     discover_skills,
     find_agents_md_files,
     index_skills,
+    inject_tool_guidance,
     load_agent_prompt,
     load_context_files,
     load_task_completion_rules,

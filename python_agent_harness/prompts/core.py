@@ -189,6 +189,40 @@ def assemble_tool_instructions(
     return "\n\n".join(blocks)
 
 
+def inject_tool_guidance(
+    text: str,
+    skill_dir: Path | str | None = None,
+    tool_instructions: dict[str, str] | None = None,
+    excluded_tools: tuple[str, ...] = (),
+) -> str:
+    """Append the shared tool-usage-policy fragment and resolve the
+    ``{{TOOL_INSTRUCTIONS}}`` / ``{{SKILLS}}`` placeholders in *text*.
+
+    TUI slash commands call this directly because their prompt is
+    already-loaded text (``${path}`` and ``$ARGUMENTS`` substituted by
+    ``SessionCommand.prepare``), not a file path.
+
+    ``{{TOOL_INSTRUCTIONS}}`` is resolved before ``{{SKILLS}}``: a tool's
+    instructions may itself contain ``{{SKILLS}}`` (the Skill tool does),
+    so the skills placeholder is resolved last to catch it wherever it
+    appears.
+    """
+    try:
+        fragment = _TOOL_USAGE_POLICY_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        fragment = ""
+    if fragment:
+        text = text.rstrip() + "\n\n" + fragment
+    tool_blocks = assemble_tool_instructions(tool_instructions, excluded_tools)
+    # Use a lambda replacement to avoid re.sub interpreting backslashes
+    # in tool instruction text (e.g. regex examples like \s, \w) as
+    # escape sequences.
+    text = _TOOL_INSTRUCTIONS_PLACEHOLDER_RE.sub(lambda _: tool_blocks, text)
+    skills_text = discover_skills(skill_dir)
+    text = _SKILLS_PLACEHOLDER_RE.sub(lambda _: skills_text, text)
+    return text.strip()
+
+
 def load_agent_prompt(
     path: Path | str | None,
     skill_dir: Path | str | None = None,
@@ -198,20 +232,10 @@ def load_agent_prompt(
     """Load an opencode-style agent prompt file, or None if unavailable.
 
     Strips the YAML frontmatter header (name/description/tools) since
-    that metadata isn't part of the prompt text.
-
-    Tool guidance is injected uniformly so switching profiles never
-    silently drops it: the shared fragment (``tool-usage-policy.md``) is
-    always appended, carrying the ``{{TOOL_INSTRUCTIONS}}`` placeholder,
-    which is then substituted with per-tool instruction blocks (assembled
-    from *tool_instructions*, filtered by *excluded_tools*).  The
-    ``{{SKILLS}}`` placeholder is substituted with the discovered skill
-    listing from *skill_dir* (or a static fallback if no skills are found).
-
-    ``{{TOOL_INSTRUCTIONS}}`` is resolved before ``{{SKILLS}}``: a tool's
-    instructions may itself contain ``{{SKILLS}}`` (the Skill tool does),
-    so the skills placeholder is resolved last to catch it wherever it
-    appears.
+    that metadata isn't part of the prompt text, then injects the tool
+    guidance (tool-usage-policy fragment, per-tool instruction blocks,
+    skills listing — see ``inject_tool_guidance``) so switching profiles
+    never silently drops it.
 
     Missing files, unreadable files, and empty files all resolve to None
     so callers can fall back cleanly to no system prompt.
@@ -226,20 +250,7 @@ def load_agent_prompt(
     text = strip_frontmatter(text)
     if not text.strip():
         return None
-    try:
-        fragment = _TOOL_USAGE_POLICY_FILE.read_text(encoding="utf-8").strip()
-    except OSError:
-        fragment = ""
-    if fragment:
-        text = text.rstrip() + "\n\n" + fragment
-    tool_blocks = assemble_tool_instructions(tool_instructions, excluded_tools)
-    # Use a lambda replacement to avoid re.sub interpreting backslashes
-    # in tool instruction text (e.g. regex examples like \s, \w) as
-    # escape sequences.
-    text = _TOOL_INSTRUCTIONS_PLACEHOLDER_RE.sub(lambda _: tool_blocks, text)
-    skills_text = discover_skills(skill_dir)
-    text = _SKILLS_PLACEHOLDER_RE.sub(lambda _: skills_text, text)
-    text = text.strip()
+    text = inject_tool_guidance(text, skill_dir, tool_instructions, excluded_tools)
     return text or None
 
 
